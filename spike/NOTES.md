@@ -142,3 +142,13 @@ painted image as a texture. Grid 211×51 unless noted (the target was written fo
 of swap in use and other sessions building, and an earlier note on this machine says earlyoom has been
 killing large builds. Unverified on Hyprland: layer shell from QML, the overlay layer over fullscreen,
 keyboard focus, whether xdg-desktop-portal-hyprland binds a global shortcut at all, and paint times.
+
+## Renderer comparison (second spike)
+
+See `docs/notes/2026-11-10-renderer-spike-result.md` for the numbers. Lessons from building it:
+
+- A `QSGMaterialShader`'s vertex shader must be baked with `qsb -b` (batchable). Without it the scene
+  graph prints "No rewriter-inserted attribute found" and draws nothing.
+- `KYKO_SPIKE_RENDERER=atlas|text|painted`; `spike/gen.py dense|plain [frames]` fills the screen.
+- Frame timing comes from `QQuickWindow` signals connected directly on the render thread.
+- The scene-graph item takes the snapshot inside `updatePaintNode`, where the GUI thread is blocked.

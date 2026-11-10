@@ -28,6 +28,10 @@ pub mod qobject {
         #[qinvokable]
         fn big(self: &Toggler) -> bool;
 
+        /// True when KYKO_SPIKE_RENDERER is atlas or text (scene-graph item); else the painted item.
+        #[qinvokable]
+        fn scene_graph(self: &Toggler) -> bool;
+
         /// True when KYKO_SPIKE_START_HIDDEN is set.
         #[qinvokable]
         fn start_hidden(self: &Toggler) -> bool;
@@ -48,6 +52,10 @@ pub fn claim_signal() {
 pub struct TogglerRust;
 
 impl qobject::Toggler {
+    pub fn scene_graph(&self) -> bool {
+        std::env::var("KYKO_SPIKE_RENDERER").is_ok_and(|v| v == "atlas" || v == "text")
+    }
+
     pub fn big(&self) -> bool {
         std::env::var_os("KYKO_SPIKE_BIG").is_some()
     }

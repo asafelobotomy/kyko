@@ -1,4 +1,5 @@
 #include "griditem.h"
+#include "sgitem.h"
 
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QHash>
@@ -19,6 +20,7 @@
 
 namespace {
 QPointer<GridItem> g_item;
+QPointer<QQuickItem> g_sg;
 
 const quint8 BOLD = 1, ITALIC = 2, UNDERLINE = 4, WIDE = 16, WIDE_SPACER = 32;
 
@@ -316,12 +318,23 @@ QVariant GridItem::inputMethodQuery(Qt::InputMethodQuery query) const {
     }
 }
 
+void GridItem::itemChange(ItemChange change, const ItemChangeData& data) {
+    QQuickPaintedItem::itemChange(change, data);
+    if (change == ItemSceneChange && data.window)
+        frame_stats_attach(data.window);
+}
+
 void GridItem::mousePressEvent(QMouseEvent* e) {
     forceActiveFocus();
     e->accept();
 }
 
-void grid_register() { qmlRegisterType<GridItem>("org.kyko.spike.native", 1, 0, "GridItem"); }
+void grid_set_sg(QQuickItem* item) { g_sg = item; }
+
+void grid_register() {
+    qmlRegisterType<GridItem>("org.kyko.spike.native", 1, 0, "GridItem");
+    qmlRegisterType<SgItem>("org.kyko.spike.native", 1, 0, "SgItem");
+}
 
 void grid_request_repaint() {
     // Called from the engine's thread.
@@ -330,6 +343,8 @@ void grid_request_repaint() {
         [] {
             if (g_item)
                 g_item->update();
+            if (g_sg)
+                g_sg->update();
         },
         Qt::QueuedConnection);
 }

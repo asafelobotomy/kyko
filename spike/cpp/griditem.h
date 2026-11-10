@@ -35,6 +35,7 @@ protected:
     void inputMethodEvent(QInputMethodEvent* event) override;
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
     void mousePressEvent(QMouseEvent* event) override;
+    void itemChange(ItemChange change, const ItemChangeData& data) override;
 
 private:
     void paintRow(QPainter* painter, const FfiCell* row, int cols);
@@ -52,6 +53,8 @@ private:
     Stats* m_stats = nullptr;
 };
 
+class QQuickItem;
+void grid_set_sg(QQuickItem* item);
 // Register GridItem as org.kyko.spike.native/GridItem. Call before loading QML.
 void grid_register();
 // Thread-safe: ask the live GridItem to repaint.

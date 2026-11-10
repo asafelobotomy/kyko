@@ -53,12 +53,17 @@ Window {
         border.width: 2
         border.color: "#d79921"
 
-        GridItem {
+        Loader {
             id: grid
             anchors.fill: parent
             anchors.margins: 8 + panel.border.width
             focus: true
+            sourceComponent: toggler.scene_graph() ? sgComponent : paintedComponent
+            readonly property int cols: item ? item.cols : 0
+            readonly property int rows: item ? item.rows : 0
         }
+        Component { id: paintedComponent; GridItem { focus: true } }
+        Component { id: sgComponent; SgItem {} }
 
         Text {
             id: counter
