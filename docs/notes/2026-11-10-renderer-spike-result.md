@@ -31,7 +31,8 @@ Two more renderers in the throwaway app, selected with `KYKO_SPIKE_RENDERER`:
   16.7 ms means 60 per second was held). 300 frames after 60 warm-up frames.
 - "Forced" runs rebuild everything on every frame from a static screen, which is the cost of a
   full-screen change. "Changing" runs had a program write a different full screen every 12 ms.
-- Release build, KWin on Wayland, Qt 6.11.2 scene graph on OpenGL, Intel i5-8300H, 1920×1080 at
+- Release build, KWin on Wayland, Qt 6.11.2 scene graph on OpenGL, Intel i5-8300H with its integrated
+  UHD 630 graphics (Mesa), 1920×1080 at
   scale 1. Load average 1.4 to 2.4 during the runs (the earlier spike ran at 6 to 16).
 - GPU time is not measured directly. It is inferred to be small where the interval stays at 16.7 ms.
 
