@@ -20,6 +20,9 @@ from uQ's Spotlight search.
   **top** or **bottom**, set independently.
 - Spotlight link: the built-in `>` item gains a **Run in kyko** action. Enter keeps today's
   behaviour (run with no terminal).
+- kyko stays running in the background whatever is closed in its window, and nothing in the
+  window can quit it. Yakuake puts Close Tab and Quit one above the other, so a slip quits the
+  whole app and its sessions; kyko has no quit control to hit (§2.7).
 
 **Assumptions** (not yet confirmed by the user)
 
@@ -98,6 +101,8 @@ window. Versions checked on 2026-11-10: `alacritty_terminal` 0.26.0 (crates.io),
 
 - Tab bar: numbered pills with the tab name, a new-tab button, then split, pin and settings
   buttons. Position `top` or `bottom`.
+- The only close control is on a tab: a close button on the pill, shown on hover and on the
+  active tab, and middle-click. There is no window close button and no quit entry in any menu.
 - A tab's name is the foreground process name, or the folder name when the shell is idle; a
   user rename sticks until cleared.
 - A tab holds a binary split tree. Splits are side by side or stacked; dividers drag to resize.
@@ -160,6 +165,22 @@ Default keys (all settable; shown with the kyko window focused):
 The same settings are properties on `org.kyko.Terminal1`; setting one writes the file. The uQ
 Settings page (§3.3) uses those properties.
 
+### 2.7 Staying in the background
+
+- **Nothing in the window ends the process.** Closing a pane or tab closes only that; closing
+  the last tab opens a fresh one and hides kyko. `Esc`, focus loss and the toggle key only hide.
+- **Quitting is deliberate and off-screen.** The only ways are `kyko quit` and stopping the
+  systemd unit. `kyko quit` refuses with exit 3, listing the tabs concerned, while any pane has
+  a foreground program other than its shell; `kyko quit --force` overrides. Neither is bound to
+  a key or offered in Spotlight.
+- **It comes back.** The user unit has `Restart=on-failure`, so a crash restarts kyko hidden. After
+  a deliberate quit, the next `F12` or **Run in kyko** starts it again through D-Bus activation.
+- **Limit: shells live inside the kyko process.** A crash, `quit --force` or logout ends them, and
+  the restarted kyko has empty tabs. Keeping shells alive across a crash would need a separate
+  process that owns them, as tmux has; that is not in this design and is the first candidate for
+  a later one.
+- **Session end:** on `SIGTERM` kyko sends `SIGHUP` to every shell, waits up to 2 s, then exits.
+
 ## 3. Integration with uQ
 
 ### 3.1 D-Bus: `org.kyko.Terminal1` at `/org/kyko/Terminal1`
@@ -171,6 +192,7 @@ Settings page (§3.3) uses those properties.
 | `NewTab` | `cwd: s` | new tab, shows kyko |
 | `ListTabs` | — | `a(uss)`: id, name, foreground program |
 | `FocusTab` | `id: u` | focuses the tab, shows kyko |
+| `Quit` | `force: b` | as `kyko quit` (§2.7); error `org.kyko.Error.Busy` when refused |
 | properties | the settings in §2.6, plus `Visible: b` | read and write (`Visible` read-only) |
 | signals | `VisibleChanged(b)`, `TabsChanged()` | — |
 
@@ -211,6 +233,8 @@ that still exists, and only focuses that tab. This route never runs a command.
 | Shell fails to start | The pane shows the error and the command tried; any key closes it |
 | `Run` with an invalid command | D-Bus error `org.kyko.Error.InvalidCommand`; no tab opens |
 | A second `kyko` daemon starts | It finds the bus name taken, calls `Show` on the owner and exits 0 |
+| kyko crashes | systemd restarts it hidden with one empty tab; the shells it held are gone (§2.7) |
+| `kyko quit` while programs are running | Exit 3 and a list of the busy tabs; nothing closes |
 | CLI with no daemon and no activation | Exit 1: "kyko is not running" |
 | The focused monitor is unplugged while shown | kyko moves to the monitor that now has focus |
 
@@ -222,8 +246,9 @@ that still exists, and only focuses that tab. This route never runs a command.
 - **Unit (`kyko-term`):** a real PTY running `printf` and `sh` scripts, asserting on grid
   snapshots: colours, wide characters, wrapping, resize, scrollback limits, alternate screen.
 - **Integration:** the D-Bus interface against a private `dbus-daemon`, with the window replaced
-  by a fake: `Toggle`, `Run`, `ListTabs`, `FocusTab`, the provider's `Search` and `Activate`, and
-  the single-instance rule.
+  by a fake: `Toggle`, `Run`, `ListTabs`, `FocusTab`, the provider's `Search` and `Activate`, the
+  single-instance rule, `Quit` refused while a program runs and allowed with `force`, and the
+  last tab closing without the process exiting.
 - **Live checklist** (`docs/notes/`): slide in both shapes and tab positions, focus-loss hiding,
   theme switch with panes open, input method, a 100,000-line `cat` staying responsive, `vim`,
   `htop`, `tmux`, the Spotlight action, multi-monitor.
