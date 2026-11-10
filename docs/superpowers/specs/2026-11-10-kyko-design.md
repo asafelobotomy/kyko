@@ -270,7 +270,10 @@ already used by another kyko action. The same settings are properties on `org.ky
   after `kykod.service`, and stopping or restarting `kyko.service` leaves `kykod.service` alone.
 - **Limit: `kykod` itself.** If `kykod` crashes, or at logout, the shells end; panes then show
   "Session ended" and a restarted `kykod` starts empty. That is why `kykod` is kept minimal.
-- **Session end:** on `SIGTERM` `kykod` sends `SIGHUP` to every shell, waits up to 2 s, then exits.
+- **Session end:** on `SIGTERM`, or `SIGINT` (handled the same way), `kykod` sends `SIGHUP` to
+  every shell, waits up to 2 s, then exits. Panes the user had closed whose shells are still
+  running at the 2 s deadline are killed (`SIGKILL` to their process group), as closing them
+  promised; every other shell gets the `SIGHUP` and the wait only.
 
 ### 2.8 The holder and its socket
 
@@ -279,26 +282,40 @@ already used by another kyko action. The same settings are properties on `org.ky
   read pane output and type into shells, so the socket is as sensitive as the terminal itself.
 - **One window at a time.** A second attach is refused while one is live.
 - **Frames:** a `u32` length, a `u8` type, then the body. Window to holder: `Hello{version}`,
-  `Spawn{pane, shell, cwd, env, cols, rows}`, `Input{pane, bytes}`, `Resize{pane, cols, rows}`,
-  `Close{pane}`, `Attach{pane}`, `SaveLayout{blob}`, `EndSessions{force}`. Holder to window:
-  `Hello{version, panes, layout}`, `Output{pane, bytes}`, `Info{pane, program, cwd}`,
-  `Exited{pane, status}`, `Busy{panes}`.
+  `Spawn{pane, shell, args, cwd, env, cols, rows, ring_bytes}`, `Input{pane, bytes}`,
+  `Resize{pane, cols, rows}`, `Close{pane}`, `Attach{pane}`, `SaveLayout{blob}`,
+  `EndSessions{force}`. Holder to window: `Hello{version, panes, layout}`, `Output{pane, bytes}`,
+  `Replayed{pane, truncated}`, `Info{pane, program, cwd}`, `Exited{pane, status}`,
+  `SpawnFailed{pane, message}`, `Busy{panes}`. `Attach` is answered with the pane's ring as
+  `Output`, then `Replayed`, then `Exited` if the pane's shell has already ended.
 - **Version:** `Hello` carries one protocol number. On a mismatch (the window was upgraded and
   `kykod` is still the old one) the window does not attach; it shows a notice that sessions from
   before the update keep running in the old holder and names `kyko end-sessions` as the way to
   move over.
 - **Output ring:** `kykod` always reads every PTY, so a program never blocks because the window
   is away. It keeps the last 2 MiB of each pane's output (setting, 256 KiB–16 MiB).
-- **Replay on attach:** the window resets the pane's emulator, feeds it the ring from the first
-  line break, then asks `kykod` to resize the pane to its current size, which makes full-screen
-  programs such as `vim` and `htop` redraw themselves. Output older than the ring is lost, and a
-  shell prompt's colours can be wrong until its next line; this is the accepted cost of keeping
-  emulation out of the holder.
+- **Replay on attach:** the window resets the pane's emulator and feeds it the ring, from the
+  first line break only when `Replayed.truncated` says the ring has wrapped (it then starts
+  mid-stream). It then sends `Resize` with the pane's current size. The kernel signals a program
+  only when its size changes, so `kykod` answers the first same-size `Resize` after an `Attach`
+  by sending `SIGWINCH` to the terminal's foreground process group itself, which makes
+  full-screen programs such as `vim`, `less` and `top` redraw themselves; a later same-size
+  `Resize` sends nothing, so a window that sends its size on every show does not make programs
+  repaint. Limits, measured: a shell at its prompt redraws nothing; a setuid foreground program
+  (`sudo vim`) cannot be signalled; programs behind `ssh` or `tmux` do not redraw, because an
+  unchanged size is not forwarded. Output older than the ring is lost, and a shell prompt's
+  colours can be wrong until its next line; this is the accepted cost of keeping emulation out of
+  the holder.
+- **Input:** `kykod` queues each pane's input for its program, at most 4 MiB per pane. Input
+  beyond that is dropped, and so is all input after it until the queue has emptied, so a paste
+  too large is cut short, never typed with a piece missing.
 - **Layout:** the window sends its tab and split tree, names and focus as an opaque blob whenever
   it changes; `kykod` stores the latest and returns it in `Hello`. Panes in the blob that no
   longer exist are dropped; panes `kykod` has that the blob lacks get a tab each.
 - **Foreground program and folder:** `kykod` reads them from the PTY's foreground process group
-  and `/proc`, and sends `Info` when they change. Tab names and the busy check use these.
+  and `/proc`, and sends `Info` when they change. It checks once after `Spawn` and after
+  `Attach`, then whenever a pane's output has been quiet for 100 ms; never on a timer. Tab names
+  and the busy check use these.
 
 ### 2.9 The hotkey
 
@@ -540,13 +557,20 @@ Each is checked in the milestone named, before work is built on it.
    1, on one integrated GPU, on OpenGL only, with 96 distinct glyphs.
 5. **Feeding the emulator from `kykod`** (milestone 1): the spike used `alacritty_terminal`'s own
    event loop, which owns the PTY. With `kykod` owning it, the window feeds bytes to the emulator
-   itself; that path is unexercised.
+   itself; that path is unexercised. **Closed by slice 1b:** the end-to-end tests drive the
+   emulator through `kykod` (`docs/notes/2026-11-10-m1b-checks.md`).
 6. **The holder hop** (milestone 1): every output byte crosses a socket before it is drawn. Target:
    `seq 1 2000000` (about 14 MB of output) through `kykod` finishes within 15% of the same run
-   with the PTY read directly, each taken as the median of five runs.
+   with the PTY read directly, each taken as the median of five runs. **Closed by slice 1b:**
+   1.10 to 1.13 times the direct run (`docs/notes/2026-11-10-m1b-checks.md`).
 7. **Changing the hotkey on Plasma, and app identity** (milestone 3): the `kde` backend, the
    portal's `ConfigureShortcuts`, and which unit name or registration makes the portal see
    `org.kyko.Kyko`.
+8. **Terminal modes after the ring has wrapped** (milestone 1, slice 1c): a reattach then loses
+   not only old output but the terminal modes set before the cut: the alternate screen, mouse
+   reporting, application cursor keys, the kitty keyboard protocol. A long-running `htop` or
+   `vim` outlives a 2 MiB ring. To be designed in slice 1c, for example by `kykod` tracking those
+   mode switches and putting them before a truncated replay.
 
 If the renderer's unbuilt parts cannot be made to work on Hyprland or at fractional scales, the
 fallback remains `alacritty_terminal` with `wgpu` in a plain layer surface, with QML out of the
