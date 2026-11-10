@@ -1,6 +1,7 @@
 # kyko: design
 
-Date: 2026-11-10 · Status: awaiting spec review
+Date: 2026-11-10 · Status: revised after the milestone 0 spikes, awaiting spec review
+Spike results: `docs/notes/2026-11-10-m0-spike-result.md` and `2026-11-10-renderer-spike-result.md`.
 Related: uQ `docs/superpowers/specs/2026-11-08-uq-desktop-design.md` (§2.4 extension points) and
 `2026-11-08-uq-phase2-shell-design.md` (§2.3 launcher providers and the `run` provider).
 
@@ -32,6 +33,8 @@ from uQ's Spotlight search.
 - **Its own hotkey**, changeable in Preferences. Whatever window is open or focused, the hotkey
   summons kyko above every app, in the foreground (§2.9).
 - **Secure, efficient and modern** (§2.11).
+- **Renderer:** a glyph atlas on Qt Quick's scene graph (§2.4), chosen after the renderer spike
+  measured it against a painted item and Qt's text node.
 
 **Assumptions** (not yet confirmed by the user)
 
@@ -84,7 +87,7 @@ kyko (Cargo workspace, edition 2024, stable toolchain)
   crates/kyko-proto  the kykod wire protocol: frame types, encode and decode, version
   crates/kyko-term   terminal emulation: feeds pane output to alacritty_terminal, exposes a grid snapshot
   apps/kykod         the session holder: PTYs, child processes, output rings, the socket
-  apps/kyko          cxx-qt + QML: window, tab bar, panes, D-Bus service, CLI
+  apps/kyko          cxx-qt + QML: window, tab bar, panes, D-Bus service, CLI; the grid renderer in C++
   packaging/         PKGBUILD, two systemd user units, D-Bus service file, .provider file, settings page
 ```
 
@@ -104,7 +107,7 @@ window. Versions checked on 2026-11-10: `alacritty_terminal` 0.26.0 (crates.io),
 | `kyko-term` | One `Term` per pane: feeds output bytes to `alacritty_terminal`, hands out damage-tracked grid snapshots, turns key and mouse input into bytes. It never touches a PTY | alacritty_terminal |
 | `apps/kykod` | Spawns shells on PTYs, forwards their output, keeps a ring of recent output per pane, reports each pane's foreground program and folder, stores the window's layout blob | kyko-proto, rustix |
 | `apps/kyko` link | The client side of the socket: attach, replay, reconnect | kyko-proto |
-| `apps/kyko` grid item | A custom `QQuickItem` that draws one pane's grid snapshot and forwards input | kyko-term, Qt |
+| `apps/kyko` grid item | A custom `QQuickItem` in C++ that draws one pane's grid snapshot with scene-graph nodes and a glyph atlas (§2.4), and forwards input. C++ because cxx-qt does not wrap the scene-graph classes; `build.rs` runs moc and Qt's shader tool for it | kyko-term, Qt Quick |
 | `apps/kyko` window | The layer-shell surface, slide animation, tab bar and split layout in QML | layer-shell-qt, Qt Quick |
 | `apps/kyko` service | `org.kyko.Terminal1` and `org.uq.Launcher1.Provider` on the session bus | zbus |
 | `apps/kyko` hotkey | One trait, four backends (§2.9); picks, registers, re-registers, reports the bound key | zbus, ashpd or raw portal calls |
@@ -118,8 +121,11 @@ Everything except `apps/kyko` has no Qt dependency and is tested with plain `car
 - A layer-shell surface on the `overlay` layer, so it is above every app including fullscreen
   ones, anchored to the top edge of the focused monitor, namespace `kyko`.
 - Showing it takes the keyboard: interactivity is `exclusive` until the surface has focus, then
-  `on-demand`, so a pinned kyko can lose focus to another window and stay open. Whether every
-  compositor grants focus this way is checked in the spike (§6).
+  `on-demand`, so a pinned kyko can lose focus to another window and stay open. The spike found
+  that on-demand alone does not focus the surface when it is first mapped, and did not get as far
+  as testing this scheme with real key presses; it is an open risk (§6).
+- kyko is never shown while a desktop-portal dialog may be open: the overlay layer would cover it.
+  Hotkey registration (§2.9) therefore happens while kyko is hidden.
 - `window.above_fullscreen = false` uses the `top` layer instead.
 - **Island:** 88% of monitor width, centred, offset below uQ's bar by `ui.gap_out`, corners
   `ui.radius`, border `ui.border_width` in `colors.accent`. The bar stays visible.
@@ -160,8 +166,24 @@ Default keys (all settable; shown with the kyko window focused):
 ### 2.4 Terminal
 
 - The shell is `$SHELL`, falling back to `/bin/sh`; `TERM=xterm-256color`, `COLORTERM=truecolor`.
-- Rendering: a monospace grid from `fonts.mono` at `fonts.size`, with Qt's font fallback for
-  missing glyphs, wide characters, bold, italic, underline, strikethrough, 256 and true colour.
+- **Renderer:** a glyph atlas on Qt Quick's scene graph, chosen after the spikes measured three
+  options. Each glyph, per character and style, is rasterised once into a texture; every
+  non-blank cell is a textured quad coloured per vertex, and backgrounds are coloured quads. It
+  uses only Qt's public scene-graph classes (`QSGGeometryNode`, `QSGMaterial`,
+  `QSGMaterialShader`, `QSGTexture`), never Qt's private GPU layer, so a packaged build keeps
+  working across Qt updates.
+- A monospace grid from `fonts.mono` at `fonts.size`. Every cell is placed by its grid position,
+  never by text advance, so substituted glyphs cannot push later columns off the grid. Wide
+  characters span two cells. No ligatures.
+- Bold, italic, underline and strikethrough, 256 and true colour. Glyphs missing from the font
+  come from Qt's font fallback when they are rasterised.
+- **Colour emoji** use a second, colour atlas; the first holds coverage only and is tinted.
+- **Rasterising must not stall a frame:** at most 2 ms of new glyphs are rasterised per frame;
+  cells still waiting are drawn blank for that frame and filled on the next.
+- **The atlas grows** by adding pages when one fills; a page unused for 10 minutes is dropped.
+- **Scale:** glyphs are rasterised at device pixels and quads snapped to them, so text is crisp at
+  fractional scales; the atlas is rebuilt when the scale changes.
+- Only rows whose contents changed are rebuilt.
 - The 16 ANSI colours, foreground, background, cursor and selection come from the theme.
 - Mouse: selection, word and line selection, mouse reporting to programs, wheel scrollback,
   Ctrl+click on a URL opens it with `xdg-open`.
@@ -170,8 +192,8 @@ Default keys (all settable; shown with the kyko window focused):
 - Modern protocol support, as `alacritty_terminal` 0.26 provides it: the kitty keyboard protocol,
   OSC 8 hyperlinks, synchronised output, styled and coloured underlines, focus reporting. Each is
   confirmed by a test in milestone 1 or removed from this list.
-- Rendering follows the monitor's scale, including fractional scales, and re-rasterises when the
-  window moves between monitors.
+- The window follows the monitor's scale, including fractional scales, when it moves between
+  monitors.
 
 ### 2.5 Theme
 
@@ -288,7 +310,8 @@ first backend that works:
 | Backend | Used when | How |
 |---|---|---|
 | `uq` | `org.uq.Desktop1` is on the bus and offers app hotkeys | kyko sets `hotkeys.kyko` through `uqd`, which writes the bind into its generated Hyprland config (a uQ change, §3.3) |
-| `portal` | the desktop portal offers `org.freedesktop.portal.GlobalShortcuts` | kyko binds `toggle` with `hotkey.toggle` as the preferred trigger and listens for `Activated` |
+| `kde` | Plasma: `org.kde.kglobalaccel` is on the bus | kyko registers `toggle` with KGlobalAccel over D-Bus and sets or changes its key there |
+| `portal` | the desktop portal offers `org.freedesktop.portal.GlobalShortcuts` and no backend above applies | kyko binds `toggle` with `hotkey.toggle` as the preferred trigger and listens for `Activated` |
 | `hyprland` | Hyprland without uQ | a runtime bind through Hyprland's control socket, re-applied after each config reload |
 | `manual` | none of the above | Preferences shows `kyko toggle` and a ready-to-paste bind line for the compositor in use |
 
@@ -299,15 +322,26 @@ first backend that works:
   restored and Preferences says why.
 - The hotkey always calls the same `Toggle` as the command line, so `kyko toggle` bound by hand
   works everywhere regardless of backend.
-- Which compositors really deliver each backend (KWin and Hyprland first) is a spike question
-  (§6); the table above is the design, not yet a verified fact.
+- **What the spike found on Plasma (portal 1.22, version 2 of the interface):**
+  - The portal binds and its activation reaches the app, and the preferred key is honoured the
+    first time.
+  - The portal identifies the app by its desktop entry and systemd unit, not its binary. With no
+    desktop entry it refuses ("An app id is required"); started from another app's scope, the
+    shortcut is filed under that app. §3.3 covers what kyko ships because of this.
+  - Binding again with a different preferred key does not change the key. That is why Plasma has
+    its own `kde` backend. The `kde` backend itself, and the portal's `ConfigureShortcuts` call,
+    are untried; milestone 3 starts by trying both.
+- On desktops where only `portal` is available, Preferences may be unable to change the key
+  itself; it then offers a button that opens the desktop's own shortcut settings through
+  `ConfigureShortcuts`.
+- Nothing about hotkeys is verified on Hyprland (§6).
 
 ### 2.10 Environments
 
 | Environment | Window | Hotkey | Theme | Extras |
 |---|---|---|---|---|
 | uQ | layer shell | `uq` | follows uQ live | Spotlight, Settings link |
-| Plasma (KWin) | layer shell | `portal` | built-in or custom | — |
+| Plasma (KWin) | layer shell | `kde`, else `portal` | built-in or custom | — |
 | Hyprland without uQ | layer shell | `portal` or `hyprland` | built-in or custom | — |
 | Sway, niri, river, other layer-shell compositors | layer shell | `portal` if offered, else `manual` | built-in or custom | — |
 | GNOME (no layer shell) | an undecorated window, placed by the compositor; best effort | `portal` | built-in or custom | — |
@@ -336,9 +370,16 @@ Qt 6, `layer-shell-qt` and a D-Bus session. uQ features switch on when uQ is det
 **Efficient** (targets, confirmed or revised with measurements in milestone 1)
 
 - Hidden with idle shells: no repaints and no timers; both processes sleep in `poll`.
-- Shown: only changed rows are redrawn; a full 200×50 repaint takes under 4 ms.
-- Summon in under 100 ms. Resident memory under 80 MB for the window with three tabs, and
-  under 10 MB plus the output rings for `kykod`.
+- Shown: only changed rows are rebuilt. A completely full screen (every cell printable, colour
+  changing every few cells) changes within one frame at 60 Hz, measured from Qt's frame signals
+  on integrated graphics. The spike measured about 1.3 ms of CPU per such frame at 211×51.
+- Summon in under 100 ms.
+- Memory is budgeted as the process's own (anonymous) memory, since resident memory is mostly
+  shared Qt and graphics libraries (the spike measured 172 to 177 MB resident with one pane, of
+  which 59 to 64 MB was its own). Targets: the window under 100 MB of its own memory with three
+  tabs and empty scrollback; `kykod` under 10 MB plus the output rings.
+- Scrollback has its own budget: a full 10,000-line pane is estimated at tens of megabytes (not
+  measured). Milestone 1 measures it and, if it exceeds 40 MB a pane, lowers the default.
 
 **Modern**
 
@@ -390,8 +431,14 @@ that still exists, and only focuses that tab. This route never runs a command.
 - **Settings page:** `/usr/share/uq/settings/pages/kyko/` with a `page.toml`
   (`category = "apps"`, `dbus_name = "org.kyko.Terminal1"`). It shows the hotkey, shape and theme
   source, and a button that opens kyko's own Preferences for everything else.
+- **App identity:** kyko's app id is `org.kyko.Kyko`. The package ships `org.kyko.Kyko.desktop`,
+  and the window process runs in a unit the desktop portal maps to that id. The one arrangement
+  shown to work is a unit named `app-<id>-<n>.scope`; a unit simply named `kyko.service` probably
+  does not map. Milestone 3 settles this by trying, in order: naming the service unit
+  `app-org.kyko.Kyko.service`, and declaring the id through the portal's host Registry. A test
+  asserts that a bind lands under `org.kyko.Kyko`.
 - **Start-up:** two systemd user units bound to `graphical-session.target` (`kykod.service`, and
-  `kyko.service` which wants it), and a D-Bus service file so the first `Toggle` or `Run` starts
+  the window's unit, called `kyko.service` in this document, which wants it), and a D-Bus service file so the first `Toggle` or `Run` starts
   the window if it is not running.
 
 ## 4. Errors
@@ -400,6 +447,8 @@ that still exists, and only focuses that tab. This route never runs a command.
 |---|---|
 | No layer-shell support | The best-effort undecorated window of §2.10; logged once and noted in Preferences |
 | No Wayland display | Exit 1 with a one-line message |
+| A screen needs more new glyphs than fit in one frame's budget | The rest appear over the next frames; nothing blocks |
+| The GPU or driver cannot run the scene graph | Qt's software backend is used; logged once and noted in Preferences |
 | No hotkey backend works | `manual`: Preferences shows the bind line; `kyko toggle` still works |
 | The chosen hotkey is taken or refused | The previous key stays bound; Preferences shows the backend's reason |
 | The portal or `uqd` restarts | kyko re-registers the hotkey when the service returns |
@@ -438,8 +487,14 @@ that still exists, and only focuses that tab. This route never runs a command.
 - **Live checklist** (`docs/notes/`): slide in both shapes and tab positions, focus-loss hiding,
   theme switch with panes open, input method, a 100,000-line `cat` staying responsive, `vim`,
   `htop`, `tmux`, the Spotlight action, multi-monitor.
+- **Renderer:** the grid item rendered offscreen (Qt's software backend, so it runs in CI) and
+  compared with reference images: styles, colours, wide characters, a colour emoji, a glyph
+  missing from the font, and the same at scale 1.5. A frame-time bench (`kyko bench`, not in CI)
+  fills the screen as the spike's `gen.py` did and reports sync, render and frame interval from
+  Qt's frame signals; it is run on real hardware before each release.
 - **Unit (hotkey):** backend selection from a faked environment; rebind, refusal and rollback
-  against a fake backend; the `portal` and `uq` backends against fake services on a private bus.
+  against a fake backend; the `kde`, `portal` and `uq` backends against fake services on a private bus. On Plasma, a live
+  check that a bind lands under `org.kyko.Kyko` and that changing the key in Preferences changes it.
 - **uQ VM session:** uQ's harness (`~/Projects/uq/tests/vm/`) boots an Arch guest running uQ on
   Hyprland and already builds a sibling app, noti-fi, from its checkout. kyko joins it the same
   way: the harness builds kyko's package from `KYKO_SRC` (default `~/Projects/kyko`), installs it
@@ -454,39 +509,57 @@ The development machine runs Plasma, not Hyprland. KWin implements layer-shell, 
 and the `portal` hotkey are exercised there day to day; everything uQ- and Hyprland-specific
 runs in the VM session.
 
-## 6. Risks and the first milestone
+## 6. Risks
 
-Two things are unproven and everything else rests on them:
+### 6.1 What milestone 0 settled
 
-1. **Drawing the grid in a `QQuickItem` from Rust** fast enough, with correct font fallback and
-   input-method behaviour. Target: a full 200×50 repaint in under 4 ms, and a 100,000-line `cat`
-   that never blocks input.
-2. **Layer-shell from a `cxx-qt` app** through `layer-shell-qt`: anchoring, on-demand keyboard
-   focus, and unmapping without losing state, on both KWin and Hyprland. Not yet verified.
+Two throwaway spikes ran on Plasma (KWin); their code is on the `spike/m0` branch and is not
+carried over.
 
-3. **The hotkey and foreground focus** (§2.2, §2.9): that the `portal` backend binds and fires on
-   KWin and on Hyprland, that a surface on the `overlay` layer appears over a fullscreen window,
-   and that it receives the keyboard when summoned by the hotkey. Not yet verified.
+| Question | Answer |
+|---|---|
+| Layer shell from a `cxx-qt` app | Works from QML alone (`org.kde.layershell`): toggles, keeps state while hidden, and on the overlay layer shows above a fullscreen window |
+| A terminal grid in Qt Quick, fast enough | Yes with a glyph atlas on scene-graph nodes: about 1.3 ms of CPU per full-screen change, 60 frames per second held. A `QQuickPaintedItem` (17 to 26 ms) and `QSGTextNode` rows (10 to 60 ms) are ruled out |
+| `alacritty_terminal` as the engine | Works; a 100,000-line flood took 0.12 s and Ctrl+C written to the PTY during `yes` landed in 10 to 67 ms |
+| A global hotkey through the portal | Binds and fires on Plasma, with the conditions in §2.9 and §3.3 |
 
-A fourth, smaller risk is the extra hop through `kykod`: every output byte crosses a socket before
-it is drawn. Milestone 1 measures it; the target is a 100,000-line `cat` finishing within 15% of
-the spike's direct-PTY time. The spike itself reads the PTY directly and has no holder.
+### 6.2 Still open
 
-**Milestone 0 is a spike** that answers the first three (the hotkey and focus part on KWin
-directly and on Hyprland in the uQ VM): one themed pane in a layer-shell window, toggled
-from the command line, measured against the targets above. Its code is throwaway. If the grid
-item misses the targets, the fallback is to render with `alacritty_terminal` and `wgpu` in a
-plain Wayland layer surface and keep QML out of the terminal path; the spec is revised before
-any further milestone starts.
+Each is checked in the milestone named, before work is built on it.
+
+1. **Everything on Hyprland** (milestone 1, in the uQ VM): layer shell from QML, the overlay layer
+   over fullscreen, keyboard focus, paint speed on its renderer, and whether its portal binds a
+   global shortcut. The VM run was skipped during the spikes because the machine was overloaded.
+2. **Keyboard focus when summoned** (milestone 1): §2.2's "exclusive, then on-demand" scheme, focus
+   returning to the previous window on hide, and `activateOnShow`. Needs real key presses.
+3. **Real keyboard input and input methods** (milestone 1): every input in the spikes was injected
+   into the PTY. The key-to-bytes mapping, and the window staying responsive to keys during a
+   flood, are unexercised.
+4. **The renderer's unbuilt parts** (milestone 1): the colour atlas for emoji, rasterising without
+   stalling a frame, atlas growth, and crisp output at fractional scales. The spike ran at scale
+   1, on one integrated GPU, on OpenGL only, with 96 distinct glyphs.
+5. **Feeding the emulator from `kykod`** (milestone 1): the spike used `alacritty_terminal`'s own
+   event loop, which owns the PTY. With `kykod` owning it, the window feeds bytes to the emulator
+   itself; that path is unexercised.
+6. **The holder hop** (milestone 1): every output byte crosses a socket before it is drawn. Target:
+   `seq 1 2000000` (about 14 MB of output) through `kykod` finishes within 15% of the same run
+   with the PTY read directly, each taken as the median of five runs.
+7. **Changing the hotkey on Plasma, and app identity** (milestone 3): the `kde` backend, the
+   portal's `ConfigureShortcuts`, and which unit name or registration makes the portal see
+   `org.kyko.Kyko`.
+
+If the renderer's unbuilt parts cannot be made to work on Hyprland or at fractional scales, the
+fallback remains `alacritty_terminal` with `wgpu` in a plain layer surface, with QML out of the
+terminal path; the spec is revised before going further.
 
 ## 7. Milestones
 
 | # | Delivers |
 |---|---|
-| 0 | Spike (§6); a written result and a go or revise decision |
-| 1 | The real workspace with **packaging, CI and release-on-bump first** (§8), then `kyko-proto`, `kykod`, `kyko-core`, `kyko-term`: one pane through the holder, reattach after a window restart, both shapes, `kyko toggle`, theme sources, config file. Ends with `v0.1.0` published by CI |
+| 0 | Done: two spikes (§6.1), written up in `docs/notes/` |
+| 1 | The real workspace with **packaging, CI and release-on-bump first** (§8), then `kyko-proto`, `kykod`, `kyko-core`, `kyko-term` and the glyph-atlas renderer: one pane through the holder, real keyboard input, the open risks 1 to 6 of §6.2 checked, reattach after a window restart, both shapes, `kyko toggle`, theme sources, config file. Ends with `v0.1.0` published by CI |
 | 2 | Tabs, splits, keys, scrollback search, copy and paste, close confirmations |
-| 3 | The hotkey backends `portal`, `hyprland` and `manual`; the Preferences window |
+| 3 | App identity; the hotkey backends `kde`, `portal`, `hyprland` and `manual` (open risk 7 of §6.2 first); the Preferences window |
 | 4 | uQ integration: `org.kyko.Terminal1` `Run`, the tab provider and the settings page here; **Run in kyko**, app hotkeys and the VM checks in the uQ repo; the `uq` hotkey backend |
 | 5 | Hardening against §2.11's targets, the live checklist, README, `v1.0.0` |
 
@@ -515,10 +588,11 @@ Modelled on uQ's (`~/Projects/uq/docs/releasing.md`), with the tagging automated
   repository secret exists, pushes them to the AUR; without the secret it leaves them as an
   artifact for a manual push.
 - **Package contents:** `/usr/bin/kyko`, `/usr/bin/kykod`, the two systemd user units, the D-Bus
-  service file, a `.desktop` entry for Preferences, the icon, licences, and the uQ files that
+  service file, `org.kyko.Kyko.desktop` (the app's identity, §3.3, and the launcher entry for Preferences), the icon, licences, and the uQ files that
   are inert elsewhere: `/usr/share/uq/launcher/kyko.provider`,
   `/usr/share/uq/settings/pages/kyko/`, `/usr/share/uq/hotkeys/kyko.toml`. Dependencies:
-  `qt6-base`, `qt6-declarative`, `qt6-wayland`, `layer-shell-qt`, `dbus`; optional:
+  `qt6-base`, `qt6-declarative`, `qt6-wayland`, `layer-shell-qt`, `dbus`; build only:
+  `qt6-shadertools` (bakes the renderer's shader); optional:
   `xdg-desktop-portal` (hotkey and opening links). uQ is not a dependency.
 - **Needs from the user:** a GitHub repository for kyko (`asafelobotomy/kyko`, to match uQ) before
   milestone 1's CI can run, and an AUR SSH key as a secret if AUR pushes are to be automatic.
