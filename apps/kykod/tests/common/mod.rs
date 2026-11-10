@@ -40,39 +40,85 @@ impl Holder {
 
     /// Starts `kykod` on `socket`, which lies inside `dir`; returns once it listens.
     pub fn start_at(dir: tempfile::TempDir, socket: PathBuf) -> Holder {
-        let mut child = bin()
-            .arg("--socket")
-            .arg(&socket)
+        let mut cmd = bin();
+        cmd.arg("--socket").arg(&socket);
+        Holder::launch(dir, socket, cmd, None)
+    }
+
+    /// Starts `cmd`, which serves `socket`. With `stderr` given, kykod's log
+    /// goes there and readiness is found by connecting; otherwise the log is
+    /// kept and readiness is its "listening on" line.
+    pub fn launch(
+        dir: tempfile::TempDir,
+        socket: PathBuf,
+        mut cmd: Command,
+        stderr: Option<Stdio>,
+    ) -> Holder {
+        let piped = stderr.is_none();
+        let mut child = cmd
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(stderr.unwrap_or_else(Stdio::piped))
             .spawn()
             .unwrap();
         let log = Arc::new(Mutex::new(String::new()));
         let (tx, rx) = channel();
-        let stderr = child.stderr.take().unwrap();
-        let sink = log.clone();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                let Ok(line) = line else { break };
-                if line.contains("listening on") {
-                    let _ = tx.send(());
+        if piped {
+            let stderr = child.stderr.take().unwrap();
+            let sink = log.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines() {
+                    let Ok(line) = line else { break };
+                    if line.contains("listening on") {
+                        let _ = tx.send(());
+                    }
+                    let mut log = sink.lock().unwrap();
+                    log.push_str(&line);
+                    log.push('\n');
                 }
-                let mut log = sink.lock().unwrap();
-                log.push_str(&line);
-                log.push('\n');
-            }
-        });
+            });
+        }
         let holder = Holder {
             child,
             socket,
             log,
             _dir: dir,
         };
-        match rx.recv_timeout(LIMIT) {
-            Ok(()) => holder,
-            Err(_) => panic!("kykod did not start listening; log:\n{}", holder.log()),
-        }
+        let ready = if piped {
+            rx.recv_timeout(LIMIT).is_ok()
+        } else {
+            let end = Instant::now() + LIMIT;
+            loop {
+                if UnixStream::connect(&holder.socket).is_ok() {
+                    break true;
+                }
+                if Instant::now() >= end {
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        assert!(
+            ready,
+            "kykod did not start listening; log:\n{}",
+            holder.log()
+        );
+        holder
+    }
+
+    /// True while `kykod` itself is running.
+    pub fn alive(&mut self) -> bool {
+        self.child.try_wait().unwrap().is_none()
+    }
+
+    /// The number of threads `kykod` has now.
+    pub fn threads(&self) -> usize {
+        let status = std::fs::read_to_string(format!("/proc/{}/status", self.pid())).unwrap();
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix("Threads:"))
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap()
     }
 
     pub fn pid(&self) -> i32 {
@@ -247,8 +293,15 @@ pub struct Client {
 
 impl Client {
     pub fn connect(h: &Holder) -> Client {
+        Client::connect_path(h.socket())
+    }
+
+    pub fn connect_path(path: &Path) -> Client {
+        let stream = UnixStream::connect(path).unwrap();
+        // A kykod that stops reading fails the test instead of hanging it.
+        stream.set_write_timeout(Some(LIMIT)).unwrap();
         Client {
-            stream: UnixStream::connect(h.socket()).unwrap(),
+            stream,
             decoder: Decoder::new(),
             eof: false,
         }

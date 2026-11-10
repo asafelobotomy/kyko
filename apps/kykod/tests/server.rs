@@ -372,3 +372,194 @@ fn existing_folder_mode_is_left_alone() {
     let sock = std::fs::metadata(h.socket()).unwrap().permissions().mode();
     assert_eq!(sock & 0o777, 0o600);
 }
+
+#[test]
+fn close_kills_a_shell_that_ignores_hangup() {
+    let h = Holder::start();
+    let mut c = Client::connect(&h);
+    c.hello();
+    let before = h.threads();
+    c.send(ToHolder::Spawn(spec(
+        1,
+        "/bin/sh",
+        &["-c", "trap '' HUP; printf armed; exec sleep 300.25"],
+    )));
+    c.output_until(1, b"armed", LIMIT);
+    let pid = h.child_running("sleep 300.25");
+    c.send(ToHolder::Close { pane: 1 });
+    assert!(
+        gone_within(pid, Duration::from_secs(4)),
+        "the shell outlived Close"
+    );
+    let end = std::time::Instant::now() + Duration::from_secs(4);
+    while h.threads() != before && std::time::Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(h.threads(), before, "a pane thread outlived Close");
+}
+
+#[test]
+fn eight_kykods_at_once_leave_exactly_one_serving() {
+    struct Kill(Vec<std::process::Child>);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            for c in &mut self.0 {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hold.sock");
+    std::fs::write(&path, b"stale").unwrap();
+    let mut all = Kill(
+        (0..8)
+            .map(|_| {
+                bin()
+                    .arg("--socket")
+                    .arg(&path)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect(),
+    );
+    let end = std::time::Instant::now() + LIMIT;
+    let mut codes = vec![None; 8];
+    while std::time::Instant::now() < end && codes.iter().filter(|c| c.is_some()).count() < 7 {
+        for (i, c) in all.0.iter_mut().enumerate() {
+            if codes[i].is_none() {
+                codes[i] = c.try_wait().unwrap().map(|s| s.code());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Give a wrongly surviving second server a moment to show itself.
+    std::thread::sleep(Duration::from_millis(300));
+    for (i, c) in all.0.iter_mut().enumerate() {
+        if codes[i].is_none() {
+            codes[i] = c.try_wait().unwrap().map(|s| s.code());
+        }
+    }
+    let running = codes.iter().filter(|c| c.is_none()).count();
+    let refused = codes.iter().filter(|c| **c == Some(Some(1))).count();
+    assert_eq!((running, refused), (1, 7), "{codes:?}");
+    let mut c = Client::connect_path(&path);
+    assert_eq!(c.hello().0, VERSION);
+}
+
+#[test]
+fn input_to_a_program_that_never_reads_does_not_block_close() {
+    let h = Holder::start();
+    let mut c = Client::connect(&h);
+    c.hello();
+    c.send(ToHolder::Spawn(spec(1, "sleep", &["300.5"])));
+    let pid = h.child_running("sleep 300.5");
+    let line = b"line\n";
+    for _ in 0..10 {
+        c.send(ToHolder::Input {
+            pane: 1,
+            bytes: line.repeat(10_000),
+        });
+    }
+    c.send(ToHolder::Close { pane: 1 });
+    assert!(
+        gone_within(pid, Duration::from_secs(4)),
+        "Close was not handled"
+    );
+    drop(c);
+    let mut c = Client::connect(&h);
+    let (_, panes, _) = c.hello();
+    assert!(panes.is_empty(), "{panes:?}");
+}
+
+#[test]
+fn a_mebibyte_of_input_arrives_complete() {
+    let h = Holder::start();
+    let mut c = Client::connect(&h);
+    c.hello();
+    c.send(ToHolder::Spawn(spec(
+        1,
+        "/bin/sh",
+        &["-c", "stty -echo; printf go; wc -c; sleep 30"],
+    )));
+    c.output_until(1, b"go", LIMIT);
+    // Lines well under the terminal's 4095-byte line limit: 1024 lines of 1024 bytes.
+    let mut line = vec![b'a'; 1023];
+    line.push(b'\n');
+    let all = line.repeat(1024);
+    for chunk in all.chunks(64 * 1024) {
+        c.send(ToHolder::Input {
+            pane: 1,
+            bytes: chunk.to_vec(),
+        });
+    }
+    // End of file for wc, at the start of a line.
+    c.send(ToHolder::Input {
+        pane: 1,
+        bytes: vec![4],
+    });
+    c.output_until(1, b"1048576", Duration::from_secs(20));
+}
+
+#[test]
+fn input_beyond_the_queue_bound_is_dropped_and_logged_once() {
+    let h = Holder::start();
+    let mut c = Client::connect(&h);
+    c.hello();
+    c.send(ToHolder::Spawn(spec(1, "sleep", &["300"])));
+    h.child_running("sleep 300");
+    for _ in 0..6 {
+        c.send(ToHolder::Input {
+            pane: 1,
+            bytes: vec![b'x'; 1_000_000],
+        });
+    }
+    // Something after the overflow is still handled at once.
+    c.send(ToHolder::Spawn(spec(
+        2,
+        "/bin/sh",
+        &["-c", "printf after; sleep 30"],
+    )));
+    c.output_until(2, b"after", LIMIT);
+    let log = h.log();
+    assert_eq!(count(log.as_bytes(), b"input queue full"), 1, "{log}");
+}
+
+#[test]
+fn a_closed_stderr_does_not_stop_kykod() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("hold.sock");
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let mut cmd = bin();
+    cmd.arg("--socket").arg(&socket);
+    let mut h = Holder::launch(dir, socket, cmd, Some(Stdio::from(writer)));
+    let mut c = Client::connect(&h);
+    c.hello();
+    c.send(ToHolder::Spawn(spec(1, "/bin/sh", &["-c", "exit 2"])));
+    let f = c.wait_for(|f| matches!(f, ToWindow::Exited { .. }), LIMIT);
+    assert_eq!(f, Some(ToWindow::Exited { pane: 1, status: 2 }));
+    drop(c);
+    assert!(h.alive(), "kykod died writing its log");
+    let mut c = Client::connect(&h);
+    let (_, panes, _) = c.hello();
+    assert_eq!(panes.len(), 1);
+    assert!(h.alive());
+}
+
+#[test]
+fn default_socket_is_under_xdg_runtime_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("kyko").join("hold.sock");
+    let mut cmd = bin();
+    cmd.env("XDG_RUNTIME_DIR", dir.path());
+    let h = Holder::launch(dir, socket.clone(), cmd, None);
+    let mut c = Client::connect_path(&socket);
+    assert_eq!(c.hello().0, VERSION);
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(socket.parent().unwrap()), 0o700);
+    assert_eq!(mode(&socket), 0o600);
+    drop(h);
+}

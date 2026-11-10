@@ -19,18 +19,19 @@
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
-use std::fs::{self, DirBuilder, Permissions};
+use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use kyko_proto::{Decoder, Frame, PaneId, SpawnSpec, ToHolder, ToWindow, VERSION};
 use nix::errno::Errno;
+use nix::fcntl::{Flock, FlockArg};
 use nix::sys::stat::{Mode, umask};
 
 use crate::pane::Pane;
@@ -129,7 +130,8 @@ enum Flow {
 /// Serves `path` until the process is killed. Returns only on a setup error,
 /// as a message fit for the log.
 pub fn run(path: &Path) -> Result<Infallible, String> {
-    let listener = bind(path)?;
+    // The lock is held for as long as this process lives.
+    let (listener, _lock) = bind(path)?;
     log!("listening on {}", path.display());
     let server = Arc::new(Server {
         panes: Mutex::new(BTreeMap::new()),
@@ -155,9 +157,20 @@ pub fn run(path: &Path) -> Result<Infallible, String> {
     }
 }
 
-/// Makes the socket: its folder 0700 if it has to be created, a stale socket
-/// file replaced, the socket itself 0600. Refuses a path a live server answers on.
-fn bind(path: &Path) -> Result<UnixListener, String> {
+/// The lock file beside `socket`: `<socket path>.lock`.
+fn lock_path(socket: &Path) -> PathBuf {
+    let mut p = socket.as_os_str().to_owned();
+    p.push(".lock");
+    PathBuf::from(p)
+}
+
+/// Makes the socket: its folder 0700 if it has to be created, then an
+/// exclusive lock on `<socket path>.lock` (0600), then a stale socket file
+/// replaced, then the socket itself, 0600. Only the holder of the lock touches
+/// the socket file, so two kykods starting together cannot both decide the
+/// socket is stale and take it from each other. The caller keeps the returned
+/// lock for the life of the process.
+fn bind(path: &Path) -> Result<(UnixListener, Flock<File>), String> {
     let shown = path.display();
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
         && fs::symlink_metadata(dir).is_err()
@@ -168,6 +181,22 @@ fn bind(path: &Path) -> Result<UnixListener, String> {
             .and_then(|()| fs::set_permissions(dir, Permissions::from_mode(0o700)))
             .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
+    let lock_file = lock_path(path);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&lock_file)
+        .map_err(|e| format!("cannot open {}: {e}", lock_file.display()))?;
+    let lock = Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|(_, e)| {
+        if e == Errno::EWOULDBLOCK {
+            format!("another kykod is serving {shown}")
+        } else {
+            format!("cannot lock {}: {}", lock_file.display(), e.desc())
+        }
+    })?;
     match fs::symlink_metadata(path) {
         Ok(_) => match UnixStream::connect(path) {
             Ok(_) => return Err(format!("{shown} is already served by a running kykod")),
@@ -189,7 +218,7 @@ fn bind(path: &Path) -> Result<UnixListener, String> {
     let listener = bound.map_err(|e| format!("cannot listen on {shown}: {e}"))?;
     fs::set_permissions(path, Permissions::from_mode(0o600))
         .map_err(|e| format!("cannot set the mode of {shown}: {e}"))?;
-    Ok(listener)
+    Ok((listener, lock))
 }
 
 fn kind(frame: &ToHolder) -> &'static str {
@@ -313,7 +342,7 @@ impl Server {
             ToHolder::Spawn(spec) => self.spawn(window, spec),
             ToHolder::Input { pane, bytes } => {
                 if let Some(p) = self.pane(pane) {
-                    p.input(&bytes);
+                    p.input(bytes);
                 }
                 Flow::Go
             }

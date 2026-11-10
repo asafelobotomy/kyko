@@ -234,14 +234,32 @@ impl Pty {
         }
     }
 
+    /// Hangs the shell up and, if it has not ended within `grace`, kills its
+    /// process group. Blocks for up to `grace`; never signals a reaped shell.
+    pub fn end(&self, grace: Duration) {
+        self.hangup();
+        if !self.ends_within(grace) {
+            self.signal_group(Signal::SIGKILL);
+        }
+    }
+
     /// True once the shell has ended (reaped or not), waiting at most `limit`.
-    /// Uses a pidfd, so the wait sleeps in `poll` rather than ticking.
+    /// Uses a pidfd, so the wait sleeps in `poll` rather than ticking. The pidfd
+    /// is opened under the status lock while the shell is unreaped, so it
+    /// refers to the shell and not to a process that reused its pid.
     fn ends_within(&self, limit: Duration) -> bool {
-        let Some(pid) = rustix::process::Pid::from_raw(self.pid) else {
-            return false;
-        };
-        let Ok(fd) = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()) else {
-            return false;
+        let fd = {
+            let status = self.status.lock().unwrap_or_else(|p| p.into_inner());
+            if status.is_some() {
+                return true;
+            }
+            let Some(pid) = rustix::process::Pid::from_raw(self.pid) else {
+                return false;
+            };
+            match rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()) {
+                Ok(fd) => fd,
+                Err(_) => return false,
+            }
         };
         let Ok(timeout) = rustix::event::Timespec::try_from(limit) else {
             return false;
@@ -250,7 +268,14 @@ impl Pty {
             &fd,
             rustix::event::PollFlags::IN,
         )];
-        matches!(rustix::event::poll(&mut fds, Some(&timeout)), Ok(n) if n > 0)
+        loop {
+            match rustix::event::poll(&mut fds, Some(&timeout)) {
+                Ok(n) => return n > 0,
+                // A signal is rare here; waiting the full limit again is harmless.
+                Err(rustix::io::Errno::INTR) => {}
+                Err(_) => return false,
+            }
+        }
     }
 
     /// The exit status once the shell has ended (128 plus the signal if it was
