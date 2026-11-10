@@ -18,9 +18,12 @@
 //! - a pane's lock, which may be held while writing to the window;
 //! - a window's writer, taken last, held only for one frame's write.
 //!
-//! The stored layout has its own lock, never held with any other. A shell's
-//! status lock (inside [`crate::pty::Pty`]) is a leaf: it may be taken under
-//! the pane table, and nothing is taken under it.
+//! The stored layout has its own lock, never held with any other. The list of
+//! panes being closed has its own lock too: taken alone or under the pane
+//! table, and nothing is taken under it. Inside a shell's
+//! [`crate::pty::Pty`], the status lock comes before the child lock (status,
+//! then child); the two may be taken under the pane table, and nothing else is
+//! taken under them.
 //!
 //! Ending: `kykod` stops only through [`Server::end_sessions`], called by an
 //! accepted `EndSessions` (on the connection's thread) or by `SIGTERM` or
@@ -29,8 +32,9 @@
 //! panes there are, and marks the server as ending, so it runs at most once
 //! and no pane can be spawned after the list is taken. With the table released
 //! it removes the socket file, hangs every shell up at once, waits on their
-//! pidfds in one `poll` until all have ended or [`END_GRACE`] has passed, and
-//! exits the process with status 0. Exiting from there ends every other thread
+//! pidfds (and those of panes still being closed) in one `poll` until all have
+//! ended or [`END_GRACE`] has passed, kills the process group of any closed
+//! pane whose shell is still running, and exits the process with status 0. Exiting from there ends every other thread
 //! wherever it is blocked. The lock file is left in place: see [`end_sessions`].
 //!
 //! [`end_sessions`]: Server::end_sessions
@@ -170,6 +174,11 @@ struct Server {
     /// Set once the sessions are being ended. Read and set only under the
     /// pane table's lock, so it and the table's contents agree.
     ending: AtomicBool,
+    /// Panes taken out of the table by `Close` whose close thread has not yet
+    /// finished ending the shell. A pane moves from the table to here under
+    /// the table's lock, so ending the sessions sees every pane in one or the
+    /// other. Shared with the close threads, which remove their pane when done.
+    closing: Arc<Mutex<Vec<Arc<Pane>>>>,
 }
 
 /// Why [`Server::end_sessions`] returned instead of exiting.
@@ -209,6 +218,7 @@ pub fn run(path: &Path) -> Result<Infallible, String> {
         layout: Mutex::new(Vec::new()),
         path: path.to_path_buf(),
         ending: AtomicBool::new(false),
+        closing: Arc::new(Mutex::new(Vec::new())),
     });
     // Only now that the socket is ours: ending removes it.
     handle_signals(&server)?;
@@ -464,9 +474,18 @@ impl Server {
                 Flow::Go
             }
             ToHolder::Close { pane } => {
-                let removed = self.table().remove(&pane);
+                let removed = {
+                    let mut table = self.table();
+                    let removed = table.remove(&pane);
+                    if let Some(p) = &removed {
+                        lock_list(&self.closing).push(p.clone());
+                    }
+                    removed
+                };
                 if let Some(p) = removed {
-                    p.close();
+                    let closing = self.closing.clone();
+                    let done = p.clone();
+                    p.close(move || lock_list(&closing).retain(|q| !Arc::ptr_eq(q, &done)));
                     log!("pane {pane} closed");
                 }
                 Flow::Go
@@ -519,10 +538,14 @@ impl Server {
     ///
     /// Then, with no lock held: the socket file is removed, so no window can
     /// reach a holder that is going away; every shell's process group gets
-    /// `SIGHUP` at once; one `poll` on their pidfds waits until all have ended
-    /// or [`END_GRACE`] has passed; and the process exits 0 either way. A
-    /// shell still running then is not killed: it outlives `kykod`, and the
-    /// kernel hangs its terminal up when `kykod`'s side closes.
+    /// `SIGHUP` at once; one `poll` on their pidfds, and on those of panes
+    /// still being closed (already hung up by `Close`), waits until all have
+    /// ended or [`END_GRACE`] has passed. At that point any pane still being
+    /// closed whose shell is running gets `SIGKILL` to its process group, as
+    /// `Close` promised, since exiting ends its close thread. The process then
+    /// exits 0. A shell of a pane that was not closed and is still running is
+    /// not killed: it outlives `kykod`, and the kernel hangs its terminal up
+    /// when `kykod`'s side closes.
     ///
     /// The lock file is left behind on purpose. Removing it would let a
     /// `kykod` that had opened it just before lock a file no longer in the
@@ -530,7 +553,7 @@ impl Server {
     /// then serve the same socket. The lock itself is released by the kernel
     /// when this process exits.
     fn end_sessions(&self, force: bool, why: &str) -> NotEnded {
-        let panes: Vec<Arc<Pane>> = {
+        let (panes, closing): (Vec<Arc<Pane>>, Vec<Arc<Pane>>) = {
             let table = self.table();
             if self.ending.load(Ordering::Acquire) {
                 return NotEnded::AlreadyEnding;
@@ -547,11 +570,13 @@ impl Server {
                 }
             }
             self.ending.store(true, Ordering::Release);
-            table.values().cloned().collect()
+            let closing = lock_list(&self.closing).clone();
+            (table.values().cloned().collect(), closing)
         };
         log!(
-            "ending every session ({why}): hanging up {} shell(s)",
-            panes.len()
+            "ending every session ({why}): hanging up {} shell(s), {} more being closed",
+            panes.len(),
+            closing.len()
         );
         if let Err(e) = fs::remove_file(&self.path) {
             log!("cannot remove {}: {e}", self.path.display());
@@ -562,6 +587,7 @@ impl Server {
         let end = Instant::now() + END_GRACE;
         let fds: Vec<OwnedFd> = panes
             .iter()
+            .chain(&closing)
             .filter_map(|p| match p.exit_fd() {
                 Ok(fd) => fd,
                 Err(e) => {
@@ -576,6 +602,13 @@ impl Server {
                 "{left} shell(s) still running after {}s; exiting anyway",
                 END_GRACE.as_secs()
             );
+        }
+        // Closed panes: the list as it is now, which also holds any pane closed
+        // since the decision. A close thread that has finished took its pane
+        // out, and one that has not is ended with the process.
+        let still_closing = lock_list(&self.closing).clone();
+        for pane in &still_closing {
+            pane.kill_if_running();
         }
         log!("exiting");
         std::process::exit(0);
@@ -633,6 +666,10 @@ impl Server {
             Err(_) => Flow::Close("cannot write to the window".to_string()),
         }
     }
+}
+
+fn lock_list(list: &Mutex<Vec<Arc<Pane>>>) -> MutexGuard<'_, Vec<Arc<Pane>>> {
+    list.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 /// Waits until every pidfd in `fds` is readable (its process has ended) or

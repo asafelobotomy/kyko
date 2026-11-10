@@ -290,9 +290,11 @@ impl Pane {
     /// Stops sending or keeping the pane's output, discards its queued input,
     /// and ends the shell: `SIGHUP` now, `SIGKILL` to its process group if it
     /// is still there after [`CLOSE_GRACE`]. The wait happens on a short-lived
-    /// thread, so the caller does not block. The reader thread then sees the
-    /// terminal close, reaps the shell and ends.
-    pub fn close(self: &Arc<Self>) {
+    /// thread, so the caller does not block; that thread calls `done` once the
+    /// shell has ended or been killed. If the thread cannot start, the shell is
+    /// only hung up and `done` is never called. The reader thread then sees
+    /// the terminal close, reaps the shell and ends.
+    pub fn close(self: &Arc<Self>, done: impl FnOnce() + Send + 'static) {
         {
             let mut st = self.lock();
             st.closed = true;
@@ -304,7 +306,10 @@ impl Pane {
         let pane = self.clone();
         if let Err(e) = std::thread::Builder::new()
             .name(format!("close-{}", self.id))
-            .spawn(move || pane.pty.end(CLOSE_GRACE))
+            .spawn(move || {
+                pane.pty.end(CLOSE_GRACE);
+                done();
+            })
         {
             log!(
                 "pane {}: cannot start a thread to end it ({e}); hung up only",
@@ -324,6 +329,11 @@ impl Pane {
     /// Sends `SIGHUP` to the shell's process group (nothing if it is reaped).
     pub fn hangup(&self) {
         self.pty.hangup();
+    }
+
+    /// See [`Pty::kill_if_running`].
+    pub fn kill_if_running(&self) {
+        self.pty.kill_if_running();
     }
 
     /// See [`Pty::exit_fd`].

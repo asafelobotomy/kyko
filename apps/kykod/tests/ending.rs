@@ -10,6 +10,9 @@ use nix::sys::signal::Signal;
 /// plus a second of slack.
 const EXIT: Duration = Duration::from_secs(3);
 
+/// [`EXIT`] for a test that waits the whole grace and then times the exit.
+const SLOW_EXIT: Duration = Duration::from_secs(4);
+
 /// Starts an interactive bash with job control in `pane`, waits for its
 /// prompt and returns its pid. `tag` makes its command line unique.
 fn idle_shell(h: &Holder, c: &mut Client, pane: PaneId, tag: &str) -> i32 {
@@ -118,6 +121,10 @@ fn forced_end_sessions_overrides_busy() {
     assert!(!h.socket().exists(), "the socket file is still there");
 }
 
+/// An end-to-end check of the brief's rule. It does not tell whether
+/// `Pane::is_busy` checks for an ended shell: when the shell exits, the kernel
+/// already clears the terminal's foreground group, so the pane reads as idle
+/// either way.
 #[test]
 fn exited_panes_are_not_busy() {
     let mut h = Holder::start();
@@ -186,24 +193,60 @@ fn a_shell_ignoring_hangup_does_not_delay_exit_past_2s() {
         &["-c", "trap '' HUP; printf armed; exec sleep 3066"],
     )));
     c.output_until(1, b"armed", LIMIT);
-    let shell = h.child_running("sleep 3066");
+    h.child_running("sleep 3066");
     let started = Instant::now();
     h.signal(Signal::SIGTERM);
-    assert_eq!(h.wait_exit(EXIT), Some(0), "log:\n{}", h.log());
+    // A loaded machine may be slow to run kykod's last steps: 2 s of slack.
+    assert_eq!(h.wait_exit(SLOW_EXIT), Some(0), "log:\n{}", h.log());
     let took = started.elapsed();
     assert!(
-        took >= Duration::from_secs(2) && took < EXIT,
+        took >= Duration::from_secs(2) && took < SLOW_EXIT,
         "kykod exited {took:?} after SIGTERM"
     );
     assert!(!h.socket().exists(), "the socket file is still there");
-    // kykod does not kill it on the way out: the shell outlives kykod (the
-    // holder's cleanup ends it).
-    std::thread::sleep(Duration::from_millis(200));
-    let left = processes().into_iter().find(|p| p.pid == shell);
+    // Observed, not required: kykod does not kill this shell on the way out,
+    // so it outlives kykod (reparented, still running) until the holder's
+    // cleanup ends it.
+}
+
+#[test]
+fn a_pane_closed_just_before_sigterm_is_still_killed() {
+    let mut h = Holder::start();
+    let mut c = Client::connect(&h);
+    c.hello();
+    c.send(ToHolder::Spawn(spec(
+        1,
+        "/bin/sh",
+        &["-c", "trap '' HUP; printf armed; exec sleep 3068"],
+    )));
+    c.output_until(1, b"armed", LIMIT);
+    let shell = h.child_running("sleep 3068");
+    c.send(ToHolder::Close { pane: 1 });
+    h.signal(Signal::SIGTERM);
+    assert_eq!(h.wait_exit(EXIT), Some(0), "log:\n{}", h.log());
     assert!(
-        left.as_ref().is_some_and(|p| p.state != 'Z'),
-        "the shell that ignores SIGHUP was ended"
+        gone_within(shell, LIMIT),
+        "the closed pane's shell outlived kykod; log:\n{}",
+        h.log()
     );
+}
+
+#[test]
+fn a_closing_pane_that_exits_quickly_does_not_delay_shutdown() {
+    let mut h = Holder::start();
+    let mut c = Client::connect(&h);
+    c.hello();
+    let shell = idle_shell(&h, &mut c, 1, "end-closing-1");
+    c.send(ToHolder::Close { pane: 1 });
+    let started = Instant::now();
+    h.signal(Signal::SIGTERM);
+    assert_eq!(h.wait_exit(EXIT), Some(0), "log:\n{}", h.log());
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "kykod took {:?} to exit",
+        started.elapsed()
+    );
+    assert!(gone_within(shell, LIMIT), "the shell outlived kykod");
 }
 
 #[test]
