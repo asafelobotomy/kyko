@@ -597,3 +597,91 @@ fn default_socket_is_under_xdg_runtime_dir() {
     assert_eq!(mode(&socket), 0o600);
     drop(h);
 }
+
+/// Collects `pane`'s output up to its `Exited`, and every frame for it in
+/// `after` more. Returns the output, the exit status and how many `Exited`
+/// came in all.
+fn output_and_exits(c: &mut Client, pane: u32, after: Duration) -> (Vec<u8>, i32, usize) {
+    let end = std::time::Instant::now() + LIMIT;
+    let mut out = Vec::new();
+    let status = loop {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        match c.recv(left) {
+            Some(ToWindow::Output { pane: p, bytes }) if p == pane => out.extend(bytes),
+            Some(ToWindow::Exited { pane: p, status }) if p == pane => break status,
+            Some(_) => {}
+            None => panic!(
+                "no Exited for pane {pane}; output {:?}",
+                String::from_utf8_lossy(&out)
+            ),
+        }
+    };
+    let mut exits = 1;
+    let end = std::time::Instant::now() + after;
+    while let Some(f) = c.recv(end.saturating_duration_since(std::time::Instant::now())) {
+        if matches!(f, ToWindow::Exited { pane: p, .. } if p == pane) {
+            exits += 1;
+        }
+    }
+    (out, status, exits)
+}
+
+#[test]
+fn a_shell_exit_is_reported_once_after_its_last_output() {
+    let h = Holder::start();
+    let mut c = Client::connect(&h);
+    c.hello();
+    c.send(ToHolder::Spawn(spec(
+        1,
+        "/bin/sh",
+        &["-c", "printf last-words-once; exit 3"],
+    )));
+    let (out, status, exits) = output_and_exits(&mut c, 1, Duration::from_millis(500));
+    assert!(contains(&out, b"last-words-once"), "{out:?}");
+    assert_eq!((status, exits), (3, 1));
+}
+
+#[test]
+fn a_shell_that_exits_while_a_background_job_holds_the_terminal_reports_exited() {
+    // `firefox & exit`: the shell is gone but its job keeps the terminal open,
+    // so the terminal never reports the end. The job ignores SIGHUP, as one
+    // in a background process group would never get it, and keeps writing.
+    let job = "while printf .; do sleep 0.2; done";
+    let script = format!("trap '' HUP; sh -c '{job}' bg-job-3077 & printf before-exit; exit 7");
+    let h = Holder::start();
+    let mut c = Client::connect(&h);
+    c.hello();
+    let before = h.threads();
+    let started = std::time::Instant::now();
+    c.send(ToHolder::Spawn(spec(1, "/bin/sh", &["-c", &script])));
+    let (out, status, exits) = output_and_exits(&mut c, 1, Duration::from_millis(300));
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "Exited came {:?} after Spawn",
+        started.elapsed()
+    );
+    assert!(contains(&out, b"before-exit"), "{out:?}");
+    assert_eq!((status, exits), (7, 1));
+    let cmdline = format!("sh -c {job} bg-job-3077");
+    let jobs: Vec<i32> = common::processes()
+        .into_iter()
+        .filter(|p| p.cmdline == cmdline)
+        .map(|p| p.pid)
+        .collect();
+    let [job_pid] = jobs[..] else {
+        panic!("expected one background job, found {jobs:?}");
+    };
+    // Closing the pane closes the terminal, which hangs the job up: its next
+    // write fails and it ends.
+    c.send(ToHolder::Close { pane: 1 });
+    let ended = gone_within(job_pid, Duration::from_secs(4));
+    if !ended {
+        common::kill_sessions(&[job_pid]);
+    }
+    assert!(ended, "the background job outlived Close");
+    let end = std::time::Instant::now() + Duration::from_secs(4);
+    while h.threads() != before && std::time::Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(h.threads(), before, "a pane thread outlived Close");
+}
