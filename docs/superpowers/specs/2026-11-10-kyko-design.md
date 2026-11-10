@@ -40,6 +40,8 @@ from uQ's Spotlight search.
 - Switching uQ's theme recolours kyko, including running panes, without a restart.
 - `> cargo build` in Spotlight, then **Run in kyko**, opens a new tab running the command and
   drops kyko down.
+- Killing the window process with a build running in a tab loses nothing: the window returns
+  with the same tabs and the build still going.
 - uQ runs unchanged with kyko not installed. kyko runs, with a built-in theme, without `uqd`.
 
 **Not in scope**
@@ -51,16 +53,24 @@ from uQ's Spotlight search.
 
 ## 2. Architecture
 
-One long-lived process per session, `kyko`, started with the graphical session and D-Bus
-activatable. The same binary is the command-line client: with a subcommand it calls the running
-instance over D-Bus and exits.
+Two long-lived processes per session, so that the shells outlive the window process (decided
+2026-11-10, §2.7):
+
+- **`kykod`, the session holder.** It owns every shell and its PTY and keeps a bounded copy of
+  each pane's recent output. It has no Qt, no D-Bus and no rendering, and is kept small on
+  purpose: the less it does, the less can crash it.
+- **`kyko`, the window.** It draws, handles input, and serves D-Bus. It attaches to `kykod` over
+  a Unix socket and can crash, restart or be upgraded without touching a shell. The same binary
+  is the command-line client: with a subcommand it calls the running window over D-Bus and exits.
 
 ```
 kyko (Cargo workspace, edition 2024, stable toolchain)
   crates/kyko-core   pure logic, no Qt: config, theme, session tree, command queue, provider index
-  crates/kyko-term   terminal engine: PTY + alacritty_terminal, exposes a cell-grid snapshot
+  crates/kyko-proto  the kykod wire protocol: frame types, encode and decode, version
+  crates/kyko-term   terminal emulation: feeds pane output to alacritty_terminal, exposes a grid snapshot
+  apps/kykod         the session holder: PTYs, child processes, output rings, the socket
   apps/kyko          cxx-qt + QML: window, tab bar, panes, D-Bus service, CLI
-  packaging/         PKGBUILD, systemd user unit, D-Bus service file, .provider file, settings page
+  packaging/         PKGBUILD, two systemd user units, D-Bus service file, .provider file, settings page
 ```
 
 Stack, following uQ's convention for its own apps: Rust for logic, `cxx-qt` 0.10 and QML for the
@@ -75,13 +85,16 @@ window. Versions checked on 2026-11-10: `alacritty_terminal` 0.26.0 (crates.io),
 | `kyko-core::theme` | Parses uQ's `tokens.json` into kyko's palette; holds the built-in fallback | serde_json |
 | `kyko-core::session` | The tree of tabs, each a tree of splits with a pane at every leaf; focus, naming, close rules | — |
 | `kyko-core::runq` | Maps `Run` requests to new tabs; validates and bounds commands | session |
-| `kyko-term` | One `Term` per pane: spawns the shell on a PTY, feeds bytes to `alacritty_terminal`, hands out damage-tracked grid snapshots, takes key and mouse input | alacritty_terminal |
+| `kyko-proto` | Length-prefixed frames for the socket (§2.8); pure encode and decode | — |
+| `kyko-term` | One `Term` per pane: feeds output bytes to `alacritty_terminal`, hands out damage-tracked grid snapshots, turns key and mouse input into bytes. It never touches a PTY | alacritty_terminal |
+| `apps/kykod` | Spawns shells on PTYs, forwards their output, keeps a ring of recent output per pane, reports each pane's foreground program and folder, stores the window's layout blob | kyko-proto, rustix |
+| `apps/kyko` link | The client side of the socket: attach, replay, reconnect | kyko-proto |
 | `apps/kyko` grid item | A custom `QQuickItem` that draws one pane's grid snapshot and forwards input | kyko-term, Qt |
 | `apps/kyko` window | The layer-shell surface, slide animation, tab bar and split layout in QML | layer-shell-qt, Qt Quick |
 | `apps/kyko` service | `org.kyko.Terminal1` and `org.uq.Launcher1.Provider` on the session bus | zbus |
-| `apps/kyko` cli | `kyko toggle`, `show`, `hide`, `run`, `new-tab`, `quit` | zbus |
+| `apps/kyko` cli | `kyko toggle`, `show`, `hide`, `run`, `new-tab`, `quit`, `end-sessions` | zbus |
 
-`kyko-core` and `kyko-term` have no Qt dependency, so they are tested with plain `cargo test`.
+Everything except `apps/kyko` has no Qt dependency and is tested with plain `cargo test`.
 
 ### 2.2 Window
 
@@ -157,6 +170,7 @@ Default keys (all settable; shown with the kyko window focused):
 | `window.hide_on_focus_loss` | bool | true |
 | `window.animations` | bool | true |
 | `terminal.scrollback` | 0–100000 | 10000 |
+| `sessions.ring_kib` | 256–16384, output kept per pane for replay (§2.8); applies to new panes | 2048 |
 | `terminal.font_size` | 6–48, or unset to follow the theme | unset |
 | `terminal.shell` | path, or unset for `$SHELL` | unset |
 | `theme.follow_uq` | bool | true |
@@ -169,17 +183,49 @@ Settings page (§3.3) uses those properties.
 
 - **Nothing in the window ends the process.** Closing a pane or tab closes only that; closing
   the last tab opens a fresh one and hides kyko. `Esc`, focus loss and the toggle key only hide.
-- **Quitting is deliberate and off-screen.** The only ways are `kyko quit` and stopping the
-  systemd unit. `kyko quit` refuses with exit 3, listing the tabs concerned, while any pane has
-  a foreground program other than its shell; `kyko quit --force` overrides. Neither is bound to
-  a key or offered in Spotlight.
-- **It comes back.** The user unit has `Restart=on-failure`, so a crash restarts kyko hidden. After
-  a deliberate quit, the next `F12` or **Run in kyko** starts it again through D-Bus activation.
-- **Limit: shells live inside the kyko process.** A crash, `quit --force` or logout ends them, and
-  the restarted kyko has empty tabs. Keeping shells alive across a crash would need a separate
-  process that owns them, as tmux has; that is not in this design and is the first candidate for
-  a later one.
-- **Session end:** on `SIGTERM` kyko sends `SIGHUP` to every shell, waits up to 2 s, then exits.
+- **The shells are not in the window process.** `kykod` holds them, so a crash, restart or
+  upgrade of `kyko` ends nothing. The restarted window attaches, gets its tab and split layout
+  back, and each pane replays its recent output (§2.8).
+- **Stopping the window is harmless.** `kyko quit` stops only the window process; every shell
+  keeps running, and the next `F12` or **Run in kyko** brings the window back through D-Bus
+  activation with the same tabs.
+- **Ending the sessions is deliberate and off-screen.** `kyko end-sessions` stops `kykod` and
+  with it every shell. It refuses with exit 3, listing the tabs concerned, while any pane has a
+  foreground program other than its shell; `--force` overrides. It is not bound to a key, shown
+  in the window or offered in Spotlight.
+- **Both come back.** Each user unit has `Restart=on-failure`. `kyko.service` wants and starts
+  after `kykod.service`, and stopping or restarting `kyko.service` leaves `kykod.service` alone.
+- **Limit: `kykod` itself.** If `kykod` crashes, or at logout, the shells end; panes then show
+  "Session ended" and a restarted `kykod` starts empty. That is why `kykod` is kept minimal.
+- **Session end:** on `SIGTERM` `kykod` sends `SIGHUP` to every shell, waits up to 2 s, then exits.
+
+### 2.8 The holder and its socket
+
+- **Socket:** `$XDG_RUNTIME_DIR/kyko/hold.sock`, in a directory of mode 0700, the socket 0600.
+  `kykod` checks the peer's uid with `SO_PEERCRED` and drops any other user. Whoever attaches can
+  read pane output and type into shells, so the socket is as sensitive as the terminal itself.
+- **One window at a time.** A second attach is refused while one is live.
+- **Frames:** a `u32` length, a `u8` type, then the body. Window to holder: `Hello{version}`,
+  `Spawn{pane, shell, cwd, env, cols, rows}`, `Input{pane, bytes}`, `Resize{pane, cols, rows}`,
+  `Close{pane}`, `Attach{pane}`, `SaveLayout{blob}`, `EndSessions{force}`. Holder to window:
+  `Hello{version, panes, layout}`, `Output{pane, bytes}`, `Info{pane, program, cwd}`,
+  `Exited{pane, status}`, `Busy{panes}`.
+- **Version:** `Hello` carries one protocol number. On a mismatch (the window was upgraded and
+  `kykod` is still the old one) the window does not attach; it shows a notice that sessions from
+  before the update keep running in the old holder and names `kyko end-sessions` as the way to
+  move over.
+- **Output ring:** `kykod` always reads every PTY, so a program never blocks because the window
+  is away. It keeps the last 2 MiB of each pane's output (setting, 256 KiB–16 MiB).
+- **Replay on attach:** the window resets the pane's emulator, feeds it the ring from the first
+  line break, then asks `kykod` to resize the pane to its current size, which makes full-screen
+  programs such as `vim` and `htop` redraw themselves. Output older than the ring is lost, and a
+  shell prompt's colours can be wrong until its next line; this is the accepted cost of keeping
+  emulation out of the holder.
+- **Layout:** the window sends its tab and split tree, names and focus as an opaque blob whenever
+  it changes; `kykod` stores the latest and returns it in `Hello`. Panes in the blob that no
+  longer exist are dropped; panes `kykod` has that the blob lacks get a tab each.
+- **Foreground program and folder:** `kykod` reads them from the PTY's foreground process group
+  and `/proc`, and sends `Info` when they change. Tab names and the busy check use these.
 
 ## 3. Integration with uQ
 
@@ -192,7 +238,8 @@ Settings page (§3.3) uses those properties.
 | `NewTab` | `cwd: s` | new tab, shows kyko |
 | `ListTabs` | — | `a(uss)`: id, name, foreground program |
 | `FocusTab` | `id: u` | focuses the tab, shows kyko |
-| `Quit` | `force: b` | as `kyko quit` (§2.7); error `org.kyko.Error.Busy` when refused |
+| `Quit` | — | stops the window process only; shells keep running (§2.7) |
+| `EndSessions` | `force: b` | as `kyko end-sessions` (§2.7); error `org.kyko.Error.Busy` when refused |
 | properties | the settings in §2.6, plus `Visible: b` | read and write (`Visible` read-only) |
 | signals | `VisibleChanged(b)`, `TabsChanged()` | — |
 
@@ -220,8 +267,9 @@ that still exists, and only focuses that tab. This route never runs a command.
   does nothing when kyko is not installed.
 - **Settings page:** `/usr/share/uq/settings/pages/kyko/` with a `page.toml`
   (`category = "apps"`, `dbus_name = "org.kyko.Terminal1"`) and a QML page for §2.6.
-- **Start-up:** a systemd user unit bound to `graphical-session.target`, and a D-Bus service
-  file so the first `Toggle` or `Run` starts kyko if it is not running.
+- **Start-up:** two systemd user units bound to `graphical-session.target` (`kykod.service`, and
+  `kyko.service` which wants it), and a D-Bus service file so the first `Toggle` or `Run` starts
+  the window if it is not running.
 
 ## 4. Errors
 
@@ -233,8 +281,11 @@ that still exists, and only focuses that tab. This route never runs a command.
 | Shell fails to start | The pane shows the error and the command tried; any key closes it |
 | `Run` with an invalid command | D-Bus error `org.kyko.Error.InvalidCommand`; no tab opens |
 | A second `kyko` daemon starts | It finds the bus name taken, calls `Show` on the owner and exits 0 |
-| kyko crashes | systemd restarts it hidden with one empty tab; the shells it held are gone (§2.7) |
-| `kyko quit` while programs are running | Exit 3 and a list of the busy tabs; nothing closes |
+| The window process crashes | systemd restarts it hidden; it attaches and the tabs return with replayed output (§2.8) |
+| `kykod` crashes | The shells end; panes show "Session ended"; systemd restarts `kykod` empty (§2.7) |
+| `kykod` not reachable when the window starts | The window shows "Sessions aren't available" with the socket error and retries every 2 s |
+| Protocol version mismatch | No attach; the notice in §2.8 |
+| `kyko end-sessions` while programs are running | Exit 3 and a list of the busy tabs; nothing closes |
 | CLI with no daemon and no activation | Exit 1: "kyko is not running" |
 | The focused monitor is unplugged while shown | kyko moves to the monitor that now has focus |
 
@@ -243,12 +294,20 @@ that still exists, and only focuses that tab. This route never runs a command.
 - **Unit (`kyko-core`):** config parsing and per-field fallback; theme parsing against all seven
   uQ themes in both variants; session tree operations (split, close, focus by direction, last
   pane, last tab); tab naming; `Run` validation; provider matching and id checks.
-- **Unit (`kyko-term`):** a real PTY running `printf` and `sh` scripts, asserting on grid
-  snapshots: colours, wide characters, wrapping, resize, scrollback limits, alternate screen.
+- **Unit (`kyko-term`):** recorded byte streams, asserting on grid snapshots: colours, wide
+  characters, wrapping, resize, scrollback limits, alternate screen.
+- **Unit (`kyko-proto`):** every frame round-trips; truncated, oversized and unknown frames are
+  rejected without a panic.
+- **Integration (`kykod`):** a real `kykod` on a temporary socket, driven by a test client: spawn
+  and output, input, resize, exit status, ring limits, a program that keeps writing with no
+  window attached, a second attach refused, a wrong-uid peer dropped (where the test can create
+  one), version mismatch, the busy check, `SIGTERM` hanging up the shells.
+- **Integration (reattach):** kill the client mid-output, attach again, and assert the replayed
+  screen matches for a shell session and for a full-screen program after the resize nudge.
 - **Integration:** the D-Bus interface against a private `dbus-daemon`, with the window replaced
   by a fake: `Toggle`, `Run`, `ListTabs`, `FocusTab`, the provider's `Search` and `Activate`, the
-  single-instance rule, `Quit` refused while a program runs and allowed with `force`, and the
-  last tab closing without the process exiting.
+  single-instance rule, `Quit` leaving the shells running, `EndSessions` refused while a program
+  runs and allowed with `force`, and the last tab closing without either process exiting.
 - **Live checklist** (`docs/notes/`): slide in both shapes and tab positions, focus-loss hiding,
   theme switch with panes open, input method, a 100,000-line `cat` staying responsive, `vim`,
   `htop`, `tmux`, the Spotlight action, multi-monitor.
@@ -268,7 +327,11 @@ Two things are unproven and everything else rests on them:
 2. **Layer-shell from a `cxx-qt` app** through `layer-shell-qt`: anchoring, on-demand keyboard
    focus, and unmapping without losing state, on both KWin and Hyprland. Not yet verified.
 
-**Milestone 0 is a spike** that answers both: one themed pane in a layer-shell window, toggled
+A third, smaller risk is the extra hop through `kykod`: every output byte crosses a socket before
+it is drawn. Milestone 1 measures it; the target is a 100,000-line `cat` finishing within 15% of
+the spike's direct-PTY time. The spike itself reads the PTY directly and has no holder.
+
+**Milestone 0 is a spike** that answers the first two: one themed pane in a layer-shell window, toggled
 from the command line, measured against the targets above. Its code is throwaway. If the grid
 item misses the targets, the fallback is to render with `alacritty_terminal` and `wgpu` in a
 plain Wayland layer surface and keep QML out of the terminal path; the spec is revised before
@@ -279,7 +342,7 @@ any further milestone starts.
 | # | Delivers |
 |---|---|
 | 0 | Spike (§6); a written result and a go or revise decision |
-| 1 | `kyko-core`, `kyko-term`, one pane, both shapes, toggle, theme following, config file |
+| 1 | `kyko-proto`, `kykod`, `kyko-core`, `kyko-term`; one pane through the holder, reattach after a window restart, both shapes, toggle, theme following, config file |
 | 2 | Tabs, splits, keys, scrollback search, copy and paste, close confirmations |
 | 3 | `org.kyko.Terminal1`, CLI, `Run`, the tab provider; in uQ: **Run in kyko** and the `F12` bind |
 | 4 | Settings page, packaging (PKGBUILD, units), README, live checklist |
