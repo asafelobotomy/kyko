@@ -140,6 +140,8 @@ impl Emulator {
     /// Forget everything, then feed `bytes`. When `truncated` the bytes are the tail of a ring
     /// that wrapped, so they start mid-stream: skip to just after the first newline, which drops
     /// a partial escape sequence or character. With no newline there is nothing safe to show.
+    /// Replies the replayed output provokes are dropped: they answer queries the shell sent in the
+    /// past, and sent now they would land in the live shell as junk at its prompt.
     pub fn replay(&mut self, bytes: &[u8], truncated: bool) {
         self.term = Self::new_term(self.size, self.scrollback, &self.shared);
         self.processor = Processor::new();
@@ -154,6 +156,7 @@ impl Emulator {
             bytes
         };
         self.feed(bytes);
+        self.shared.lock().replies.clear();
     }
 
     /// Sizes below 2 columns by 1 row are clamped up to it.

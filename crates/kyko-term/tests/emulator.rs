@@ -178,3 +178,19 @@ fn synchronised_update_is_held_until_flushed() {
     e.flush_sync();
     assert_eq!(row(&snap(&e), 0), "hidden");
 }
+
+#[test]
+fn replay_discards_replies_to_old_queries() {
+    let mut e = emu();
+    e.replay(b"\x1b[6n\r\nprompt", false);
+    assert!(e.take_replies().is_empty());
+    assert_eq!(row(&snap(&e), 1), "prompt");
+}
+
+#[test]
+fn queries_after_a_replay_are_still_answered() {
+    let mut e = emu();
+    e.replay(b"\x1b[6n\r\nprompt", false);
+    e.feed(b"\x1b[6n");
+    assert!(!e.take_replies().is_empty());
+}
