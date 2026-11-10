@@ -7,11 +7,13 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use nix::errno::Errno;
 use nix::fcntl::{FcntlArg, FdFlag, fcntl};
 use nix::pty::{Winsize, openpty};
 use nix::sys::signal::{Signal, killpg};
+use nix::sys::wait::{Id, WaitPidFlag, waitid, waitpid};
 use nix::unistd::{Pid, tcgetpgrp};
 
 /// Why a shell could not be started, as a sentence fit to show the user.
@@ -140,12 +142,9 @@ impl Pty {
     }
 
     /// A blocking duplicate of the master. A read returns `EIO` once the shell is gone.
-    pub fn reader(&self) -> File {
-        File::from(
-            self.master
-                .try_clone()
-                .expect("duplicating a descriptor failed"),
-        )
+    /// Fails when this process is out of descriptors.
+    pub fn reader(&self) -> io::Result<File> {
+        self.master.try_clone().map(File::from)
     }
 
     pub fn write_all(&self, bytes: &[u8]) -> io::Result<()> {
@@ -205,15 +204,53 @@ impl Pty {
 
     /// Sends `SIGHUP` to the shell's process group.
     pub fn hangup(&self) {
-        if self
-            .status
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .is_some()
-        {
-            return;
+        self.signal_group(Signal::SIGHUP);
+    }
+
+    /// Signals the shell's process group unless the shell has been reaped. The
+    /// status lock is held across the kill: the shell is reaped only under that
+    /// lock (by [`Pty::try_wait`]), so its pid, and with it the group id, cannot
+    /// be recycled between the check and the kill.
+    fn signal_group(&self, signal: Signal) {
+        let status = self.status.lock().unwrap_or_else(|p| p.into_inner());
+        if status.is_none() {
+            let _ = killpg(Pid::from_raw(self.pid), signal);
         }
-        let _ = killpg(Pid::from_raw(self.pid), Signal::SIGHUP);
+    }
+
+    /// Blocks until the shell ends, then reaps it and returns what
+    /// [`Pty::try_wait`] does. The wait itself does not reap (`WNOWAIT`), so
+    /// reaping still happens only under the status lock.
+    pub fn wait(&self) -> Option<i32> {
+        loop {
+            match waitid(
+                Id::Pid(Pid::from_raw(self.pid)),
+                WaitPidFlag::WEXITED | WaitPidFlag::WNOWAIT,
+            ) {
+                Err(Errno::EINTR) => continue,
+                // Ended, or already reaped by try_wait: either way the status is known.
+                _ => return self.try_wait(),
+            }
+        }
+    }
+
+    /// True once the shell has ended (reaped or not), waiting at most `limit`.
+    /// Uses a pidfd, so the wait sleeps in `poll` rather than ticking.
+    fn ends_within(&self, limit: Duration) -> bool {
+        let Some(pid) = rustix::process::Pid::from_raw(self.pid) else {
+            return false;
+        };
+        let Ok(fd) = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()) else {
+            return false;
+        };
+        let Ok(timeout) = rustix::event::Timespec::try_from(limit) else {
+            return false;
+        };
+        let mut fds = [rustix::event::PollFd::new(
+            &fd,
+            rustix::event::PollFlags::IN,
+        )];
+        matches!(rustix::event::poll(&mut fds, Some(&timeout)), Ok(n) if n > 0)
     }
 
     /// The exit status once the shell has ended (128 plus the signal if it was
@@ -231,5 +268,39 @@ impl Pty {
             }
         }
         *status
+    }
+}
+
+/// How long a dropped [`Pty`] gives its shell after `SIGHUP`, and again after `SIGKILL`.
+const DROP_GRACE: Duration = Duration::from_millis(100);
+
+impl Drop for Pty {
+    /// A dropped `Pty` takes its shell with it and leaves no zombie: `SIGHUP` to the
+    /// group, up to 100 ms to end, then `SIGKILL` to the group and up to 100 ms
+    /// more. A shell still not gone after that (stuck in the kernel) is reaped by
+    /// a short-lived thread, so the caller blocks for at most about 200 ms.
+    fn drop(&mut self) {
+        if self.try_wait().is_some() {
+            return;
+        }
+        self.hangup();
+        if self.ends_within(DROP_GRACE) && self.try_wait().is_some() {
+            return;
+        }
+        self.signal_group(Signal::SIGKILL);
+        if self.ends_within(DROP_GRACE) && self.try_wait().is_some() {
+            return;
+        }
+        let pid = Pid::from_raw(self.pid);
+        let reap = move || {
+            while let Err(Errno::EINTR) = waitpid(pid, None) {}
+        };
+        if std::thread::Builder::new()
+            .name("reaper".into())
+            .spawn(reap)
+            .is_err()
+        {
+            reap();
+        }
     }
 }

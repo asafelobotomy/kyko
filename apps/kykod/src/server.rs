@@ -1,0 +1,398 @@
+//! The socket server: a private Unix socket, one thread per connection, the
+//! pane table.
+//!
+//! Threads: the accept loop (the caller of [`run`]), one reader thread per
+//! connection, and one reader thread per pane (see [`crate::pane`]). Every one
+//! of them blocks in `accept` or `read`; nothing wakes on a timer.
+//!
+//! Locks, never nested the other way round:
+//! - the pane table: taken by connection threads only, briefly, to look panes
+//!   up, add or remove them; never held while waiting on a pane's lock (except
+//!   when a pane is created, when nobody else can know it yet) and never held
+//!   while writing to a socket;
+//! - a pane's lock, which may be held while writing to the window;
+//! - a window's writer, taken last, held only for one frame's write.
+//!
+//! A window that stops reading cannot hold a shell up: every write has
+//! [`WRITE_TIMEOUT`], after which the connection is dropped and every later
+//! send to it fails at once.
+
+use std::collections::BTreeMap;
+use std::convert::Infallible;
+use std::fs::{self, DirBuilder, Permissions};
+use std::io::{self, Read, Write};
+use std::net::Shutdown;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+use kyko_proto::{Decoder, Frame, PaneId, SpawnSpec, ToHolder, ToWindow, VERSION};
+use nix::errno::Errno;
+use nix::sys::stat::{Mode, umask};
+
+use crate::pane::Pane;
+
+/// The most panes `kykod` holds at once, exited ones included.
+pub const MAX_PANES: usize = 256;
+
+/// How long one write to a window may block. A frame that cannot be written
+/// within it (about twice this at worst, see [`write_within`]) drops the
+/// connection.
+pub const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Only the user `kykod` runs as may connect.
+pub fn peer_allowed(peer_uid: u32, own_uid: u32) -> bool {
+    peer_uid == own_uid
+}
+
+/// The writing side of one connection, shared by the connection's thread and
+/// every pane that is live for it.
+pub struct Window {
+    id: u64,
+    out: Mutex<UnixStream>,
+    /// Set once the connection is over or a write failed; every send then
+    /// fails at once, without touching the socket.
+    dead: AtomicBool,
+}
+
+impl Window {
+    fn new(id: u64, stream: &UnixStream) -> io::Result<Window> {
+        let out = stream.try_clone()?;
+        out.set_write_timeout(Some(WRITE_TIMEOUT))?;
+        Ok(Window {
+            id,
+            out: Mutex::new(out),
+            dead: AtomicBool::new(false),
+        })
+    }
+
+    /// Writes one whole frame. On failure the connection is shut down, so its
+    /// reader thread ends it, and the window is dead from then on.
+    pub fn send(&self, frame: &ToWindow) -> io::Result<()> {
+        let mut bytes = Vec::new();
+        frame.encode(&mut bytes);
+        let mut out = self.out.lock().unwrap_or_else(|p| p.into_inner());
+        if self.dead.load(Ordering::Acquire) {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        write_within(&mut out, &bytes, WRITE_TIMEOUT).inspect_err(|e| {
+            self.dead.store(true, Ordering::Release);
+            let _ = out.shutdown(Shutdown::Both);
+            log!("window {}: dropping the connection: {e}", self.id);
+        })
+    }
+}
+
+/// `write_all` that gives up once `limit` has passed. The socket's own write
+/// timeout bounds each single write, so the whole takes at most about twice
+/// `limit`.
+fn write_within(out: &mut UnixStream, mut bytes: &[u8], limit: Duration) -> io::Result<()> {
+    let end = Instant::now() + limit;
+    while !bytes.is_empty() {
+        match out.write(bytes) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = &bytes[n..],
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the window stopped reading",
+                ));
+            }
+            Err(e) => return Err(e),
+        }
+        if !bytes.is_empty() && Instant::now() >= end {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the window stopped reading",
+            ));
+        }
+    }
+    Ok(())
+}
+
+struct Server {
+    panes: Mutex<BTreeMap<PaneId, Arc<Pane>>>,
+    uid: u32,
+    next_window: AtomicU64,
+}
+
+/// What the connection does after a frame.
+enum Flow {
+    Go,
+    Close(String),
+}
+
+/// Serves `path` until the process is killed. Returns only on a setup error,
+/// as a message fit for the log.
+pub fn run(path: &Path) -> Result<Infallible, String> {
+    let listener = bind(path)?;
+    log!("listening on {}", path.display());
+    let server = Arc::new(Server {
+        panes: Mutex::new(BTreeMap::new()),
+        uid: rustix::process::geteuid().as_raw(),
+        next_window: AtomicU64::new(1),
+    });
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => server.accept(stream),
+            Err(e) => {
+                log!("cannot accept a connection: {e}");
+                // Out of descriptors or memory: accept would fail again at
+                // once, so give the system a moment. Only ever on this error.
+                let exhausted = [Errno::EMFILE, Errno::ENFILE, Errno::ENOBUFS, Errno::ENOMEM];
+                if exhausted
+                    .iter()
+                    .any(|n| e.raw_os_error() == Some(*n as i32))
+                {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+}
+
+/// Makes the socket: its folder 0700 if it has to be created, a stale socket
+/// file replaced, the socket itself 0600. Refuses a path a live server answers on.
+fn bind(path: &Path) -> Result<UnixListener, String> {
+    let shown = path.display();
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+        && fs::symlink_metadata(dir).is_err()
+    {
+        DirBuilder::new()
+            .mode(0o700)
+            .create(dir)
+            .and_then(|()| fs::set_permissions(dir, Permissions::from_mode(0o700)))
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    match fs::symlink_metadata(path) {
+        Ok(_) => match UnixStream::connect(path) {
+            Ok(_) => return Err(format!("{shown} is already served by a running kykod")),
+            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+                fs::remove_file(path).map_err(|e| format!("cannot replace {shown}: {e}"))?;
+                log!("replaced a stale socket file at {shown}");
+            }
+            Err(e) => return Err(format!("cannot use {shown}: {e}")),
+        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("cannot use {shown}: {e}")),
+    }
+    // The socket is created with mode 0600 from the start: no moment in which
+    // another user could connect. This runs before any thread is started, so
+    // changing the process-wide umask here is safe.
+    let old = umask(Mode::from_bits_truncate(0o177));
+    let bound = UnixListener::bind(path);
+    umask(old);
+    let listener = bound.map_err(|e| format!("cannot listen on {shown}: {e}"))?;
+    fs::set_permissions(path, Permissions::from_mode(0o600))
+        .map_err(|e| format!("cannot set the mode of {shown}: {e}"))?;
+    Ok(listener)
+}
+
+fn kind(frame: &ToHolder) -> &'static str {
+    match frame {
+        ToHolder::Hello { .. } => "Hello",
+        ToHolder::Spawn(_) => "Spawn",
+        ToHolder::Input { .. } => "Input",
+        ToHolder::Resize { .. } => "Resize",
+        ToHolder::Close { .. } => "Close",
+        ToHolder::Attach { .. } => "Attach",
+        ToHolder::SaveLayout { .. } => "SaveLayout",
+        ToHolder::EndSessions { .. } => "EndSessions",
+    }
+}
+
+impl Server {
+    fn table(&self) -> MutexGuard<'_, BTreeMap<PaneId, Arc<Pane>>> {
+        self.panes.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Every pane, in id order, with the table lock already released.
+    fn all_panes(&self) -> Vec<Arc<Pane>> {
+        self.table().values().cloned().collect()
+    }
+
+    fn pane(&self, id: PaneId) -> Option<Arc<Pane>> {
+        self.table().get(&id).cloned()
+    }
+
+    fn accept(self: &Arc<Self>, stream: UnixStream) {
+        let id = self.next_window.fetch_add(1, Ordering::Relaxed);
+        match rustix::net::sockopt::socket_peercred(&stream) {
+            Ok(cred) if peer_allowed(cred.uid.as_raw(), self.uid) => {}
+            Ok(cred) => {
+                log!(
+                    "window {id}: refused: uid {} is not {}",
+                    cred.uid.as_raw(),
+                    self.uid
+                );
+                return;
+            }
+            Err(e) => {
+                log!("window {id}: refused: cannot read its credentials: {e}");
+                return;
+            }
+        }
+        let server = self.clone();
+        if let Err(e) = std::thread::Builder::new()
+            .name(format!("window-{id}"))
+            .spawn(move || server.serve(id, stream))
+        {
+            log!("window {id}: refused: cannot start a thread: {e}");
+        }
+    }
+
+    /// One connection, from its first byte to its end.
+    fn serve(&self, id: u64, mut stream: UnixStream) {
+        let window = match Window::new(id, &stream) {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                log!("window {id}: refused: {e}");
+                return;
+            }
+        };
+        log!("window {id} connected");
+        let why = self.converse(&window, &mut stream);
+        window.dead.store(true, Ordering::Release);
+        let _ = stream.shutdown(Shutdown::Both);
+        for pane in self.all_panes() {
+            pane.detach(&window);
+        }
+        log!("window {id} disconnected: {why}");
+    }
+
+    /// Reads and handles frames until the connection ends; returns why it ended.
+    fn converse(&self, window: &Arc<Window>, stream: &mut UnixStream) -> String {
+        let mut decoder = Decoder::new();
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut greeted = false;
+        loop {
+            let n = match stream.read(&mut buf) {
+                Ok(0) => return "closed".to_string(),
+                Ok(n) => n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return e.to_string(),
+            };
+            decoder.push(&buf[..n]);
+            // Every whole frame is taken before the next read, so the decoder
+            // never holds more than one incomplete frame.
+            loop {
+                match decoder.next::<ToHolder>() {
+                    Ok(None) => break,
+                    Ok(Some(frame)) => {
+                        if let Flow::Close(why) = self.handle(window, &mut greeted, frame) {
+                            return why;
+                        }
+                    }
+                    Err(e) => return format!("protocol error: {e}"),
+                }
+            }
+        }
+    }
+
+    fn handle(&self, window: &Arc<Window>, greeted: &mut bool, frame: ToHolder) -> Flow {
+        match frame {
+            ToHolder::Hello { version } if version != VERSION => {
+                // The window cannot attach, but it can read our version and tell
+                // the user why.
+                let _ = window.send(&ToWindow::Hello {
+                    version: VERSION,
+                    panes: vec![],
+                    layout: vec![],
+                });
+                Flow::Close(format!("protocol version {version}, not {VERSION}"))
+            }
+            ToHolder::Hello { .. } => {
+                *greeted = true;
+                self.hello(window)
+            }
+            other if !*greeted => Flow::Close(format!("{} before Hello", kind(&other))),
+            ToHolder::Spawn(spec) => self.spawn(window, spec),
+            ToHolder::Input { pane, bytes } => {
+                if let Some(p) = self.pane(pane) {
+                    p.input(&bytes);
+                }
+                Flow::Go
+            }
+            ToHolder::Resize { pane, cols, rows } => {
+                if let Some(p) = self.pane(pane) {
+                    p.resize(cols, rows);
+                }
+                Flow::Go
+            }
+            ToHolder::Close { pane } => {
+                let removed = self.table().remove(&pane);
+                if let Some(p) = removed {
+                    p.close();
+                    log!("pane {pane} closed");
+                }
+                Flow::Go
+            }
+            ToHolder::Attach { .. }
+            | ToHolder::SaveLayout { .. }
+            | ToHolder::EndSessions { .. } => Flow::Go,
+        }
+    }
+
+    /// Answers `Hello` with every pane, then sends each pane's output to this
+    /// window as it arrives.
+    fn hello(&self, window: &Arc<Window>) -> Flow {
+        let panes = self.all_panes();
+        let reply = ToWindow::Hello {
+            version: VERSION,
+            panes: panes.iter().map(|p| p.info()).collect(),
+            layout: vec![],
+        };
+        if window.send(&reply).is_err() {
+            return Flow::Close("cannot write to the window".to_string());
+        }
+        for p in &panes {
+            p.go_live(window);
+        }
+        Flow::Go
+    }
+
+    fn spawn(&self, window: &Arc<Window>, spec: SpawnSpec) -> Flow {
+        let id = spec.pane;
+        let failure = {
+            let mut table = self.table();
+            if table.contains_key(&id) {
+                Some(format!("pane {id} already exists"))
+            } else if table.len() >= MAX_PANES {
+                Some("too many panes".to_string())
+            } else {
+                match Pane::spawn(&spec, Some(window.clone())) {
+                    Ok(pane) => {
+                        log!("pane {id} started: {} (pid {})", spec.shell, pane.pid());
+                        table.insert(id, pane);
+                        None
+                    }
+                    Err(message) => Some(message),
+                }
+            }
+        };
+        let Some(message) = failure else {
+            return Flow::Go;
+        };
+        log!("pane {id} not started: {message}");
+        match window.send(&ToWindow::SpawnFailed { pane: id, message }) {
+            Ok(()) => Flow::Go,
+            Err(_) => Flow::Close("cannot write to the window".to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::peer_allowed;
+
+    #[test]
+    fn only_the_same_user_may_connect() {
+        assert!(peer_allowed(1000, 1000));
+        assert!(!peer_allowed(1001, 1000));
+        assert!(!peer_allowed(0, 1000));
+    }
+}

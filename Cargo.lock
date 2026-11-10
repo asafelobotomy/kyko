@@ -281,6 +281,7 @@ version = "0.0.1"
 dependencies = [
  "clap",
  "kyko-core",
+ "kyko-proto",
  "nix",
  "rustix",
  "tempfile",

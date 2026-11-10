@@ -55,7 +55,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 
 impl Out {
     fn new(p: &Pty) -> Out {
-        let mut f = p.reader();
+        let mut f = p.reader().unwrap();
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             let mut chunk = [0u8; 4096];
@@ -318,4 +318,64 @@ fn a_shell_does_not_inherit_another_shells_terminal() {
     pts.dedup();
     assert_eq!(pts.len(), 1, "expected only its own terminal: {text}");
     drop(first);
+}
+
+#[test]
+fn wait_blocks_until_the_shell_ends_and_reaps_it() {
+    let p = sh("sleep 0.2; exit 4");
+    assert_eq!(p.wait(), Some(4));
+    assert_eq!(p.try_wait(), Some(4));
+    assert!(
+        !std::path::Path::new(&format!("/proc/{}", p.pid())).exists(),
+        "the child is still there as a zombie"
+    );
+}
+
+#[test]
+fn dropping_a_pty_ends_and_reaps_its_shell() {
+    let p = Pty::spawn("sleep", &strings(&["300"]), "", &[], 80, 24).unwrap();
+    let pid = p.pid();
+    let started = Instant::now();
+    drop(p);
+    assert!(started.elapsed() < Duration::from_secs(1), "drop blocked");
+    assert!(
+        !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+        "the shell is still there after drop"
+    );
+}
+
+#[test]
+fn dropping_a_pty_ends_a_shell_that_ignores_hangup() {
+    let p = Pty::spawn(
+        "/bin/sh",
+        &strings(&["-c", "trap '' HUP; printf ready; sleep 300"]),
+        "",
+        &[],
+        80,
+        24,
+    )
+    .unwrap();
+    let mut out = Out::new(&p);
+    out.until(b"ready");
+    let pid = p.pid();
+    let started = Instant::now();
+    drop(p);
+    assert!(started.elapsed() < Duration::from_secs(1), "drop blocked");
+    let end = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < end && std::path::Path::new(&format!("/proc/{pid}")).exists() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+        "the shell outlived its pty"
+    );
+}
+
+#[test]
+fn hangup_after_the_shell_was_reaped_signals_nothing() {
+    let p = sh("exit 0");
+    assert_eq!(wait(&p), Some(0));
+    // The pid may be recycled by now; hangup must not send anything to it.
+    p.hangup();
+    assert_eq!(p.try_wait(), Some(0));
 }
