@@ -188,10 +188,13 @@ impl Pane {
     }
 
     /// The reader thread: every byte goes to the ring and, if a window is live,
-    /// to it. After output to a live window, the next read waits at most
-    /// [`QUIET`]; if nothing comes, the program and folder are checked and the
-    /// read blocks again with no timeout. Ends once the shell is gone and
-    /// reaped.
+    /// to it. What is already waiting after a read is read too, up to
+    /// [`OUTPUT_CHUNK`], and goes out as one frame: a program that writes a
+    /// line at a time would otherwise cost a frame per line or so. Nothing
+    /// waits for more to come. After output to a live window, the next read
+    /// waits at most [`QUIET`]; if nothing comes, the program and folder are
+    /// checked and the read blocks again with no timeout. Ends once the shell
+    /// is gone and reaped.
     fn pump(&self, mut reader: File) {
         let mut buf = vec![0u8; OUTPUT_CHUNK];
         let mut check_when_quiet = false;
@@ -203,7 +206,17 @@ impl Pane {
             }
             match reader.read(&mut buf) {
                 Ok(0) => break,
-                Ok(n) => check_when_quiet = self.output(&buf[..n]),
+                Ok(mut n) => {
+                    while n < buf.len() && readable_within(&reader, Duration::ZERO) {
+                        match reader.read(&mut buf[n..]) {
+                            Ok(m) if m > 0 => n += m,
+                            // The next read in the outer loop sees the end
+                            // or the error again and handles it.
+                            _ => break,
+                        }
+                    }
+                    check_when_quiet = self.output(&buf[..n]);
+                }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 // EIO: nothing has the terminal's other side open any more.
                 Err(_) => break,

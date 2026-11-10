@@ -335,6 +335,40 @@ fn output_frames_for_a_busy_pane_stay_within_64_kib() {
 }
 
 #[test]
+fn a_busy_pane_sends_output_in_few_frames() {
+    // A program that writes a line at a time is read a few lines at a time.
+    // A frame per read would mean a socket write and a window wake-up per
+    // ~100 bytes (spec 6.2 item 6), so what is already waiting is read into
+    // the same frame.
+    let h = Holder::start();
+    let mut c = Client::connect(&h);
+    c.hello();
+    c.send(ToHolder::Spawn(spec(
+        1,
+        "/bin/sh",
+        &["-c", "seq 1 300000; printf END; sleep 30"],
+    )));
+    let end = std::time::Instant::now() + Duration::from_secs(20);
+    let (mut got, mut frames) = (Vec::new(), 0);
+    while !got.ends_with(b"END") {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        match c.recv(left) {
+            Some(ToWindow::Output { pane: 1, bytes }) => {
+                frames += 1;
+                got.extend(bytes);
+            }
+            Some(_) => {}
+            None => panic!("no END after {} bytes", got.len()),
+        }
+    }
+    let average = got.len() / frames;
+    assert!(
+        average >= 1024,
+        "{frames} Output frames averaging {average} bytes"
+    );
+}
+
+#[test]
 fn unknown_pane_frames_are_ignored() {
     let h = Holder::start();
     let mut c = Client::connect(&h);
