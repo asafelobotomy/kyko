@@ -20,6 +20,7 @@
 
 use std::fs::File;
 use std::io::{self, Read};
+use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -311,6 +312,23 @@ impl Pane {
             );
             self.pty.hangup();
         }
+    }
+
+    /// True while the shell is running and something other than the shell
+    /// holds its terminal. A shell that has ended is never busy. Takes no
+    /// pane lock.
+    pub fn is_busy(&self) -> bool {
+        self.pty.try_wait().is_none() && self.pty.is_busy()
+    }
+
+    /// Sends `SIGHUP` to the shell's process group (nothing if it is reaped).
+    pub fn hangup(&self) {
+        self.pty.hangup();
+    }
+
+    /// See [`Pty::exit_fd`].
+    pub fn exit_fd(&self) -> io::Result<Option<OwnedFd>> {
+        self.pty.exit_fd()
     }
 
     /// What `Hello` reports for this pane: the foreground program and folder

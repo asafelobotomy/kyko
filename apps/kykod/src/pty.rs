@@ -244,22 +244,13 @@ impl Pty {
     }
 
     /// True once the shell has ended (reaped or not), waiting at most `limit`.
-    /// Uses a pidfd, so the wait sleeps in `poll` rather than ticking. The pidfd
-    /// is opened under the status lock while the shell is unreaped, so it
-    /// refers to the shell and not to a process that reused its pid.
+    /// Waits on [`Pty::exit_fd`], so the wait sleeps in `poll` rather than
+    /// ticking.
     fn ends_within(&self, limit: Duration) -> bool {
-        let fd = {
-            let status = self.status.lock().unwrap_or_else(|p| p.into_inner());
-            if status.is_some() {
-                return true;
-            }
-            let Some(pid) = rustix::process::Pid::from_raw(self.pid) else {
-                return false;
-            };
-            match rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()) {
-                Ok(fd) => fd,
-                Err(_) => return false,
-            }
+        let fd = match self.exit_fd() {
+            Ok(Some(fd)) => fd,
+            Ok(None) => return true,
+            Err(_) => return false,
         };
         let Ok(timeout) = rustix::event::Timespec::try_from(limit) else {
             return false;
@@ -276,6 +267,22 @@ impl Pty {
                 Err(_) => return false,
             }
         }
+    }
+
+    /// A pidfd for the shell, which `poll` reports readable once the shell has
+    /// ended; `None` if it has already been reaped. It is opened under the
+    /// status lock while the shell is unreaped, so it refers to the shell and
+    /// not to a process that reused its pid.
+    pub fn exit_fd(&self) -> io::Result<Option<OwnedFd>> {
+        let status = self.status.lock().unwrap_or_else(|p| p.into_inner());
+        if status.is_some() {
+            return Ok(None);
+        }
+        let pid = rustix::process::Pid::from_raw(self.pid)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())
+            .map(Some)
+            .map_err(io::Error::from)
     }
 
     /// The exit status once the shell has ended (128 plus the signal if it was

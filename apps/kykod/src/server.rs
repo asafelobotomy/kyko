@@ -18,7 +18,22 @@
 //! - a pane's lock, which may be held while writing to the window;
 //! - a window's writer, taken last, held only for one frame's write.
 //!
-//! The stored layout has its own lock, never held with any other.
+//! The stored layout has its own lock, never held with any other. A shell's
+//! status lock (inside [`crate::pty::Pty`]) is a leaf: it may be taken under
+//! the pane table, and nothing is taken under it.
+//!
+//! Ending: `kykod` stops only through [`Server::end_sessions`], called by an
+//! accepted `EndSessions` (on the connection's thread) or by `SIGTERM` or
+//! `SIGINT` (on the signal thread, which blocks in `signal-hook`'s iterator).
+//! Under the pane table it decides, in one pass, whether to end and which
+//! panes there are, and marks the server as ending, so it runs at most once
+//! and no pane can be spawned after the list is taken. With the table released
+//! it removes the socket file, hangs every shell up at once, waits on their
+//! pidfds in one `poll` until all have ended or [`END_GRACE`] has passed, and
+//! exits the process with status 0. Exiting from there ends every other thread
+//! wherever it is blocked. The lock file is left in place: see [`end_sessions`].
+//!
+//! [`end_sessions`]: Server::end_sessions
 //!
 //! A window that stops reading cannot hold a shell up: every write has
 //! [`WRITE_TIMEOUT`], after which the connection is dropped and every later
@@ -30,6 +45,7 @@ use std::convert::Infallible;
 use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -41,6 +57,8 @@ use kyko_proto::{Decoder, Frame, PaneId, SpawnSpec, ToHolder, ToWindow, VERSION}
 use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg};
 use nix::sys::stat::{Mode, umask};
+use signal_hook::consts::{SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
 
 use crate::pane::Pane;
 
@@ -55,6 +73,10 @@ pub const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 /// The largest layout blob `SaveLayout` may store; a larger one closes the
 /// connection.
 pub const MAX_LAYOUT: usize = 256 * 1024;
+
+/// How long ending the sessions waits, in all, for the hung-up shells to end
+/// before `kykod` exits anyway.
+pub const END_GRACE: Duration = Duration::from_secs(2);
 
 /// Only the user `kykod` runs as may connect.
 pub fn peer_allowed(peer_uid: u32, own_uid: u32) -> bool {
@@ -143,6 +165,19 @@ struct Server {
     window_live: AtomicBool,
     /// The last blob `SaveLayout` stored, returned by `Hello`.
     layout: Mutex<Vec<u8>>,
+    /// The socket file, removed when the sessions end.
+    path: PathBuf,
+    /// Set once the sessions are being ended. Read and set only under the
+    /// pane table's lock, so it and the table's contents agree.
+    ending: AtomicBool,
+}
+
+/// Why [`Server::end_sessions`] returned instead of exiting.
+enum NotEnded {
+    /// These panes, in ascending order, are running a program.
+    Busy(Vec<PaneId>),
+    /// Another caller is already ending the sessions.
+    AlreadyEnding,
 }
 
 /// The one window slot, held by the live connection; dropping it lets the
@@ -161,19 +196,23 @@ enum Flow {
     Close(String),
 }
 
-/// Serves `path` until the process is killed. Returns only on a setup error,
-/// as a message fit for the log.
+/// Serves `path` until the sessions are ended, which exits the process.
+/// Returns only on a setup error, as a message fit for the log.
 pub fn run(path: &Path) -> Result<Infallible, String> {
     // The lock is held for as long as this process lives.
     let (listener, _lock) = bind(path)?;
-    log!("listening on {}", path.display());
     let server = Arc::new(Server {
         panes: Mutex::new(BTreeMap::new()),
         uid: rustix::process::geteuid().as_raw(),
         next_window: AtomicU64::new(1),
         window_live: AtomicBool::new(false),
         layout: Mutex::new(Vec::new()),
+        path: path.to_path_buf(),
+        ending: AtomicBool::new(false),
     });
+    // Only now that the socket is ours: ending removes it.
+    handle_signals(&server)?;
+    log!("listening on {}", path.display());
     loop {
         match listener.accept() {
             Ok((stream, _)) => server.accept(stream),
@@ -191,6 +230,29 @@ pub fn run(path: &Path) -> Result<Infallible, String> {
             }
         }
     }
+}
+
+/// Starts the thread that ends the sessions on `SIGTERM` or `SIGINT`. It
+/// blocks in `signal-hook`'s iterator until a signal comes.
+fn handle_signals(server: &Arc<Server>) -> Result<(), String> {
+    let mut signals =
+        Signals::new([SIGTERM, SIGINT]).map_err(|e| format!("cannot handle signals: {e}"))?;
+    let server = server.clone();
+    std::thread::Builder::new()
+        .name("signals".into())
+        .spawn(move || {
+            for signal in signals.forever() {
+                let name = if signal == SIGINT {
+                    "SIGINT"
+                } else {
+                    "SIGTERM"
+                };
+                // Returns only if the sessions are already being ended.
+                server.end_sessions(true, name);
+            }
+        })
+        .map(drop)
+        .map_err(|e| format!("cannot start the signal thread: {e}"))
 }
 
 /// The lock file beside `socket`: `<socket path>.lock`.
@@ -423,8 +485,100 @@ impl Server {
                 *self.layout.lock().unwrap_or_else(|p| p.into_inner()) = blob;
                 Flow::Go
             }
-            ToHolder::EndSessions { .. } => Flow::Go,
+            ToHolder::EndSessions { force } => {
+                let why = if force {
+                    "EndSessions, forced"
+                } else {
+                    "EndSessions"
+                };
+                match self.end_sessions(force, why) {
+                    NotEnded::Busy(panes) => {
+                        log!("EndSessions refused: busy panes {panes:?}");
+                        match window.send(&ToWindow::Busy { panes }) {
+                            Ok(()) => Flow::Go,
+                            Err(_) => Flow::Close("cannot write to the window".to_string()),
+                        }
+                    }
+                    NotEnded::AlreadyEnding => Flow::Go,
+                }
+            }
         }
+    }
+
+    /// Ends every session and exits the process with status 0, unless `force`
+    /// is false and some pane is busy, or the sessions are already being
+    /// ended; then it returns why and changes nothing.
+    ///
+    /// The decision is one pass under the pane table's lock: every pane is
+    /// checked, then either nothing happens or the server is marked as ending
+    /// and the list of panes taken. Nothing is hung up until all are checked.
+    /// Input comes only from the connection's thread, which is the one making
+    /// this call for `EndSessions`, so no new command can be typed between the
+    /// check and the hang-up; input already queued, or a background job
+    /// taking the terminal, in the moment between them is not seen.
+    ///
+    /// Then, with no lock held: the socket file is removed, so no window can
+    /// reach a holder that is going away; every shell's process group gets
+    /// `SIGHUP` at once; one `poll` on their pidfds waits until all have ended
+    /// or [`END_GRACE`] has passed; and the process exits 0 either way. A
+    /// shell still running then is not killed: it outlives `kykod`, and the
+    /// kernel hangs its terminal up when `kykod`'s side closes.
+    ///
+    /// The lock file is left behind on purpose. Removing it would let a
+    /// `kykod` that had opened it just before lock a file no longer in the
+    /// folder while a third one creates and locks a new one, and both would
+    /// then serve the same socket. The lock itself is released by the kernel
+    /// when this process exits.
+    fn end_sessions(&self, force: bool, why: &str) -> NotEnded {
+        let panes: Vec<Arc<Pane>> = {
+            let table = self.table();
+            if self.ending.load(Ordering::Acquire) {
+                return NotEnded::AlreadyEnding;
+            }
+            if !force {
+                // The table is ordered by id, so the list is ascending.
+                let busy: Vec<PaneId> = table
+                    .values()
+                    .filter(|p| p.is_busy())
+                    .map(|p| p.id())
+                    .collect();
+                if !busy.is_empty() {
+                    return NotEnded::Busy(busy);
+                }
+            }
+            self.ending.store(true, Ordering::Release);
+            table.values().cloned().collect()
+        };
+        log!(
+            "ending every session ({why}): hanging up {} shell(s)",
+            panes.len()
+        );
+        if let Err(e) = fs::remove_file(&self.path) {
+            log!("cannot remove {}: {e}", self.path.display());
+        }
+        for pane in &panes {
+            pane.hangup();
+        }
+        let end = Instant::now() + END_GRACE;
+        let fds: Vec<OwnedFd> = panes
+            .iter()
+            .filter_map(|p| match p.exit_fd() {
+                Ok(fd) => fd,
+                Err(e) => {
+                    log!("pane {}: cannot wait for its shell: {e}", p.id());
+                    None
+                }
+            })
+            .collect();
+        let left = wait_for_exits(fds, end);
+        if left > 0 {
+            log!(
+                "{left} shell(s) still running after {}s; exiting anyway",
+                END_GRACE.as_secs()
+            );
+        }
+        log!("exiting");
+        std::process::exit(0);
     }
 
     /// Answers `Hello` with every pane and the stored layout. No pane's output
@@ -451,7 +605,9 @@ impl Server {
         let id = spec.pane;
         let result = {
             let mut table = self.table();
-            if table.contains_key(&id) {
+            if self.ending.load(Ordering::Acquire) {
+                Err("kykod is ending every session".to_string())
+            } else if table.contains_key(&id) {
                 Err(format!("pane {id} already exists"))
             } else if table.len() >= MAX_PANES {
                 Err("too many panes".to_string())
@@ -477,6 +633,44 @@ impl Server {
             Err(_) => Flow::Close("cannot write to the window".to_string()),
         }
     }
+}
+
+/// Waits until every pidfd in `fds` is readable (its process has ended) or
+/// `end` has passed, sleeping in one `poll` on all of them at a time. Returns
+/// how many processes had not ended.
+fn wait_for_exits(mut fds: Vec<OwnedFd>, end: Instant) -> usize {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    while !fds.is_empty() {
+        let left = end.saturating_duration_since(Instant::now());
+        let Ok(timeout) = Timespec::try_from(left) else {
+            break;
+        };
+        if left.is_zero() {
+            break;
+        }
+        let mut polls: Vec<PollFd<'_>> = fds
+            .iter()
+            .map(|fd| PollFd::new(fd, PollFlags::IN))
+            .collect();
+        match poll(&mut polls, Some(&timeout)) {
+            Ok(0) => break,
+            Ok(_) => {
+                let ended: Vec<bool> = polls.iter().map(|p| !p.revents().is_empty()).collect();
+                let mut i = 0;
+                fds.retain(|_| {
+                    i += 1;
+                    !ended[i - 1]
+                });
+            }
+            // A second signal, say: wait again for what is left of the grace.
+            Err(rustix::io::Errno::INTR) => {}
+            Err(e) => {
+                log!("cannot wait for the shells: {e}");
+                break;
+            }
+        }
+    }
+    fds.len()
 }
 
 #[cfg(test)]

@@ -284,6 +284,7 @@ dependencies = [
  "kyko-proto",
  "nix",
  "rustix",
+ "signal-hook",
  "tempfile",
 ]
 

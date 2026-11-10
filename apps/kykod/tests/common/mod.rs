@@ -27,6 +27,9 @@ pub struct Holder {
     child: Child,
     socket: PathBuf,
     log: Arc<Mutex<String>>,
+    /// Every shell pid [`Holder::children`] has seen. A shell that outlives a
+    /// `kykod` which has exited is no longer its child, so cleanup needs these.
+    seen: Mutex<Vec<i32>>,
     _dir: tempfile::TempDir,
 }
 
@@ -82,6 +85,7 @@ impl Holder {
             child,
             socket,
             log,
+            seen: Mutex::new(Vec::new()),
             _dir: dir,
         };
         let ready = if piped {
@@ -180,11 +184,41 @@ impl Holder {
 
     /// `kykod`'s direct children (its shells) as (pid, command line with spaces).
     pub fn children(&self) -> Vec<(i32, String)> {
-        processes()
+        let found: Vec<(i32, String)> = processes()
             .into_iter()
             .filter(|p| p.ppid == self.pid())
             .map(|p| (p.pid, p.cmdline))
-            .collect()
+            .collect();
+        let mut seen = self.seen.lock().unwrap();
+        for (pid, _) in &found {
+            if !seen.contains(pid) {
+                seen.push(*pid);
+            }
+        }
+        found
+    }
+
+    /// Sends `signal` to `kykod`, after noting its shells for cleanup.
+    pub fn signal(&self, signal: Signal) {
+        self.children();
+        kill(Pid::from_raw(self.pid()), signal).unwrap();
+    }
+
+    /// Waits up to `limit` for `kykod` to exit by itself and returns its exit
+    /// code (`None` if it was killed by a signal or is still running at
+    /// `limit`). It is not killed here; dropping the holder does that.
+    pub fn wait_exit(&mut self, limit: Duration) -> Option<i32> {
+        self.children();
+        let end = Instant::now() + limit;
+        loop {
+            if let Some(s) = self.child.try_wait().unwrap() {
+                return s.code();
+            }
+            if Instant::now() >= end {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// The pid of the one child whose command line is exactly `cmdline`,
@@ -211,7 +245,8 @@ impl Drop for Holder {
     fn drop(&mut self) {
         // Every shell is a session leader: end its whole session, let kykod reap
         // it, then end kykod.
-        let sessions: Vec<i32> = self.children().into_iter().map(|(p, _)| p).collect();
+        self.children();
+        let sessions = self.seen.lock().unwrap().clone();
         kill_sessions(&sessions);
         let end = Instant::now() + Duration::from_secs(2);
         while Instant::now() < end && sessions.iter().any(|p| exists(*p)) {
