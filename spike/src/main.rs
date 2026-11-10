@@ -4,6 +4,8 @@ use std::process::{Command, ExitCode};
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
+mod engine;
+mod theme;
 mod toggle;
 
 fn pid_file() -> PathBuf {
