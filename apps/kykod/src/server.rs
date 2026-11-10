@@ -1,9 +1,14 @@
-//! The socket server: a private Unix socket, one thread per connection, the
-//! pane table.
+//! The socket server: a private Unix socket, one window at a time, the pane
+//! table and the stored layout.
 //!
-//! Threads: the accept loop (the caller of [`run`]), one reader thread per
-//! connection, and one reader thread per pane (see [`crate::pane`]). Every one
-//! of them blocks in `accept` or `read`; nothing wakes on a timer.
+//! Threads: the accept loop (the caller of [`run`]), the reader thread of the
+//! one live connection, and per pane a reader and an input thread (see
+//! [`crate::pane`]). Every one of them blocks in `accept`, `read`, `poll` or on
+//! a channel; nothing wakes on a timer while no shell is producing output.
+//!
+//! One window at a time: while a connection is live, any other is closed by
+//! the accept loop before a byte of it is read. When the live connection ends,
+//! for any reason, every pane goes back to keeping its output in its ring only.
 //!
 //! Locks, never nested the other way round:
 //! - the pane table: taken by connection threads only, briefly, to look panes
@@ -13,9 +18,12 @@
 //! - a pane's lock, which may be held while writing to the window;
 //! - a window's writer, taken last, held only for one frame's write.
 //!
+//! The stored layout has its own lock, never held with any other.
+//!
 //! A window that stops reading cannot hold a shell up: every write has
 //! [`WRITE_TIMEOUT`], after which the connection is dropped and every later
-//! send to it fails at once.
+//! send to it fails at once. A replay on `Attach` shares one such deadline
+//! across all its frames.
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -44,6 +52,10 @@ pub const MAX_PANES: usize = 256;
 /// connection.
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// The largest layout blob `SaveLayout` may store; a larger one closes the
+/// connection.
+pub const MAX_LAYOUT: usize = 256 * 1024;
+
 /// Only the user `kykod` runs as may connect.
 pub fn peer_allowed(peer_uid: u32, own_uid: u32) -> bool {
     peer_uid == own_uid
@@ -70,16 +82,25 @@ impl Window {
         })
     }
 
-    /// Writes one whole frame. On failure the connection is shut down, so its
-    /// reader thread ends it, and the window is dead from then on.
+    /// Writes one whole frame within [`WRITE_TIMEOUT`]. On failure the
+    /// connection is shut down, so its reader thread ends it, and the window
+    /// is dead from then on.
     pub fn send(&self, frame: &ToWindow) -> io::Result<()> {
+        self.send_by(frame, Instant::now() + WRITE_TIMEOUT)
+    }
+
+    /// [`Window::send`] with a deadline shared by several frames: a frame
+    /// that has not been written by `end` fails like a stalled write. The
+    /// socket's own write timeout bounds the last single write, so this
+    /// returns at most [`WRITE_TIMEOUT`] after `end`.
+    pub fn send_by(&self, frame: &ToWindow, end: Instant) -> io::Result<()> {
         let mut bytes = Vec::new();
         frame.encode(&mut bytes);
         let mut out = self.out.lock().unwrap_or_else(|p| p.into_inner());
         if self.dead.load(Ordering::Acquire) {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
-        write_within(&mut out, &bytes, WRITE_TIMEOUT).inspect_err(|e| {
+        write_within(&mut out, &bytes, end).inspect_err(|e| {
             self.dead.store(true, Ordering::Release);
             let _ = out.shutdown(Shutdown::Both);
             log!("window {}: dropping the connection: {e}", self.id);
@@ -87,12 +108,17 @@ impl Window {
     }
 }
 
-/// `write_all` that gives up once `limit` has passed. The socket's own write
-/// timeout bounds each single write, so the whole takes at most about twice
-/// `limit`.
-fn write_within(out: &mut UnixStream, mut bytes: &[u8], limit: Duration) -> io::Result<()> {
-    let end = Instant::now() + limit;
+/// `write_all` that gives up once `end` has passed. The socket's own write
+/// timeout bounds each single write, so it returns at most [`WRITE_TIMEOUT`]
+/// after `end`.
+fn write_within(out: &mut UnixStream, mut bytes: &[u8], end: Instant) -> io::Result<()> {
     while !bytes.is_empty() {
+        if Instant::now() >= end {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the window stopped reading",
+            ));
+        }
         match out.write(bytes) {
             Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
             Ok(n) => bytes = &bytes[n..],
@@ -105,12 +131,6 @@ fn write_within(out: &mut UnixStream, mut bytes: &[u8], limit: Duration) -> io::
             }
             Err(e) => return Err(e),
         }
-        if !bytes.is_empty() && Instant::now() >= end {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "the window stopped reading",
-            ));
-        }
     }
     Ok(())
 }
@@ -119,6 +139,20 @@ struct Server {
     panes: Mutex<BTreeMap<PaneId, Arc<Pane>>>,
     uid: u32,
     next_window: AtomicU64,
+    /// True while a connection holds the one window slot.
+    window_live: AtomicBool,
+    /// The last blob `SaveLayout` stored, returned by `Hello`.
+    layout: Mutex<Vec<u8>>,
+}
+
+/// The one window slot, held by the live connection; dropping it lets the
+/// next window in.
+struct Slot(Arc<Server>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.window_live.store(false, Ordering::Release);
+    }
 }
 
 /// What the connection does after a frame.
@@ -137,6 +171,8 @@ pub fn run(path: &Path) -> Result<Infallible, String> {
         panes: Mutex::new(BTreeMap::new()),
         uid: rustix::process::geteuid().as_raw(),
         next_window: AtomicU64::new(1),
+        window_live: AtomicBool::new(false),
+        layout: Mutex::new(Vec::new()),
     });
     loop {
         match listener.accept() {
@@ -265,17 +301,29 @@ impl Server {
                 return;
             }
         }
-        let server = self.clone();
+        // One window at a time: closed here, before any of its bytes is read.
+        if self
+            .window_live
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            log!("window {id}: refused: another window is connected");
+            return;
+        }
+        let slot = Slot(self.clone());
+        // On failure the closure, and with it the slot, is dropped.
         if let Err(e) = std::thread::Builder::new()
             .name(format!("window-{id}"))
-            .spawn(move || server.serve(id, stream))
+            .spawn(move || slot.0.clone().serve(id, stream, slot))
         {
             log!("window {id}: refused: cannot start a thread: {e}");
         }
     }
 
-    /// One connection, from its first byte to its end.
-    fn serve(&self, id: u64, mut stream: UnixStream) {
+    /// One connection, from its first byte to its end. `slot` is released
+    /// only after every pane has gone back to ring-only, and before the
+    /// "disconnected" line is logged.
+    fn serve(&self, id: u64, mut stream: UnixStream, slot: Slot) {
         let window = match Window::new(id, &stream) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -290,6 +338,7 @@ impl Server {
         for pane in self.all_panes() {
             pane.detach(&window);
         }
+        drop(slot);
         log!("window {id} disconnected: {why}");
     }
 
@@ -360,51 +409,67 @@ impl Server {
                 }
                 Flow::Go
             }
-            ToHolder::Attach { .. }
-            | ToHolder::SaveLayout { .. }
-            | ToHolder::EndSessions { .. } => Flow::Go,
+            ToHolder::Attach { pane } => match self.pane(pane) {
+                Some(p) if p.attach(window).is_err() => {
+                    Flow::Close("cannot write to the window".to_string())
+                }
+                _ => Flow::Go,
+            },
+            ToHolder::SaveLayout { blob } if blob.len() > MAX_LAYOUT => Flow::Close(format!(
+                "layout of {} bytes exceeds the {MAX_LAYOUT} byte limit",
+                blob.len()
+            )),
+            ToHolder::SaveLayout { blob } => {
+                *self.layout.lock().unwrap_or_else(|p| p.into_inner()) = blob;
+                Flow::Go
+            }
+            ToHolder::EndSessions { .. } => Flow::Go,
         }
     }
 
-    /// Answers `Hello` with every pane, then sends each pane's output to this
-    /// window as it arrives.
+    /// Answers `Hello` with every pane and the stored layout. No pane's output
+    /// is sent until the window attaches it.
     fn hello(&self, window: &Arc<Window>) -> Flow {
         let panes = self.all_panes();
+        let layout = self
+            .layout
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let reply = ToWindow::Hello {
             version: VERSION,
             panes: panes.iter().map(|p| p.info()).collect(),
-            layout: vec![],
+            layout,
         };
         if window.send(&reply).is_err() {
             return Flow::Close("cannot write to the window".to_string());
-        }
-        for p in &panes {
-            p.go_live(window);
         }
         Flow::Go
     }
 
     fn spawn(&self, window: &Arc<Window>, spec: SpawnSpec) -> Flow {
         let id = spec.pane;
-        let failure = {
+        let result = {
             let mut table = self.table();
             if table.contains_key(&id) {
-                Some(format!("pane {id} already exists"))
+                Err(format!("pane {id} already exists"))
             } else if table.len() >= MAX_PANES {
-                Some("too many panes".to_string())
+                Err("too many panes".to_string())
             } else {
-                match Pane::spawn(&spec, Some(window.clone())) {
-                    Ok(pane) => {
-                        log!("pane {id} started: {} (pid {})", spec.shell, pane.pid());
-                        table.insert(id, pane);
-                        None
-                    }
-                    Err(message) => Some(message),
-                }
+                // Live for this window from its first byte.
+                Pane::spawn(&spec, Some(window.clone())).inspect(|pane| {
+                    log!("pane {id} started: {} (pid {})", spec.shell, pane.pid());
+                    table.insert(id, pane.clone());
+                })
             }
         };
-        let Some(message) = failure else {
-            return Flow::Go;
+        let message = match result {
+            // The one check right after Spawn, with the table lock released.
+            Ok(pane) => {
+                pane.check_info();
+                return Flow::Go;
+            }
+            Err(message) => message,
         };
         log!("pane {id} not started: {message}");
         match window.send(&ToWindow::SpawnFailed { pane: id, message }) {

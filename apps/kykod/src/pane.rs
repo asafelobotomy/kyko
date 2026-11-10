@@ -8,7 +8,15 @@
 //! reads cannot hold up the connection. Everything that changes with the pane's
 //! output (the ring, whether a window gets it live, the exit status) sits under
 //! the pane's own lock, so whoever holds that lock sees the ring and the live
-//! stream agree.
+//! stream agree. `Attach` relies on that: it sends the ring and flips the pane
+//! live under one hold of the lock, so every byte reaches the window exactly
+//! once, either in the replay or live.
+//!
+//! The foreground program and folder are checked once right after `Spawn` and
+//! `Attach`, and by the reader thread once the output of a live pane has been
+//! quiet for [`QUIET`]. The reader waits for that with a `poll` timeout that is
+//! armed only by output and disarmed once the check has run, so an idle pane's
+//! threads never wake.
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -16,13 +24,13 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use kyko_proto::{PaneId, PaneInfo, SpawnSpec, ToWindow};
 
 use crate::pty::Pty;
 use crate::ring::Ring;
-use crate::server::Window;
+use crate::server::{WRITE_TIMEOUT, Window};
 
 /// The most output bytes one `Output` frame carries.
 pub const OUTPUT_CHUNK: usize = 64 * 1024;
@@ -36,6 +44,10 @@ pub const INPUT_LIMIT: usize = 4 * 1024 * 1024;
 
 /// How long `Close` gives a shell after `SIGHUP` before killing its group.
 pub const CLOSE_GRACE: Duration = Duration::from_secs(2);
+
+/// How long a live pane's output must have been quiet before its program and
+/// folder are checked.
+pub const QUIET: Duration = Duration::from_millis(100);
 
 pub struct Pane {
     id: PaneId,
@@ -67,6 +79,9 @@ struct State {
     rows: u16,
     program: String,
     cwd: String,
+    /// The program and folder last sent to the live window in `Info`; `None`
+    /// until one is sent, and again on every `Attach`.
+    info_sent: Option<(String, String)>,
     exited: Option<i32>,
     /// Set by `Close`: the pane is out of the table and its output is dropped
     /// until the shell has gone.
@@ -116,6 +131,7 @@ impl Pane {
                 rows: spec.rows.max(1),
                 program,
                 cwd,
+                info_sent: None,
                 exited: None,
                 closed: false,
             }),
@@ -171,13 +187,22 @@ impl Pane {
     }
 
     /// The reader thread: every byte goes to the ring and, if a window is live,
-    /// to it. Ends once the shell is gone and reaped.
+    /// to it. After output to a live window, the next read waits at most
+    /// [`QUIET`]; if nothing comes, the program and folder are checked and the
+    /// read blocks again with no timeout. Ends once the shell is gone and
+    /// reaped.
     fn pump(&self, mut reader: File) {
         let mut buf = vec![0u8; OUTPUT_CHUNK];
+        let mut check_when_quiet = false;
         loop {
+            if check_when_quiet && !readable_within(&reader, QUIET) {
+                check_when_quiet = false;
+                self.check_info();
+                continue;
+            }
             match reader.read(&mut buf) {
                 Ok(0) => break,
-                Ok(n) => self.output(&buf[..n]),
+                Ok(n) => check_when_quiet = self.output(&buf[..n]),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 // EIO: nothing has the terminal's other side open any more.
                 Err(_) => break,
@@ -189,10 +214,12 @@ impl Pane {
         self.ended(status);
     }
 
-    fn output(&self, bytes: &[u8]) {
+    /// Keeps `bytes` and sends them to the live window, if any. Returns true
+    /// if a window is still live for this pane.
+    fn output(&self, bytes: &[u8]) -> bool {
         let mut st = self.lock();
         if st.closed {
-            return;
+            return false;
         }
         st.ring.push(bytes);
         // The send happens under the pane lock (never the table lock), so the
@@ -208,6 +235,7 @@ impl Pane {
                 st.live = None;
             }
         }
+        st.live.is_some()
     }
 
     fn ended(&self, status: i32) {
@@ -290,12 +318,7 @@ impl Pane {
     pub fn info(&self) -> PaneInfo {
         let mut st = self.lock();
         if st.exited.is_none() {
-            if let Some((_, program)) = self.pty.foreground() {
-                st.program = program;
-            }
-            if let Some(cwd) = self.pty.cwd() {
-                st.cwd = cwd;
-            }
+            self.refresh(&mut st);
         }
         PaneInfo {
             pane: self.id,
@@ -307,11 +330,92 @@ impl Pane {
         }
     }
 
-    /// From now on, this pane's output goes to `window` as it arrives.
-    pub fn go_live(&self, window: &Arc<Window>) {
+    /// Sends the ring to `window` as `Output` frames of at most
+    /// [`OUTPUT_CHUNK`] bytes, then `Replayed`, and from then on the pane's
+    /// output as it arrives. After `Replayed` comes `Exited` if the shell has
+    /// ended (it may have ended after `Hello` listed it as running), or else an
+    /// `Info`. All of it happens under the pane's lock, so the reader thread
+    /// cannot add a byte between the replay and the switch to live: no byte is
+    /// lost or sent twice. Every frame shares one [`WRITE_TIMEOUT`] deadline,
+    /// so a window that cannot take them holds the shell up no longer than one
+    /// stalled frame would. A pane that is already live is replayed again: the
+    /// window asked for it. An error means the window is gone.
+    pub fn attach(&self, window: &Arc<Window>) -> io::Result<()> {
         let mut st = self.lock();
-        if !st.closed {
-            st.live = Some(window.clone());
+        if st.closed {
+            return Ok(());
+        }
+        st.live = None;
+        let end = Instant::now() + WRITE_TIMEOUT;
+        let replay = st.ring.contents();
+        for chunk in replay.chunks(OUTPUT_CHUNK) {
+            let frame = ToWindow::Output {
+                pane: self.id,
+                bytes: chunk.to_vec(),
+            };
+            window.send_by(&frame, end)?;
+        }
+        let done = ToWindow::Replayed {
+            pane: self.id,
+            truncated: st.ring.truncated(),
+        };
+        window.send_by(&done, end)?;
+        if let Some(status) = st.exited {
+            let frame = ToWindow::Exited {
+                pane: self.id,
+                status,
+            };
+            window.send_by(&frame, end)?;
+        }
+        st.live = Some(window.clone());
+        st.info_sent = None;
+        self.send_info(&mut st, end);
+        if st.live.is_some() {
+            Ok(())
+        } else {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    /// Sends `Info` to the live window if the foreground program or folder
+    /// differs from what it was last sent.
+    pub fn check_info(&self) {
+        let mut st = self.lock();
+        self.send_info(&mut st, Instant::now() + WRITE_TIMEOUT);
+    }
+
+    /// [`Pane::check_info`] with the lock held, writing by `end`.
+    fn send_info(&self, st: &mut State, end: Instant) {
+        if st.closed || st.exited.is_some() {
+            return;
+        }
+        let Some(window) = st.live.clone() else {
+            return;
+        };
+        self.refresh(st);
+        let now = (st.program.clone(), st.cwd.clone());
+        if st.info_sent.as_ref() == Some(&now) {
+            return;
+        }
+        let frame = ToWindow::Info {
+            pane: self.id,
+            program: now.0.clone(),
+            cwd: now.1.clone(),
+        };
+        if window.send_by(&frame, end).is_ok() {
+            st.info_sent = Some(now);
+        } else {
+            st.live = None;
+        }
+    }
+
+    /// Reads the foreground program and folder from the system into `st`.
+    fn refresh(&self, st: &mut State) {
+        if let Some((_, program)) = self.pty.foreground() {
+            st.program = program;
+        }
+        if let Some(cwd) = self.pty.cwd() {
+            st.cwd = cwd;
         }
     }
 
@@ -320,6 +424,27 @@ impl Pane {
         let mut st = self.lock();
         if st.live.as_ref().is_some_and(|w| Arc::ptr_eq(w, window)) {
             st.live = None;
+        }
+    }
+}
+
+/// True if `reader` has something to read (or has hung up) within `limit`;
+/// false once `limit` has passed with nothing. An error counts as readable, so
+/// the read that follows reports it.
+fn readable_within(reader: &File, limit: Duration) -> bool {
+    let Ok(timeout) = rustix::event::Timespec::try_from(limit) else {
+        return true;
+    };
+    let mut fds = [rustix::event::PollFd::new(
+        reader,
+        rustix::event::PollFlags::IN,
+    )];
+    loop {
+        match rustix::event::poll(&mut fds, Some(&timeout)) {
+            Ok(n) => return n > 0,
+            // A signal is rare here; waiting the full limit again is harmless.
+            Err(rustix::io::Errno::INTR) => {}
+            Err(_) => return true,
         }
     }
 }

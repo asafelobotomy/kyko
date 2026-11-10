@@ -125,6 +125,50 @@ impl Holder {
         self.child.id() as i32
     }
 
+    /// `kykod`'s anonymous resident memory (`RssAnon`), in bytes.
+    pub fn rss_anon(&self) -> u64 {
+        let status = std::fs::read_to_string(format!("/proc/{}/status", self.pid())).unwrap();
+        let kib: u64 = status
+            .lines()
+            .find_map(|l| l.strip_prefix("RssAnon:"))
+            .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+            .unwrap();
+        kib * 1024
+    }
+
+    /// Voluntary plus involuntary context switches of every `kykod` thread.
+    pub fn context_switches(&self) -> u64 {
+        let mut total = 0;
+        for task in std::fs::read_dir(format!("/proc/{}/task", self.pid())).unwrap() {
+            let Ok(status) = std::fs::read_to_string(task.unwrap().path().join("status")) else {
+                continue;
+            };
+            for line in status.lines() {
+                if let Some(v) = line
+                    .strip_prefix("voluntary_ctxt_switches:")
+                    .or_else(|| line.strip_prefix("nonvoluntary_ctxt_switches:"))
+                {
+                    total += v.trim().parse::<u64>().unwrap();
+                }
+            }
+        }
+        total
+    }
+
+    /// Waits until the log has `needle` in it at least `times` times.
+    pub fn log_has(&self, needle: &str, times: usize) -> bool {
+        let end = Instant::now() + LIMIT;
+        loop {
+            if count(self.log().as_bytes(), needle.as_bytes()) >= times {
+                return true;
+            }
+            if Instant::now() >= end {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     pub fn socket(&self) -> &Path {
         &self.socket
     }
@@ -245,6 +289,15 @@ pub fn kill_sessions(sessions: &[i32]) {
     }
 }
 
+/// CPU time (user plus system, in clock ticks) the process has used so far.
+pub fn cpu_ticks(pid: i32) -> u64 {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let rest = stat.rsplit_once(')').unwrap().1;
+    let f: Vec<&str> = rest.split_whitespace().collect();
+    // Fields 14 and 15 of stat; `rest` starts at field 3.
+    f[11].parse::<u64>().unwrap() + f[12].parse::<u64>().unwrap()
+}
+
 /// True while the process exists, zombie included.
 pub fn exists(pid: i32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
@@ -287,11 +340,16 @@ pub fn count(hay: &[u8], needle: &[u8]) -> usize {
 /// One connection to a `kykod`, speaking the protocol as the window does.
 pub struct Client {
     stream: UnixStream,
+    path: PathBuf,
     decoder: Decoder,
     eof: bool,
+    /// Frames received on this connection so far.
+    frames: usize,
 }
 
 impl Client {
+    /// A raw connection: nothing is sent. While another window is live, kykod
+    /// closes it at once; [`Client::hello`] retries such a refusal.
     pub fn connect(h: &Holder) -> Client {
         Client::connect_path(h.socket())
     }
@@ -302,9 +360,21 @@ impl Client {
         stream.set_write_timeout(Some(LIMIT)).unwrap();
         Client {
             stream,
+            path: path.to_path_buf(),
             decoder: Decoder::new(),
             eof: false,
+            frames: 0,
         }
+    }
+
+    /// True once kykod has ended this connection.
+    pub fn ended(&self) -> bool {
+        self.eof
+    }
+
+    /// Frames received on this connection so far.
+    pub fn frames(&self) -> usize {
+        self.frames
     }
 
     pub fn send(&mut self, frame: ToHolder) {
@@ -327,6 +397,7 @@ impl Client {
                 .next::<ToWindow>()
                 .expect("kykod sent a bad frame")
             {
+                self.frames += 1;
                 return Some(f);
             }
             if self.eof {
@@ -371,16 +442,73 @@ impl Client {
         }
     }
 
-    /// Sends `Hello` of this protocol version and returns the reply.
+    /// Sends `Hello` of this protocol version and returns the reply. kykod
+    /// takes one window at a time and closes any other connection at once,
+    /// without a frame; the previous window's end may not have reached it yet.
+    /// So a connection that ends with no frame at all is opened again, until
+    /// [`LIMIT`]. Anything else (no reply on an open connection, or an end
+    /// after some frame) fails the test.
     pub fn hello(&mut self) -> (u32, Vec<PaneInfo>, Vec<u8>) {
-        self.send(ToHolder::Hello { version: VERSION });
+        let end = Instant::now() + LIMIT;
+        loop {
+            if let Some(reply) = self.hello_once() {
+                return reply;
+            }
+            assert!(
+                self.eof && self.frames == 0,
+                "no Hello came back on an open connection"
+            );
+            assert!(
+                Instant::now() < end,
+                "kykod refused every connection for {LIMIT:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+            *self = Client::connect_path(&self.path.clone());
+        }
+    }
+
+    /// Sends `Hello` once on this connection; `None` if no `Hello` came back.
+    pub fn hello_once(&mut self) -> Option<(u32, Vec<PaneInfo>, Vec<u8>)> {
+        let mut out = Vec::new();
+        ToHolder::Hello { version: VERSION }.encode(&mut out);
+        // A refused connection may already be closed: the reply decides.
+        let _ = self.stream.write_all(&out);
         match self.wait_for(|f| matches!(f, ToWindow::Hello { .. }), LIMIT) {
             Some(ToWindow::Hello {
                 version,
                 panes,
                 layout,
-            }) => (version, panes, layout),
-            _ => panic!("no Hello came back"),
+            }) => Some((version, panes, layout)),
+            _ => None,
+        }
+    }
+
+    /// Sends `Attach` and collects the replay: every `Output` for `pane` up to
+    /// its `Replayed`. Returns the replayed bytes and the `truncated` flag.
+    /// Fails the test if another frame for `pane` comes first.
+    pub fn attach(&mut self, pane: PaneId) -> (Vec<u8>, bool) {
+        self.send(ToHolder::Attach { pane });
+        let end = Instant::now() + LIMIT;
+        let mut got = Vec::new();
+        loop {
+            let left = end.saturating_duration_since(Instant::now());
+            match self.recv(left) {
+                Some(ToWindow::Output { pane: p, bytes }) if p == pane => {
+                    assert!(bytes.len() <= 64 * 1024, "Output of {} bytes", bytes.len());
+                    got.extend(bytes);
+                }
+                Some(ToWindow::Replayed { pane: p, truncated }) if p == pane => {
+                    return (got, truncated);
+                }
+                Some(other) => assert!(
+                    !matches!(
+                        other,
+                        ToWindow::Info { pane: p, .. } | ToWindow::Exited { pane: p, .. } if p == pane
+                    ),
+                    "{other:?} before Replayed"
+                ),
+                None => panic!("no Replayed for pane {pane}; got {} bytes", got.len()),
+            }
         }
     }
 
