@@ -123,6 +123,10 @@ name = "kyko-core"
 version = "0.0.1"
 
 [[package]]
+name = "kyko-proto"
+version = "0.0.1"
+
+[[package]]
 name = "kykod"
 version = "0.0.1"
 dependencies = [
