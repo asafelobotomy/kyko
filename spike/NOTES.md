@@ -51,3 +51,41 @@ Things the spike got wrong on the way, worth remembering for milestone 1:
   Signals are not a toggle transport; milestone 1 uses D-Bus as specified.
 - **While shown with keyboard focus, the panel takes whatever the user types.** Automated runs set
   `KYKO_SPIKE_NOFOCUS=1` (keyboard interactivity none).
+
+## Hotkey (KWin, xdg-desktop-portal 1.22.1, xdg-desktop-portal-kde 6.7.5)
+
+Checked 2026-11-10. The key itself was never physically pressed: activation was triggered through
+KGlobalAccel's `invokeShortcut`, which exercises portal → app but not keyboard → KWin.
+
+- **The portal exists and works:** `org.freedesktop.portal.GlobalShortcuts` version 2. `CreateSession`,
+  `BindShortcuts` and the `Activated` signal all work from raw zbus.
+- **The portal needs an app id, and gets it from the systemd unit, not from the binary.**
+  - Launched from another app's scope (here: the Claude desktop app), the shortcut was filed under
+    *that app's* id (`[com.anthropic.Claude]` in `kglobalshortcutsrc`). Removed again afterwards.
+  - Launched in a scope of its own with no desktop entry: `CreateSession` fails with
+    `org.freedesktop.portal.Error.NotAllowed: An app id is required`.
+  - Launched as `app-org.kyko.spike-<n>.scope` WITH `org.kyko.spike.desktop` installed: bound.
+  - Consequence for kyko: it must ship a desktop entry whose name is its app id, and run in a unit the
+    portal maps to that id (or register through `org.freedesktop.host.portal.Registry`; not tried).
+- **Dialog:** under the wrong app id Plasma showed an OK/Cancel dialog and the bind waited on it. Under
+  its own id the bind returned within 5 s with no dialog seen in the screenshot (not certain nobody
+  clicked). The **overlay-layer panel covered that dialog**: kyko must not be showing while a portal
+  dialog can appear.
+- **Preferred trigger honoured the first time:** asked for `LOGO+F12`, got `Meta+F12`.
+- **Rebinding does NOT work through `BindShortcuts`:** asking for `CTRL+LOGO+F11` in a later session
+  kept `Meta+F12`. Once registered, Plasma keeps its own stored key. Changing it needs the portal's
+  `ConfigureShortcuts` (v2; opens Plasma's own UI, not tried) or KGlobalAccel's D-Bus API directly.
+  **"Change the hotkey in kyko's Preferences" is therefore not possible through the portal alone on
+  Plasma.**
+- **Activation path works:** `invokeShortcut toggle` on the KGlobalAccel component showed the panel.
+
+## Foreground (KWin)
+
+- **Over a fullscreen window:** `LayerOverlay` shows above it; `LayerTop` stays hidden behind it.
+  Screenshot evidence, both layers, same fullscreen test window. Overlay is the right layer.
+- **Keyboard focus when summoned:** NOT verified. All automated runs used keyboard interactivity
+  `None` so the spike could not swallow the user's typing. `Window.active` proved unreliable as a signal
+  (it read "focused" in a run where the surface could not take keys).
+- **Not checked:** maximised window, another virtual desktop, focus returning on hide, a real key press.
+
+`spike/try.sh` sets up the scope and desktop entry for a hands-on check and cleans up on exit.

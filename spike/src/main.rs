@@ -6,6 +6,7 @@ use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
 mod bridge;
 mod engine;
+mod hotkey;
 mod theme;
 mod toggle;
 
@@ -33,6 +34,19 @@ fn main() -> ExitCode {
     }
     toggle::claim_signal();
     let _ = std::fs::write(pid_file(), std::process::id().to_string());
+    if std::env::var_os("KYKO_SPIKE_NO_PORTAL").is_none() {
+        // The portal may wait on a dialog, so bind off the main thread.
+        std::thread::spawn(|| {
+            let key = std::env::var("KYKO_SPIKE_HOTKEY").unwrap_or_else(|_| "F12".into());
+            let result = hotkey::start_portal_hotkey(&key, || {
+                let _ = signal_hook::low_level::raise(signal_hook::consts::SIGUSR1);
+            });
+            match result {
+                Ok(s) => eprintln!("hotkey: bound ({s}), asked for {key}"),
+                Err(e) => eprintln!("hotkey: {e}"),
+            }
+        });
+    }
     let mut app = QGuiApplication::new();
     bridge::ffi::grid_register();
     let mut engine = QQmlApplicationEngine::new();

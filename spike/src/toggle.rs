@@ -19,6 +19,14 @@ pub mod qobject {
         /// True when KYKO_SPIKE_NOFOCUS is set: automated runs must not take the keyboard.
         #[qinvokable]
         fn no_focus(self: &Toggler) -> bool;
+
+        /// True when KYKO_SPIKE_LAYER=top (default: overlay).
+        #[qinvokable]
+        fn layer_top(self: &Toggler) -> bool;
+
+        /// True when KYKO_SPIKE_START_HIDDEN is set.
+        #[qinvokable]
+        fn start_hidden(self: &Toggler) -> bool;
     }
 
     impl cxx_qt::Threading for Toggler {}
@@ -36,6 +44,14 @@ pub fn claim_signal() {
 pub struct TogglerRust;
 
 impl qobject::Toggler {
+    pub fn layer_top(&self) -> bool {
+        std::env::var("KYKO_SPIKE_LAYER").is_ok_and(|v| v == "top")
+    }
+
+    pub fn start_hidden(&self) -> bool {
+        std::env::var_os("KYKO_SPIKE_START_HIDDEN").is_some()
+    }
+
     pub fn no_focus(&self) -> bool {
         std::env::var_os("KYKO_SPIKE_NOFOCUS").is_some()
     }

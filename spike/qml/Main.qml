@@ -16,7 +16,7 @@ Window {
     color: "transparent"
     flags: Qt.FramelessWindowHint
 
-    LayerShell.Window.layer: LayerShell.Window.LayerOverlay
+    LayerShell.Window.layer: toggler.layer_top() ? LayerShell.Window.LayerTop : LayerShell.Window.LayerOverlay
     LayerShell.Window.anchors: LayerShell.Window.AnchorTop
     LayerShell.Window.keyboardInteractivity: toggler.no_focus() ? LayerShell.Window.KeyboardInteractivityNone : LayerShell.Window.KeyboardInteractivityOnDemand
     LayerShell.Window.scope: "kyko"
@@ -75,7 +75,11 @@ Window {
 
     Toggler {
         id: toggler
-        Component.onCompleted: start()
+        Component.onCompleted: {
+            start()
+            if (start_hidden())
+                root.shown = false
+        }
         onToggled: root.shown = !root.shown
     }
 }
