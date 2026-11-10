@@ -103,6 +103,11 @@ pub struct Window {
 }
 
 impl Window {
+    /// This connection's number, unique for the life of the process.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
     fn new(id: u64, stream: &UnixStream) -> io::Result<Window> {
         let out = stream.try_clone()?;
         out.set_write_timeout(Some(WRITE_TIMEOUT))?;
@@ -474,7 +479,7 @@ impl Server {
             }
             ToHolder::Resize { pane, cols, rows } => {
                 if let Some(p) = self.pane(pane) {
-                    p.resize(cols, rows);
+                    p.resize(window, cols, rows);
                 }
                 Flow::Go
             }

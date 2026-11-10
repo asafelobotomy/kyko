@@ -133,6 +133,14 @@ impl Window {
         });
     }
 
+    /// Attaches this window to its pane and replays the pane into its
+    /// emulator; returns it with the replayed bytes and the `truncated` flag.
+    fn reattach_here(mut self) -> (Window, Vec<u8>, bool) {
+        let (bytes, truncated) = self.client.attach(self.pane);
+        self.emu.replay(&bytes, truncated);
+        (self, bytes, truncated)
+    }
+
     /// Leaves, connects again, attaches and replays the pane into a new
     /// emulator, as a window started afresh does. The bytes replayed are every
     /// `Output` that came before `Replayed`; they are returned with the
@@ -140,10 +148,7 @@ impl Window {
     fn reattach(self, h: &Holder) -> (Window, Vec<u8>, bool) {
         let pane = self.pane;
         drop(self);
-        let mut w = Window::open(h, pane);
-        let (bytes, truncated) = w.client.attach(pane);
-        w.emu.replay(&bytes, truncated);
-        (w, bytes, truncated)
+        Window::open(h, pane).reattach_here()
     }
 }
 
@@ -209,16 +214,15 @@ fn reattach_restores_a_shell_screen() {
     assert_eq!(s2, s1, "the replayed screen differs cell for cell");
 }
 
-#[test]
-fn reattach_restores_a_full_screen_program_after_the_resize_nudge() {
-    let h = Holder::start();
-    let dir = tempfile::tempdir().unwrap();
+/// Starts `less` on 200 numbered lines in pane 1, pages down once and leaves.
+/// Returns a test for the paged screen.
+fn paged_less(h: &Holder, dir: &tempfile::TempDir) -> impl Fn(&Snapshot) -> bool + use<> {
     let file = dir.path().join("lines.txt");
     let text: String = (1..=200).map(|i| format!("line {i}\n")).collect();
     std::fs::write(&file, text).unwrap();
     let file = file.to_str().unwrap().to_string();
 
-    let mut w = Window::open(&h, 1);
+    let mut w = Window::open(h, 1);
     let mut s = spec(1, "/usr/bin/less", &[&file]);
     // The user's own less settings must not change the screen.
     s.env = vec![
@@ -228,28 +232,109 @@ fn reattach_restores_a_full_screen_program_after_the_resize_nudge() {
     ];
     w.client.send(ToHolder::Spawn(s));
     let last = ROWS as usize - 1;
-    let on_first_page = |s: &Snapshot| row(s, 0) == "line 1" && row(s, last - 1) == "line 23";
+    let on_first_page = move |s: &Snapshot| row(s, 0) == "line 1" && row(s, last - 1) == "line 23";
     w.until(on_first_page, LIMIT);
     // Page down once, so the screen is not the program's first drawing.
     w.type_text(" ");
-    let paged = |s: &Snapshot| row(s, 0) == "line 24" && row(s, last) == ":";
+    let paged = move |s: &Snapshot| row(s, 0) == "line 24" && row(s, last) == ":";
     w.until(paged, LIMIT);
     w.settle();
+    paged
+}
 
-    let (mut w, _, truncated) = w.reattach(&h);
-    assert!(!truncated);
+/// Every `Output` for `pane` that arrives within `period`, in bytes.
+fn output_within(c: &mut Client, pane: PaneId, period: Duration) -> usize {
+    let end = Instant::now() + period;
+    let mut n = 0;
+    while let Some(f) = c.recv(end.saturating_duration_since(Instant::now())) {
+        if let ToWindow::Output { pane: p, bytes } = f
+            && p == pane
+        {
+            n += bytes.len();
+        }
+    }
+    n
+}
+
+#[test]
+fn a_same_size_resize_after_attach_makes_a_full_screen_program_redraw() {
+    let h = Holder::start();
+    let dir = tempfile::tempdir().unwrap();
+    let paged = paged_less(&h, &dir);
+
+    // A window started afresh that ignores the replay: everything it shows
+    // must come from the redraw the nudge provokes.
+    let mut w = Window::open(&h, 1);
+    w.client.attach(1);
+    assert!(!paged(&w.snapshot()));
     w.client.send(ToHolder::Resize {
         pane: 1,
         cols: COLS,
         rows: ROWS,
     });
-    let s = w.settle();
-    assert!(paged(&s), "after the nudge:\n{}", dump(&s));
+    w.until(&paged, LIMIT);
+    w.settle();
+    // Only the first same-size Resize after Attach nudges: a window that
+    // sends its size again does not make the program draw again.
+    w.client.send(ToHolder::Resize {
+        pane: 1,
+        cols: COLS,
+        rows: ROWS,
+    });
+    let n = output_within(&mut w.client, 1, Duration::from_millis(500));
+    assert_eq!(n, 0, "a second same-size Resize made less draw {n} bytes");
     // Still the live program: it answers a key.
     w.type_text("q");
     w.client
         .wait_for(|f| matches!(f, ToWindow::Exited { pane: 1, .. }), LIMIT)
         .expect("less did not quit");
+}
+
+#[test]
+fn a_real_resize_after_attach_uses_up_the_nudge() {
+    let h = Holder::start();
+    let dir = tempfile::tempdir().unwrap();
+    let _ = paged_less(&h, &dir);
+
+    let mut w = Window::open(&h, 1);
+    w.client.attach(1);
+    // A real change of size: the kernel signals less, which draws.
+    w.client.send(ToHolder::Resize {
+        pane: 1,
+        cols: COLS,
+        rows: ROWS - 4,
+    });
+    w.client
+        .wait_for(|f| matches!(f, ToWindow::Output { pane: 1, .. }), LIMIT)
+        .expect("less did not draw after a change of size");
+    w.settle();
+    // The same size again is not the first Resize since Attach: no redraw.
+    w.client.send(ToHolder::Resize {
+        pane: 1,
+        cols: COLS,
+        rows: ROWS - 4,
+    });
+    let n = output_within(&mut w.client, 1, Duration::from_millis(500));
+    assert_eq!(n, 0, "a same-size Resize after a real one drew {n} bytes");
+}
+
+#[test]
+fn a_same_size_resize_to_a_shell_at_its_prompt_is_harmless() {
+    let h = Holder::start();
+    let mut w = Window::open(&h, 1);
+    w.client.send(ToHolder::Spawn(plain_shell(1)));
+    w.until(|s| row(s, 0) == "$", LIMIT);
+    w.settle();
+    drop(w);
+    let (mut w, _, _) = Window::open(&h, 1).reattach_here();
+    w.client.send(ToHolder::Resize {
+        pane: 1,
+        cols: COLS,
+        rows: ROWS,
+    });
+    w.type_text("echo nudged-$((6*7))\n");
+    w.until(|s| rows(s).iter().any(|r| r == "nudged-42"), LIMIT);
+    assert!(!w.client.ended(), "kykod closed the connection");
 }
 
 /// Escape-sequence debris: what a cut SGR sequence leaves at a row's start.
@@ -266,7 +351,7 @@ fn sgr_debris(row: &str) -> bool {
 fn reattach_after_the_ring_wrapped_is_clean() {
     let h = Holder::start();
     let mut w = Window::open(&h, 1);
-    // 20,000 numbered lines in colour, about 800 KB: the 256 KiB ring wraps
+    // 20,000 numbered lines in colour, about 980 KB: the 256 KiB ring wraps
     // more than twice, and wherever it is cut there is an escape sequence near.
     let script = "awk 'BEGIN { for (i = 1; i <= 20000; i++) \
                   printf \"\\033[1;3%dmnumbered line %05d\\033[0m of the ring test\\n\", i % 8, i }'; \

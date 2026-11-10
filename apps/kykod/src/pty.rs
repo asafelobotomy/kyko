@@ -160,7 +160,9 @@ impl Pty {
         Ok(())
     }
 
-    /// Tells the terminal its new size; the foreground program gets `SIGWINCH`.
+    /// Tells the terminal its new size. Only a change of size makes the
+    /// kernel send `SIGWINCH` to the foreground program; the same size again
+    /// sends nothing (see [`Pty::nudge`]).
     pub fn resize(&self, cols: u16, rows: u16) {
         let s = winsize(cols, rows);
         let _ = rustix::termios::tcsetwinsize(
@@ -237,6 +239,19 @@ impl Pty {
     /// ended (`dmesg | less`) is still seen.
     pub fn is_busy(&self) -> bool {
         matches!(self.foreground_group(), Some(g) if g != self.pid)
+    }
+
+    /// Sends `SIGWINCH` to the terminal's foreground process group, so that a
+    /// full-screen program redraws although its size has not changed (the
+    /// kernel signals only a change). Nothing is sent when the terminal has
+    /// no foreground group, nor to group 1, which `killpg` would take as every
+    /// process. The group is read and signalled in two steps: in between it
+    /// could end and its id be taken by a new group, which would then get a
+    /// `SIGWINCH`, a signal ignored unless a program asks for it.
+    pub fn nudge(&self) {
+        if let Some(g) = self.foreground_group().filter(|&g| g > 1) {
+            let _ = killpg(Pid::from_raw(g), Signal::SIGWINCH);
+        }
     }
 
     /// Sends `SIGHUP` to the shell's process group.

@@ -102,6 +102,11 @@ struct State {
     /// Set by `Close`: the pane is out of the table and its output is dropped
     /// until the shell has gone.
     closed: bool,
+    /// The id of the window that attached this pane last, until that window
+    /// sends its first `Resize` for it. If that `Resize` keeps the size the
+    /// program is nudged to redraw (see [`Pane::resize`]). Any `Resize` clears
+    /// it, so a window that resends its size does not make programs redraw.
+    nudge: Option<u64>,
 }
 
 impl Pane {
@@ -162,6 +167,7 @@ impl Pane {
                 info_sent: None,
                 exited: None,
                 closed: false,
+                nudge: None,
             }),
         });
         let writing = pane.clone();
@@ -346,10 +352,24 @@ impl Pane {
         }
     }
 
-    pub fn resize(&self, cols: u16, rows: u16) {
+    /// Resizes the terminal for `window`. The kernel signals the program
+    /// only when the size changes, so the first `Resize` from the window that
+    /// attached this pane last, if it keeps the size, sends `SIGWINCH` to the
+    /// foreground program itself: after a replay that is what makes a
+    /// full-screen program redraw. Later ones, and any after a real change,
+    /// send nothing, and neither does one for a pane whose shell has ended.
+    pub fn resize(&self, window: &Window, cols: u16, rows: u16) {
+        let (cols, rows) = (cols.max(2), rows.max(1));
         let mut st = self.lock();
-        st.cols = cols.max(2);
-        st.rows = rows.max(1);
+        let first = st.nudge.take() == Some(window.id());
+        if (cols, rows) == (st.cols, st.rows) {
+            if first && !st.closed && st.exited.is_none() {
+                self.pty.nudge();
+            }
+            return;
+        }
+        st.cols = cols;
+        st.rows = rows;
         self.pty.resize(cols, rows);
     }
 
@@ -431,9 +451,10 @@ impl Pane {
 
     /// Sends the ring to `window` as `Output` frames of at most
     /// [`OUTPUT_CHUNK`] bytes, then `Replayed`, and from then on the pane's
-    /// output as it arrives. After `Replayed` comes `Exited` if the shell has
-    /// ended (it may have ended after `Hello` listed it as running), or else an
-    /// `Info`. All of it happens under the pane's lock, so the reader thread
+    /// output as it arrives; the window's first `Resize` from then on may
+    /// nudge the program to redraw (see [`Pane::resize`]). After `Replayed`
+    /// comes `Exited` if the shell has ended (it may have ended after `Hello`
+    /// listed it as running), or else an `Info`. All of it happens under the pane's lock, so the reader thread
     /// cannot add a byte between the replay and the switch to live: no byte is
     /// lost or sent twice. Every frame shares one [`WRITE_TIMEOUT`] deadline,
     /// so a window that cannot take them holds the shell up no longer than one
@@ -468,6 +489,7 @@ impl Pane {
         }
         st.live = Some(window.clone());
         st.info_sent = None;
+        st.nudge = Some(window.id());
         self.send_info(&mut st, end);
         if st.live.is_some() {
             Ok(())
