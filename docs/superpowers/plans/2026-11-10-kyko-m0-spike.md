@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Find out, with numbers, whether a terminal grid drawn in a Qt Quick item from Rust is fast and correct enough, and whether a `cxx-qt` app can be a well-behaved layer-shell drop-down, before any real kyko code is written.
+**Goal:** Find out, with numbers, whether a terminal grid drawn in a Qt Quick item from Rust is fast and correct enough, whether a `cxx-qt` app can be a well-behaved layer-shell drop-down, and whether a global hotkey can summon it above any window with the keyboard in it, before any real kyko code is written.
 
 **Architecture:** One throwaway binary, `kyko-spike`, in its own Cargo workspace under `spike/`. A Qt-free Rust module runs a shell on a PTY through `alacritty_terminal` and hands out grid snapshots; a C++ `QQuickPaintedItem` paints them; a QML `Window` uses the `org.kde.layershell` module to sit on the top layer. No `kykod`, no D-Bus, no tabs.
 
@@ -14,10 +14,10 @@
 
 - Everything lives under `spike/` and is throwaway: no later milestone imports from it, and its code is not reviewed for style, only for whether the measurements are honest.
 - `spike/` is its own workspace (`spike/Cargo.toml` with `[workspace]`), so the future root workspace is unaffected.
-- Wayland only; needs `wlr-layer-shell`. The development machine runs Plasma (KWin, Wayland); Hyprland checks are recorded as "not run" unless a Hyprland session is available.
+- Wayland only; needs `wlr-layer-shell`. The development machine runs Plasma (KWin, Wayland); Hyprland checks run in uQ's VM session (`~/Projects/uq/tests/vm/`).
 - The spike reads the PTY directly. There is no holder process.
 - Targets, copied from the spec: a full 200×50 repaint in under 4 ms; a 100,000-line `cat` that never blocks input.
-- Window values from the spec: top layer, anchored to the top edge, keyboard interactivity on-demand, namespace (`scope`) `kyko`, island shape at 88% of monitor width, height 45% of the monitor, radius and border from the theme, slide over 150 ms.
+- Window values from the spec: overlay layer (above fullscreen windows), anchored to the top edge, keyboard taken on show (exclusive until focused, then on-demand), namespace (`scope`) `kyko`, island shape at 88% of monitor width, height 45% of the monitor, radius and border from the theme, slide over 150 ms.
 - Shell: `$SHELL`, falling back to `/bin/sh`; `TERM=xterm-256color`, `COLORTERM=truecolor`.
 - Theme: `~/.local/state/uq/theme/tokens.json` if present, otherwise the built-in palette in Task 2. No live reload in the spike.
 - `alacritty_terminal` 0.26.0 is pinned exactly (`=0.26.0`). Read its docs.rs pages for that version before using a type; names in this plan describe roles, not guaranteed paths.
@@ -29,8 +29,8 @@
 1. **Bytes that are not valid UTF-8 from the shell** (`printf '\xff\xfe'`): the engine must keep running and show replacement characters, not panic. Test in Task 2.
 2. **The shell exits** (`exit`, or the child is killed): the engine reports it and the window says so instead of freezing or spinning a core. Test in Task 2; visible check in Task 3.
 3. **Resize to a tiny or zero size** (the surface is unmapped, or mid-animation): no panic, no 0-column PTY; the engine clamps to at least 2×1. Test in Task 2.
-4. **A flood of output while the user types** (`yes`, a 100,000-line `cat`): the UI thread must not starve; `Ctrl+C` lands within about 100 ms. Measured in Task 4.
-5. **The chosen font is missing or lacks a glyph** (CJK, emoji, box drawing): cells stay aligned to the grid whatever Qt substitutes. Visible check in Task 4.
+4. **A flood of output while the user types** (`yes`, a 100,000-line `cat`): the UI thread must not starve; `Ctrl+C` lands within about 100 ms. Measured in Task 5.
+5. **The chosen font is missing or lacks a glyph** (CJK, emoji, box drawing): cells stay aligned to the grid whatever Qt substitutes. Visible check in Task 5.
 
 ---
 
@@ -50,7 +50,7 @@ Build setup follows `~/Projects/uq/apps/uq-settings/build.rs`: `CxxQtBuilder::ne
 Run: `cargo run --manifest-path spike/Cargo.toml`
 Expected: an ordinary window appears; closing it exits 0.
 
-- [ ] **Step 2: Make it a layer surface.** In `Main.qml`, `import org.kde.layershell as LayerShell` and set on the `Window`: `LayerShell.Window.layer: LayerShell.Window.LayerTop`, `LayerShell.Window.anchors: LayerShell.Window.AnchorTop`, `LayerShell.Window.keyboardInteractivity: LayerShell.Window.KeyboardInteractivityOnDemand`, `LayerShell.Window.scope: "kyko"`, `LayerShell.Window.exclusionZone: -1`. Width `Screen.width * 0.88`, height `Screen.height * 0.45`, `color: "transparent"`, the rectangle with radius 10 and a 2 px `#d79921` border. The exact enum spellings are in `/usr/lib/qt6/qml/org/kde/layershell/LayerShellQtQml.qmltypes`.
+- [ ] **Step 2: Make it a layer surface.** In `Main.qml`, `import org.kde.layershell as LayerShell` and set on the `Window`: `LayerShell.Window.layer: LayerShell.Window.LayerOverlay`, `LayerShell.Window.anchors: LayerShell.Window.AnchorTop`, `LayerShell.Window.keyboardInteractivity: LayerShell.Window.KeyboardInteractivityOnDemand`, `LayerShell.Window.scope: "kyko"`, `LayerShell.Window.exclusionZone: -1`. Width `Screen.width * 0.88`, height `Screen.height * 0.45`, `color: "transparent"`, the rectangle with radius 10 and a 2 px `#d79921` border. The exact enum spellings are in `/usr/lib/qt6/qml/org/kde/layershell/LayerShellQtQml.qmltypes`.
 
 Run: `cargo run --manifest-path spike/Cargo.toml`
 Expected: a borderless panel centred at the top of the active monitor, above normal windows, not in the task switcher.
@@ -194,7 +194,37 @@ Expected: `done` is on screen; record in `spike/NOTES.md` whether output during 
 git add spike && git commit -m "spike: painted grid item with keyboard and input-method input"
 ```
 
-### Task 4: Measure
+### Task 4: Hotkey and foreground focus
+
+**Files:**
+- Create: `spike/src/hotkey.rs`
+- Modify: `spike/src/main.rs`, `spike/src/toggle.rs` (a second source for `toggled()`), `spike/Cargo.toml`
+
+**Interfaces:**
+- Consumes: `Toggler::toggled()` from Task 1.
+- Produces: `pub fn start_portal_hotkey(preferred: &str, on_activated: impl Fn() + Send + 'static) -> Result<String, String>`: opens an `org.freedesktop.portal.GlobalShortcuts` session, binds one shortcut with id `toggle`, description `Show or hide kyko` and `preferred` as the preferred trigger, and returns the trigger description the portal reports; `on_activated` runs on every `Activated` for `toggle`. `Err` carries the portal's error text, or `"no GlobalShortcuts portal"`. Use `ashpd` if it builds cleanly with tokio, otherwise raw `zbus` calls.
+- The window process calls it at start with `F12` unless `KYKO_SPIKE_NO_PORTAL=1`, prints `hotkey: <result>` to stderr, and feeds activations into `toggled()`.
+
+- [ ] **Step 1: Implement `hotkey.rs` and wire it in.**
+
+Run: `cargo run --manifest-path spike/Cargo.toml`
+Expected on KWin: a `hotkey:` line on stderr, either the bound trigger or an error. Record the exact line, and whether Plasma showed a dialog, in `spike/NOTES.md` under "Hotkey (KWin)".
+
+- [ ] **Step 2: Summon over other windows.** With the hotkey bound (or, if the portal refused, with `kyko-spike toggle` bound by hand in Plasma's shortcut settings, noting that), press it: (a) with a normal window focused, (b) with a maximised window focused, (c) with a fullscreen video or game focused, (d) from a different virtual desktop.
+
+Expected and recorded for each: does the panel appear above the window, does typing go into the shell at once without a click, does the hotkey hide it again, and does focus return to the window underneath.
+
+- [ ] **Step 3: Layer and keyboard variations.** If (c) failed or typing needed a click, try and record: `LayerOverlay` against `LayerTop`; keyboard interactivity `Exclusive` against `OnDemand`; `LayerShell.Window.activateOnShow`. Settle on the combination that passes Step 2 and write it down as the recommendation for milestone 1.
+
+- [ ] **Step 4: Rebind.** Change the preferred trigger to `Ctrl+F12`, restart the spike, and record whether the portal honoured it, kept the old key, or asked the user.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add spike && git commit -m "spike: portal hotkey and foreground-focus checks"
+```
+
+### Task 5: Measure
 
 **Files:**
 - Modify: `spike/cpp/griditem.cpp` (timing), `spike/src/bridge.rs` (`fn spike_stats_enabled() -> bool`)
@@ -220,7 +250,7 @@ Expected: builds; running with `KYKO_SPIKE_STATS=1` and exiting the shell prints
 
 - [ ] **Step 4: If the full-repaint p95 is 4 ms or more**, try, in this order, and re-measure after each: (a) `setRenderTarget(QQuickPaintedItem::FramebufferObject)`; (b) repaint only rows whose cells changed since the last `seq` (keep the previous snapshot); (c) cache each row as a `QStaticText`. Record each result. Stop at the first that meets the target, or after (c).
 
-- [ ] **Step 5: Hyprland.** If a Hyprland session is available, repeat Task 1 Step 4 and Task 4 Steps 2–3 there under "Hyprland" headings. If not, write "Hyprland: not run" and list exactly what remains unverified.
+- [ ] **Step 5: Hyprland, in the uQ VM session.** Boot uQ's guest with `~/Projects/uq/tests/vm/run.sh --boot-only` (see `~/Projects/uq/docs/notes/vm-live-check-results.md`; it needs `/dev/kvm` and about 4 GB). Install `qt6-declarative`, `qt6-wayland` and `layer-shell-qt` in the guest, copy the release binary in, and drive it with `tests/vm/attach.sh vgh …` and `attach.sh shot <name>`. Repeat Task 1 Step 4 and Task 4 Steps 1–3 there under "Hyprland (uQ VM)" headings, with screenshots as evidence; for the hotkey, record whether the portal binds on Hyprland at all and, if not, whether a config bind running `kyko-spike toggle` gives the same result. Paint timings from a software-rendered guest are recorded but do not count against the 4 ms target. Stop the VM with `attach.sh vm_quit`. If the VM cannot run, write "Hyprland: not run" and list exactly what remains unverified.
 
 - [ ] **Step 6: Commit**
 
@@ -228,12 +258,12 @@ Expected: builds; running with `KYKO_SPIKE_STATS=1` and exiting the shell prints
 git add spike && git commit -m "spike: paint timing and bench results"
 ```
 
-### Task 5: Report and decision
+### Task 6: Report and decision
 
 **Files:**
 - Create: `docs/notes/2026-11-10-m0-spike-result.md`
 
-- [ ] **Step 1: Write the result**, from `spike/NOTES.md`, with these headings: **Verdict** (go, or revise the spec, one sentence each for the grid item and for layer shell); **Numbers** (a table: target, measured, pass or fail, for the 4 ms repaint and the flood; plus the kitty comparison); **What worked**; **What didn't** (every difference from kitty, every stderr warning, every Review Focus item's outcome); **Not verified** (Hyprland, input method, anything skipped, said plainly); **What milestone 1 should keep and drop** (which painting approach, what the bridge taught, nothing from the spike's code is carried over).
+- [ ] **Step 1: Write the result**, from `spike/NOTES.md`, with these headings: **Verdict** (go, or revise the spec, one sentence each for the grid item, for layer shell, and for the hotkey and foreground focus); **Numbers** (a table: target, measured, pass or fail, for the 4 ms repaint and the flood; plus the kitty comparison); **What worked**; **What didn't** (every difference from kitty, every stderr warning, every Review Focus item's outcome); **Not verified** (Hyprland, input method, anything skipped, said plainly); **What milestone 1 should keep and drop** (which painting approach, what the bridge taught, nothing from the spike's code is carried over).
 
 - [ ] **Step 2: If either risk failed**, add a **Proposed spec change** section: for the grid item, the spec's stated fallback (`alacritty_terminal` with `wgpu` in a plain layer surface, QML out of the terminal path); for layer shell, what went wrong and the alternative tried. Do not edit the spec; the user decides.
 

@@ -24,19 +24,32 @@ from uQ's Spotlight search.
   window can quit it. Yakuake puts Close Tab and Quit one above the other, so a slip quits the
   whole app and its sessions; kyko has no quit control to hit (§2.7).
 
+- **Packaged from the start.** kyko ships as an installable package, and CI builds and publishes
+  it whenever the version is bumped (§8). This comes with the first real code, not at the end.
+- **uQ native, but not uQ only.** It integrates fully with uQ and still works on other Wayland
+  desktops (§2.10). It is tested with the other uQ apps in uQ's VM session (§5).
+- **Its own Preferences**, where the user defines and customises the terminal (§2.6).
+- **Its own hotkey**, changeable in Preferences. Whatever window is open or focused, the hotkey
+  summons kyko above every app, in the foreground (§2.9).
+- **Secure, efficient and modern** (§2.11).
+
 **Assumptions** (not yet confirmed by the user)
 
+- "Pack" means an installable package: an Arch package on the AUR and on each GitHub Release.
 - Split panes are in the first release.
 - kyko hides when it loses focus unless pinned.
 - Tabs are named after the foreground program or folder and can be renamed.
-- The toggle key is `F12`, as in Yakuake.
+- The default hotkey is `F12`, as in Yakuake.
 - kyko also lists open tabs in Spotlight ("Switch to: ssh nas"). This is the only use of the
   external-provider route; it can be cut without affecting anything else.
 - License is MIT, as uQ.
 
 **Success looks like**
 
-- `F12` shows kyko in under 100 ms with the previous sessions intact; `F12` again hides it.
+- The hotkey shows kyko in under 100 ms with the previous sessions intact, over any window
+  including a fullscreen one, with the keyboard in the terminal; the hotkey again hides it.
+- Bumping the version on `main` produces a GitHub Release with an installable package and no
+  further manual step.
 - Switching uQ's theme recolours kyko, including running panes, without a restart.
 - `> cargo build` in Spotlight, then **Run in kyko**, opens a new tab running the command and
   drops kyko down.
@@ -46,7 +59,9 @@ from uQ's Spotlight search.
 
 **Not in scope**
 
-- X11. kyko is Wayland-only and needs a compositor with `wlr-layer-shell`.
+- X11. kyko is Wayland-only; §2.10 lists what each compositor gets.
+- Packages other than Arch's (deb, rpm, Flatpak) in the first release. Other distributions build
+  from source; a Flatpak suits a terminal poorly because of its sandbox.
 - Session restore across logout or reboot, ligatures, inline images (sixel, kitty graphics),
   remote control of pane contents, scripting, and plugins.
 - Being a general windowed terminal. `shell.terminal` in uQ stays kitty, foot or alacritty.
@@ -92,14 +107,20 @@ window. Versions checked on 2026-11-10: `alacritty_terminal` 0.26.0 (crates.io),
 | `apps/kyko` grid item | A custom `QQuickItem` that draws one pane's grid snapshot and forwards input | kyko-term, Qt |
 | `apps/kyko` window | The layer-shell surface, slide animation, tab bar and split layout in QML | layer-shell-qt, Qt Quick |
 | `apps/kyko` service | `org.kyko.Terminal1` and `org.uq.Launcher1.Provider` on the session bus | zbus |
-| `apps/kyko` cli | `kyko toggle`, `show`, `hide`, `run`, `new-tab`, `quit`, `end-sessions` | zbus |
+| `apps/kyko` hotkey | One trait, four backends (§2.9); picks, registers, re-registers, reports the bound key | zbus, ashpd or raw portal calls |
+| `apps/kyko` preferences | The Preferences window (§2.6) in QML over the config properties | Qt Quick Controls |
+| `apps/kyko` cli | `kyko toggle`, `show`, `hide`, `run`, `new-tab`, `preferences`, `quit`, `end-sessions` | zbus |
 
 Everything except `apps/kyko` has no Qt dependency and is tested with plain `cargo test`.
 
 ### 2.2 Window
 
-- A layer-shell surface on the `top` layer, anchored to the top edge of the focused monitor,
-  keyboard interactivity `on-demand`, namespace `kyko`.
+- A layer-shell surface on the `overlay` layer, so it is above every app including fullscreen
+  ones, anchored to the top edge of the focused monitor, namespace `kyko`.
+- Showing it takes the keyboard: interactivity is `exclusive` until the surface has focus, then
+  `on-demand`, so a pinned kyko can lose focus to another window and stay open. Whether every
+  compositor grants focus this way is checked in the spike (§6).
+- `window.above_fullscreen = false` uses the `top` layer instead.
 - **Island:** 88% of monitor width, centred, offset below uQ's bar by `ui.gap_out`, corners
   `ui.radius`, border `ui.border_width` in `colors.accent`. The bar stays visible.
 - **Sheet:** full monitor width from the top edge, square top corners, bottom corners `ui.radius`,
@@ -146,6 +167,11 @@ Default keys (all settable; shown with the kyko window focused):
   Ctrl+click on a URL opens it with `xdg-open`.
 - Input methods work through Qt's input-method support.
 - Bracketed paste is on; a multi-line paste into a shell that has not enabled it asks first.
+- Modern protocol support, as `alacritty_terminal` 0.26 provides it: the kitty keyboard protocol,
+  OSC 8 hyperlinks, synchronised output, styled and coloured underlines, focus reporting. Each is
+  confirmed by a test in milestone 1 or removed from this list.
+- Rendering follows the monitor's scale, including fractional scales, and re-rasterises when the
+  window moves between monitors.
 
 ### 2.5 Theme
 
@@ -155,29 +181,52 @@ Default keys (all settable; shown with the kyko window focused):
   the file, so it follows the theme when `uqd` restarts.
 - If the file is missing or does not parse, kyko uses a built-in dark palette and logs once.
   A missing field falls back for that field only.
-- `[theme] follow_uq = false` in the config pins the built-in palette or a user palette.
+- `theme.source` chooses: `uq` (follow uQ; the default when `uqd` is present), `builtin:<id>`
+  (uQ's seven themes in dark and light ship inside kyko, with their credits, so they are
+  available on any desktop; the default elsewhere is `builtin:gruvbox-dark`), or `custom` (the
+  colours under `[theme.custom]`).
 
-### 2.6 Configuration
+### 2.6 Preferences
 
-`~/.config/kyko/config.toml`, read at start and on change. Unknown keys are ignored with a warning.
+kyko has its own Preferences window, opened from the settings button on the tab bar or with
+`kyko preferences`. It is an ordinary window, not part of the drop-down, with these pages:
+**Appearance**, **Window**, **Terminal**, **Keys**, **Sessions**, **Advanced**. Changes apply at
+once and are written to `~/.config/kyko/config.toml`, which can also be edited by hand; kyko
+re-reads it on change. Unknown keys are ignored with a warning, and a bad value costs only that
+key. Every page has "Reset this page".
 
 | Key | Values | Default |
 |---|---|---|
+| `hotkey.toggle` | a key sequence, or empty for none (§2.9) | `F12` |
 | `window.shape` | `island`, `sheet` | `island` |
 | `window.tabs` | `top`, `bottom` | `top` |
 | `window.height_pct` | 20–100 | 45 |
 | `window.width_pct` | 40–100 (island only) | 88 |
+| `window.monitor` | `focused`, `primary`, or an output name | `focused` |
+| `window.above_fullscreen` | bool | true |
 | `window.hide_on_focus_loss` | bool | true |
 | `window.animations` | bool | true |
+| `window.opacity` | 0.5–1.0 | 1.0 |
+| `theme.source` | `uq`, `builtin:<id>`, `custom` | see §2.5 |
+| `theme.custom.*` | foreground, background, cursor, selection, 16 ANSI colours | — |
+| `terminal.font` | a font family, or unset to follow the theme | unset |
+| `terminal.line_height` | 0.8–2.0 | 1.0 |
+| `terminal.padding` | 0–32 px | 8 |
+| `terminal.cursor` | `block`, `beam`, `underline`; `terminal.cursor_blink` bool | `block`, false |
+| `terminal.new_tab_dir` | `home`, `current` (the focused pane's folder) | `current` |
+| `terminal.bell` | `none`, `visual`, `sound` | `visual` |
+| `terminal.copy_on_select` | bool | false |
+| `terminal.confirm_multiline_paste` | bool | true |
 | `terminal.scrollback` | 0–100000 | 10000 |
 | `sessions.ring_kib` | 256–16384, output kept per pane for replay (§2.8); applies to new panes | 2048 |
 | `terminal.font_size` | 6–48, or unset to follow the theme | unset |
 | `terminal.shell` | path, or unset for `$SHELL` | unset |
-| `theme.follow_uq` | bool | true |
 | `keys.*` | key sequences for the actions in §2.3 | as §2.3 |
+| `advanced.programs_write_clipboard` | bool: programs in the terminal may set the clipboard | false |
+| `advanced.allow_run` | bool: other apps may call `Run` (§3.1); off disables **Run in kyko** | true |
 
-The same settings are properties on `org.kyko.Terminal1`; setting one writes the file. The uQ
-Settings page (§3.3) uses those properties.
+The Keys page captures a key press for each action and for the hotkey, and refuses a sequence
+already used by another kyko action. The same settings are properties on `org.kyko.Terminal1`.
 
 ### 2.7 Staying in the background
 
@@ -187,8 +236,10 @@ Settings page (§3.3) uses those properties.
   upgrade of `kyko` ends nothing. The restarted window attaches, gets its tab and split layout
   back, and each pane replays its recent output (§2.8).
 - **Stopping the window is harmless.** `kyko quit` stops only the window process; every shell
-  keeps running, and the next `F12` or **Run in kyko** brings the window back through D-Bus
-  activation with the same tabs.
+  keeps running, and the next `kyko toggle` or **Run in kyko** brings the window back through
+  D-Bus activation with the same tabs. The hotkey does too on the `uq`, `hyprland` and `manual`
+  backends, which run `kyko toggle`; the `portal` backend needs the window process alive, which
+  `Restart=on-failure` and session start-up cover for everything except a deliberate quit.
 - **Ending the sessions is deliberate and off-screen.** `kyko end-sessions` stops `kykod` and
   with it every shell. It refuses with exit 3, listing the tabs concerned, while any pane has a
   foreground program other than its shell; `--force` overrides. It is not bound to a key, shown
@@ -227,6 +278,73 @@ Settings page (§3.3) uses those properties.
 - **Foreground program and folder:** `kykod` reads them from the PTY's foreground process group
   and `/proc`, and sends `Info` when they change. Tab names and the busy check use these.
 
+### 2.9 The hotkey
+
+On Wayland no app can grab a key by itself: the compositor owns the keyboard. kyko "owning" its
+hotkey therefore means kyko registers it with the compositor, keeps it registered, and changes
+it from Preferences, without the user editing a compositor config. It does this through the
+first backend that works:
+
+| Backend | Used when | How |
+|---|---|---|
+| `uq` | `org.uq.Desktop1` is on the bus and offers app hotkeys | kyko sets `hotkeys.kyko` through `uqd`, which writes the bind into its generated Hyprland config (a uQ change, §3.3) |
+| `portal` | the desktop portal offers `org.freedesktop.portal.GlobalShortcuts` | kyko binds `toggle` with `hotkey.toggle` as the preferred trigger and listens for `Activated` |
+| `hyprland` | Hyprland without uQ | a runtime bind through Hyprland's control socket, re-applied after each config reload |
+| `manual` | none of the above | Preferences shows `kyko toggle` and a ready-to-paste bind line for the compositor in use |
+
+- Preferences shows which backend is active and the key that is actually bound. With `portal`
+  the compositor has the final say on the key and may show its own dialog; kyko displays what
+  the portal reports.
+- Changing the key unbinds the old one first. If the new key cannot be bound, the old one is
+  restored and Preferences says why.
+- The hotkey always calls the same `Toggle` as the command line, so `kyko toggle` bound by hand
+  works everywhere regardless of backend.
+- Which compositors really deliver each backend (KWin and Hyprland first) is a spike question
+  (§6); the table above is the design, not yet a verified fact.
+
+### 2.10 Environments
+
+| Environment | Window | Hotkey | Theme | Extras |
+|---|---|---|---|---|
+| uQ | layer shell | `uq` | follows uQ live | Spotlight, Settings link |
+| Plasma (KWin) | layer shell | `portal` | built-in or custom | — |
+| Hyprland without uQ | layer shell | `portal` or `hyprland` | built-in or custom | — |
+| Sway, niri, river, other layer-shell compositors | layer shell | `portal` if offered, else `manual` | built-in or custom | — |
+| GNOME (no layer shell) | an undecorated window, placed by the compositor; best effort | `portal` | built-in or custom | — |
+
+kyko never requires `uqd`, Quickshell or Hyprland to be installed; the package depends only on
+Qt 6, `layer-shell-qt` and a D-Bus session. uQ features switch on when uQ is detected.
+
+### 2.11 Secure, efficient, modern
+
+**Secure**
+
+- The holder socket is private to the user and checks the peer (§2.8).
+- kyko makes no network connections. A URL opens only on `Ctrl`+click, through the desktop
+  portal's OpenURI, so the window process never spawns a browser itself.
+- Escape sequences cannot read the clipboard, cannot report the window title back, and can set
+  the clipboard only when `advanced.programs_write_clipboard` is on.
+- Multi-line paste asks first (§2.4); `Run` can be switched off (`advanced.allow_run`).
+- `kyko-core`, `kyko-proto` and `kyko-term` carry `#![forbid(unsafe_code)]`; `kykod` and the
+  window use `unsafe` only at the PTY and Qt boundaries, each block commented with its reason.
+- `kyko.service` (the window) runs with `NoNewPrivileges=yes` and
+  `RestrictAddressFamilies=AF_UNIX`. `kykod.service` is deliberately not restricted: the shells
+  it holds must be able to run `sudo`, `run0` and network tools.
+- Supply chain: `Cargo.lock` is committed, CI runs `cargo deny` (advisories and licences),
+  GitHub Actions are pinned by commit, and releases carry checksums and build attestations (§8).
+
+**Efficient** (targets, confirmed or revised with measurements in milestone 1)
+
+- Hidden with idle shells: no repaints and no timers; both processes sleep in `poll`.
+- Shown: only changed rows are redrawn; a full 200×50 repaint takes under 4 ms.
+- Summon in under 100 ms. Resident memory under 80 MB for the window with three tabs, and
+  under 10 MB plus the output rings for `kykod`.
+
+**Modern**
+
+- Wayland-native, fractional scaling, the protocol support in §2.4, live theming, and
+  configuration that applies without a restart.
+
 ## 3. Integration with uQ
 
 ### 3.1 D-Bus: `org.kyko.Terminal1` at `/org/kyko/Terminal1`
@@ -263,10 +381,15 @@ that still exists, and only focuses that tab. This route never runs a command.
 
 ### 3.3 Other pieces
 
-- **Toggle key (a change in the uQ repo):** `base.lua` binds `F12` to `kyko toggle`, guarded so it
-  does nothing when kyko is not installed.
+- **App hotkeys (a change in the uQ repo):** a new extension point. An app installs
+  `/usr/share/uq/hotkeys/<id>.toml` naming its command (`kyko toggle`) and default key; only
+  `/usr` is searched, so the command comes from a package, never from user-writable data. `uqd`
+  stores the user's key as `hotkeys.<id>`, validates it, refuses one that collides with a uQ
+  bind, and writes the bind into its generated Hyprland config. This is specified in uQ's own
+  Phase 4 spec; until it exists, kyko on uQ falls through to the next backend in §2.9.
 - **Settings page:** `/usr/share/uq/settings/pages/kyko/` with a `page.toml`
-  (`category = "apps"`, `dbus_name = "org.kyko.Terminal1"`) and a QML page for §2.6.
+  (`category = "apps"`, `dbus_name = "org.kyko.Terminal1"`). It shows the hotkey, shape and theme
+  source, and a button that opens kyko's own Preferences for everything else.
 - **Start-up:** two systemd user units bound to `graphical-session.target` (`kykod.service`, and
   `kyko.service` which wants it), and a D-Bus service file so the first `Toggle` or `Run` starts
   the window if it is not running.
@@ -275,7 +398,11 @@ that still exists, and only focuses that tab. This route never runs a command.
 
 | Situation | Behaviour |
 |---|---|
-| No layer-shell support | Exit 1 with a one-line message naming the missing protocol |
+| No layer-shell support | The best-effort undecorated window of §2.10; logged once and noted in Preferences |
+| No Wayland display | Exit 1 with a one-line message |
+| No hotkey backend works | `manual`: Preferences shows the bind line; `kyko toggle` still works |
+| The chosen hotkey is taken or refused | The previous key stays bound; Preferences shows the backend's reason |
+| The portal or `uqd` restarts | kyko re-registers the hotkey when the service returns |
 | `uqd` absent, or `tokens.json` missing or bad | Built-in palette; logged once; retried on file change |
 | Bad `config.toml` field | That field's default; a warning in the log and on the settings page |
 | Shell fails to start | The pane shows the error and the command tried; any key closes it |
@@ -311,11 +438,21 @@ that still exists, and only focuses that tab. This route never runs a command.
 - **Live checklist** (`docs/notes/`): slide in both shapes and tab positions, focus-loss hiding,
   theme switch with panes open, input method, a 100,000-line `cat` staying responsive, `vim`,
   `htop`, `tmux`, the Spotlight action, multi-monitor.
-- **CI:** `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`; the Qt app builds in an
-  Arch container.
+- **Unit (hotkey):** backend selection from a faked environment; rebind, refusal and rollback
+  against a fake backend; the `portal` and `uq` backends against fake services on a private bus.
+- **uQ VM session:** uQ's harness (`~/Projects/uq/tests/vm/`) boots an Arch guest running uQ on
+  Hyprland and already builds a sibling app, noti-fi, from its checkout. kyko joins it the same
+  way: the harness builds kyko's package from `KYKO_SRC` (default `~/Projects/kyko`), installs it
+  in the guest, and runs a `40-kyko.sh` check file: hotkey summons over a fullscreen window and
+  takes the keyboard, hide, sessions survive `systemctl --user restart kyko`, theme switch
+  recolours, **Run in kyko** from Spotlight, uQ unaffected with kyko removed. The harness change
+  is made in the uQ repo.
+- **CI:** `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `cargo deny`; the Qt app
+  and the package build in an Arch container (§8).
 
-The development machine runs Plasma, not Hyprland. KWin implements layer-shell, so the window is
-exercised there day to day; the uQ-specific rows of the live checklist need a Hyprland session.
+The development machine runs Plasma, not Hyprland. KWin implements layer-shell, so the window
+and the `portal` hotkey are exercised there day to day; everything uQ- and Hyprland-specific
+runs in the VM session.
 
 ## 6. Risks and the first milestone
 
@@ -327,11 +464,16 @@ Two things are unproven and everything else rests on them:
 2. **Layer-shell from a `cxx-qt` app** through `layer-shell-qt`: anchoring, on-demand keyboard
    focus, and unmapping without losing state, on both KWin and Hyprland. Not yet verified.
 
-A third, smaller risk is the extra hop through `kykod`: every output byte crosses a socket before
+3. **The hotkey and foreground focus** (§2.2, §2.9): that the `portal` backend binds and fires on
+   KWin and on Hyprland, that a surface on the `overlay` layer appears over a fullscreen window,
+   and that it receives the keyboard when summoned by the hotkey. Not yet verified.
+
+A fourth, smaller risk is the extra hop through `kykod`: every output byte crosses a socket before
 it is drawn. Milestone 1 measures it; the target is a 100,000-line `cat` finishing within 15% of
 the spike's direct-PTY time. The spike itself reads the PTY directly and has no holder.
 
-**Milestone 0 is a spike** that answers the first two: one themed pane in a layer-shell window, toggled
+**Milestone 0 is a spike** that answers the first three (the hotkey and focus part on KWin
+directly and on Hyprland in the uQ VM): one themed pane in a layer-shell window, toggled
 from the command line, measured against the targets above. Its code is throwaway. If the grid
 item misses the targets, the fallback is to render with `alacritty_terminal` and `wgpu` in a
 plain Wayland layer surface and keep QML out of the terminal path; the spec is revised before
@@ -342,10 +484,41 @@ any further milestone starts.
 | # | Delivers |
 |---|---|
 | 0 | Spike (§6); a written result and a go or revise decision |
-| 1 | `kyko-proto`, `kykod`, `kyko-core`, `kyko-term`; one pane through the holder, reattach after a window restart, both shapes, toggle, theme following, config file |
+| 1 | The real workspace with **packaging, CI and release-on-bump first** (§8), then `kyko-proto`, `kykod`, `kyko-core`, `kyko-term`: one pane through the holder, reattach after a window restart, both shapes, `kyko toggle`, theme sources, config file. Ends with `v0.1.0` published by CI |
 | 2 | Tabs, splits, keys, scrollback search, copy and paste, close confirmations |
-| 3 | `org.kyko.Terminal1`, CLI, `Run`, the tab provider; in uQ: **Run in kyko** and the `F12` bind |
-| 4 | Settings page, packaging (PKGBUILD, units), README, live checklist |
+| 3 | The hotkey backends `portal`, `hyprland` and `manual`; the Preferences window |
+| 4 | uQ integration: `org.kyko.Terminal1` `Run`, the tab provider and the settings page here; **Run in kyko**, app hotkeys and the VM checks in the uQ repo; the `uq` hotkey backend |
+| 5 | Hardening against §2.11's targets, the live checklist, README, `v1.0.0` |
 
-Each milestone gets its own implementation plan. The two uQ changes in milestone 3 are made in
-the uQ repo and follow its own review rules.
+Each milestone gets its own implementation plan and ends in a version bump, so each one is
+installable. The uQ changes in milestone 4 are made in the uQ repo and follow its review rules.
+
+## 8. Packaging and release
+
+Modelled on uQ's (`~/Projects/uq/docs/releasing.md`), with the tagging automated.
+
+- **Version:** the workspace `version` in `Cargo.toml` is the version. `packaging/kyko/PKGBUILD`'s
+  `pkgver` follows it; a CI test fails when they differ or `.SRCINFO` is stale.
+  `scripts/bump-version.sh X.Y.Z` updates all of them.
+- **CI (`ci.yml`, every push and pull request):** in an `archlinux:latest` container: fmt, clippy,
+  tests, `cargo deny`, the version test, and a full `makepkg` build of the package, uploaded as a
+  workflow artifact so every commit has an installable build.
+- **Release on version bump (`release.yml`):** on a push to `main`, if `Cargo.toml`'s version has
+  no matching `vX.Y.Z` tag, the workflow runs the full CI, creates and pushes the tag, builds
+  `kyko-X.Y.Z.tar.gz` with `git archive`, builds the package from that tarball in a clean Arch
+  container, installs it there and runs `kyko --version`, then publishes a GitHub Release with
+  the CHANGELOG section as notes and the tarball, its `.sha256`, the `.pkg.tar.zst` and a build
+  attestation as assets. Versions below 1.0.0 and release candidates are pre-releases. A push
+  that does not change the version releases nothing.
+- **AUR:** the package is `kyko`, building from the release tarball. The workflow prepares the
+  updated `PKGBUILD` and `.SRCINFO` with the published checksum and, when an `AUR_SSH_KEY`
+  repository secret exists, pushes them to the AUR; without the secret it leaves them as an
+  artifact for a manual push.
+- **Package contents:** `/usr/bin/kyko`, `/usr/bin/kykod`, the two systemd user units, the D-Bus
+  service file, a `.desktop` entry for Preferences, the icon, licences, and the uQ files that
+  are inert elsewhere: `/usr/share/uq/launcher/kyko.provider`,
+  `/usr/share/uq/settings/pages/kyko/`, `/usr/share/uq/hotkeys/kyko.toml`. Dependencies:
+  `qt6-base`, `qt6-declarative`, `qt6-wayland`, `layer-shell-qt`, `dbus`; optional:
+  `xdg-desktop-portal` (hotkey and opening links). uQ is not a dependency.
+- **Needs from the user:** a GitHub repository for kyko (`asafelobotomy/kyko`, to match uQ) before
+  milestone 1's CI can run, and an AUR SSH key as a secret if AUR pushes are to be automatic.
