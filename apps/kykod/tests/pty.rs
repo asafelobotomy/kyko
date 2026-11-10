@@ -4,7 +4,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
 use kykod::pty::Pty;
-use nix::sys::signal::{Signal, kill, killpg};
+use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 
 const LIMIT: Duration = Duration::from_secs(5);
@@ -159,8 +159,17 @@ fn interactive(cwd: &str) -> (Guard, Out) {
     (p, out)
 }
 
+/// True while `pid` runs. A zombie has ended, so it does not count: the shell's
+/// children are orphaned when it ends, and where PID 1 does not reap orphans
+/// (a CI job's container) an ended one stays a zombie for good.
 fn alive(pid: i32) -> bool {
-    kill(Pid::from_raw(pid), None).is_ok()
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let state = stat
+        .rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().next());
+    !matches!(state, None | Some("Z"))
 }
 
 #[test]

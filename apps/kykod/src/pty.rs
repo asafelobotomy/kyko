@@ -208,11 +208,14 @@ impl Pty {
     }
 
     /// Sends `SIGKILL` to the shell's process group unless the shell has
-    /// already ended. Never blocks: the check is a `poll` with no timeout.
-    pub fn kill_if_running(&self) {
-        if !self.ends_within(Duration::ZERO) {
-            self.signal_group(Signal::SIGKILL);
+    /// already ended, and says whether it did. Never blocks: the check is a
+    /// `poll` with no timeout.
+    pub fn kill_if_running(&self) -> bool {
+        if self.ends_within(Duration::ZERO) {
+            return false;
         }
+        self.signal_group(Signal::SIGKILL);
+        true
     }
 
     /// Signals the shell's process group unless the shell has been reaped. The

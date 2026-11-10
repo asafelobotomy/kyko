@@ -112,7 +112,11 @@ jobs:
     needs: [decide, ci]
     if: needs.decide.outputs.action == 'release'
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    # --init, as in ci.yml: the package's check() runs kykod's tests, whose ended orphans PID 1 must
+    # reap.
+    container:
+      image: archlinux:latest
+      options: --init
     permissions:
       contents: read
     defaults:

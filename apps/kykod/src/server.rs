@@ -34,7 +34,8 @@
 //! it removes the socket file, hangs every shell up at once, waits on their
 //! pidfds (and those of panes still being closed) in one `poll` until all have
 //! ended or [`END_GRACE`] has passed, kills the process group of any closed
-//! pane whose shell is still running, and exits the process with status 0. Exiting from there ends every other thread
+//! pane whose shell is still running, reaps every shell that has ended, and
+//! exits the process with status 0. Exiting from there ends every other thread
 //! wherever it is blocked. The lock file is left in place: see [`end_sessions`].
 //!
 //! [`end_sessions`]: Server::end_sessions
@@ -81,6 +82,10 @@ pub const MAX_LAYOUT: usize = 256 * 1024;
 /// How long ending the sessions waits, in all, for the hung-up shells to end
 /// before `kykod` exits anyway.
 pub const END_GRACE: Duration = Duration::from_secs(2);
+
+/// How long ending the sessions waits, after killing the shells of closed
+/// panes at the end of [`END_GRACE`], for them to end so they can be reaped.
+const KILL_REAP: Duration = Duration::from_millis(100);
 
 /// Only the user `kykod` runs as may connect.
 pub fn peer_allowed(peer_uid: u32, own_uid: u32) -> bool {
@@ -542,8 +547,10 @@ impl Server {
     /// still being closed (already hung up by `Close`), waits until all have
     /// ended or [`END_GRACE`] has passed. At that point any pane still being
     /// closed whose shell is running gets `SIGKILL` to its process group, as
-    /// `Close` promised, since exiting ends its close thread. The process then
-    /// exits 0. A shell of a pane that was not closed and is still running is
+    /// `Close` promised, since exiting ends its close thread, and up to
+    /// [`KILL_REAP`] more is given for those to end. The process then exits 0,
+    /// after reaping every shell that has ended by then (a non-blocking wait on
+    /// each). A shell of a pane that was not closed and is still running is
     /// not killed: it outlives `kykod`, and the kernel hangs its terminal up
     /// when `kykod`'s side closes.
     ///
@@ -607,8 +614,19 @@ impl Server {
         // since the decision. A close thread that has finished took its pane
         // out, and one that has not is ended with the process.
         let still_closing = lock_list(&self.closing).clone();
-        for pane in &still_closing {
-            pane.kill_if_running();
+        let killed: Vec<OwnedFd> = still_closing
+            .iter()
+            .filter(|p| p.kill_if_running())
+            .filter_map(|p| p.exit_fd().ok().flatten())
+            .collect();
+        // A killed shell ends at once unless it is stuck in the kernel; it
+        // gets a moment, so that it can be reaped below.
+        wait_for_exits(killed, Instant::now() + KILL_REAP);
+        // Reap every shell that has ended, without waiting for any: once
+        // `kykod` has gone, an unreaped one would be left to PID 1, and not
+        // every PID 1 reaps (a container's often does not).
+        for pane in panes.iter().chain(&closing).chain(&still_closing) {
+            pane.reap();
         }
         log!("exiting");
         std::process::exit(0);

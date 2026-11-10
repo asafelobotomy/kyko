@@ -345,8 +345,13 @@ impl Pane {
     }
 
     /// See [`Pty::kill_if_running`].
-    pub fn kill_if_running(&self) {
-        self.pty.kill_if_running();
+    pub fn kill_if_running(&self) -> bool {
+        self.pty.kill_if_running()
+    }
+
+    /// Reaps the shell if it has ended; never blocks. See [`Pty::try_wait`].
+    pub fn reap(&self) {
+        let _ = self.pty.try_wait();
     }
 
     /// See [`Pty::exit_fd`].

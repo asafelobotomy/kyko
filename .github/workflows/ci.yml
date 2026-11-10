@@ -14,7 +14,12 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    # --init: a job container's PID 1 is otherwise a process that never reaps orphans. kykod's tests
+    # end shells whose children are re-parented to PID 1, and every orphan that ends would stay a
+    # zombie for the rest of the job.
+    container:
+      image: archlinux:latest
+      options: --init
     steps:
       # base-devel is for makepkg, which also builds the package below. less is for the end-to-end
       # tests (the PKGBUILD lists it in checkdepends).
