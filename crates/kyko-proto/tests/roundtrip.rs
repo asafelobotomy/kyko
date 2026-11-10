@@ -486,3 +486,72 @@ fn arbitrary_bytes_never_panic() {
         }
     }
 }
+
+#[test]
+fn holder_hello_of_another_version_ignores_the_rest() {
+    let mut body = vec![1u8];
+    body.extend(2u32.to_le_bytes());
+    body.extend([0xeeu8; 16]);
+    let mut d = Decoder::new();
+    d.push(&framed(&body));
+    assert_eq!(
+        d.next::<ToHolder>().unwrap(),
+        Some(ToHolder::Hello { version: 2 })
+    );
+}
+
+#[test]
+fn window_hello_of_another_version_ignores_the_rest() {
+    let mut body = vec![65u8];
+    body.extend(2u32.to_le_bytes());
+    body.extend([0xffu8; 7]); // not a version-1 layout
+    let mut d = Decoder::new();
+    d.push(&framed(&body));
+    assert_eq!(
+        d.next::<ToWindow>().unwrap(),
+        Some(ToWindow::Hello {
+            version: 2,
+            panes: vec![],
+            layout: vec![]
+        })
+    );
+}
+
+#[test]
+fn current_version_hello_with_trailing_byte_is_malformed() {
+    let mut body = vec![1u8];
+    body.extend(VERSION.to_le_bytes());
+    body.push(0);
+    let mut d = Decoder::new();
+    d.push(&framed(&body));
+    assert!(matches!(
+        d.next::<ToHolder>(),
+        Err(ProtoError::Malformed(_))
+    ));
+
+    let mut body = vec![65u8];
+    body.extend(VERSION.to_le_bytes());
+    body.extend(0u32.to_le_bytes()); // no panes
+    body.extend(0u32.to_le_bytes()); // empty layout
+    body.push(0);
+    let mut d = Decoder::new();
+    d.push(&framed(&body));
+    assert!(matches!(
+        d.next::<ToWindow>(),
+        Err(ProtoError::Malformed(_))
+    ));
+}
+
+#[test]
+fn hello_shorter_than_a_version_is_malformed() {
+    for kind in [1u8, 65] {
+        let mut d = Decoder::new();
+        d.push(&framed(&[kind, 1, 0, 0]));
+        let r = if kind == 1 {
+            d.next::<ToHolder>().map(|_| ())
+        } else {
+            d.next::<ToWindow>().map(|_| ())
+        };
+        assert!(matches!(r, Err(ProtoError::Malformed(_))));
+    }
+}

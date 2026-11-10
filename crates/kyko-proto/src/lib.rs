@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! The kykod wire protocol: length-prefixed frames, no I/O.
 //!
 //! A frame is a `u32` little-endian length, then one type byte, then the body;
@@ -39,19 +40,44 @@ pub struct PaneInfo {
 /// Window to holder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToHolder {
-    Hello { version: u32 },                        // 1
-    Spawn(SpawnSpec),                              // 2
-    Input { pane: PaneId, bytes: Vec<u8> },        // 3
-    Resize { pane: PaneId, cols: u16, rows: u16 }, // 4
-    Close { pane: PaneId },                        // 5
-    Attach { pane: PaneId },                       // 6
-    SaveLayout { blob: Vec<u8> },                  // 7
-    EndSessions { force: bool },                   // 8
+    /// A Hello of any other version is decoded leniently: only `version` is
+    /// read and the rest of the body is ignored, so a peer can recognise a
+    /// version mismatch (and answer with its own Hello) even though it cannot
+    /// parse a newer layout.
+    Hello {
+        version: u32,
+    }, // 1
+    Spawn(SpawnSpec), // 2
+    Input {
+        pane: PaneId,
+        bytes: Vec<u8>,
+    }, // 3
+    Resize {
+        pane: PaneId,
+        cols: u16,
+        rows: u16,
+    }, // 4
+    Close {
+        pane: PaneId,
+    }, // 5
+    Attach {
+        pane: PaneId,
+    }, // 6
+    SaveLayout {
+        blob: Vec<u8>,
+    }, // 7
+    EndSessions {
+        force: bool,
+    }, // 8
 }
 
 /// Holder to window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToWindow {
+    /// A Hello of any other version is decoded leniently: only `version` is
+    /// read, `panes` and `layout` come back empty, and the rest of the body is
+    /// ignored, so a window can recognise a version mismatch even though it
+    /// cannot parse a newer layout.
     Hello {
         version: u32,
         panes: Vec<PaneInfo>,
@@ -200,7 +226,13 @@ impl Frame for ToHolder {
     fn decode(kind: u8, body: &[u8]) -> Result<Self, ProtoError> {
         let mut r = Reader::new(body);
         let f = match kind {
-            1 => Self::Hello { version: r.u32()? },
+            1 => {
+                let version = r.u32()?;
+                if version != VERSION {
+                    return Ok(Self::Hello { version });
+                }
+                Self::Hello { version }
+            }
             2 => Self::Spawn(get_spec(&mut r)?),
             3 => Self::Input {
                 pane: r.u32()?,
@@ -272,12 +304,22 @@ impl Frame for ToWindow {
     fn decode(kind: u8, body: &[u8]) -> Result<Self, ProtoError> {
         let mut r = Reader::new(body);
         let f = match kind {
-            65 => Self::Hello {
-                version: r.u32()?,
-                // pane: 4 + 4 + 4 + 2 + 2 + 1 + 4
-                panes: r.list(21, get_pane_info)?,
-                layout: r.bytes()?.to_vec(),
-            },
+            65 => {
+                let version = r.u32()?;
+                if version != VERSION {
+                    return Ok(Self::Hello {
+                        version,
+                        panes: vec![],
+                        layout: vec![],
+                    });
+                }
+                Self::Hello {
+                    version,
+                    // pane: 4 + 4 + 4 + 2 + 2 + 1 + 4
+                    panes: r.list(21, get_pane_info)?,
+                    layout: r.bytes()?.to_vec(),
+                }
+            }
             66 => Self::Output {
                 pane: r.u32()?,
                 bytes: r.bytes()?.to_vec(),
