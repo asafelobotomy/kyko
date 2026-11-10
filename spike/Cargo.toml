@@ -1,0 +1,17 @@
+[package]
+name = "kyko-spike"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
+cxx = "1.0"
+cxx-qt = "0.10"
+cxx-qt-lib = { version = "0.10", features = ["qt_gui", "qt_qml"] }
+signal-hook = "0.3"
+
+[build-dependencies]
+cxx-qt-build = "0.10"
