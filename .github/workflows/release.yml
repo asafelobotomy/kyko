@@ -1,0 +1,363 @@
+name: Release
+
+# A push to main releases when the version in Cargo.toml has no tag yet. The `decide` job asks
+# scripts/release-needed.sh; for anything but `release` the rest is skipped and the run ends green.
+# On `release`:
+#   - `ci` runs the full CI;
+#   - `build` (read-only token) builds the source tarball with `git archive`, builds the package
+#     from that tarball, installs it and checks `kyko --version` and `kykod --version`, then writes
+#     the release notes and the AUR files and uploads them all as artifacts;
+#   - `publish` holds the write permissions and runs no project code and no build: it downloads
+#     the artifacts, checks the tarball against its checksum, attests the tarball and the package,
+#     creates and pushes the tag on the commit `decide` judged, and publishes the GitHub Release.
+# So nothing is public before the installed package has reported the right version, and the job
+# that can write never runs the third-party code a build runs (cargo build scripts, proc-macros).
+# The tag is created with the built-in GITHUB_TOKEN, which does not start other workflows. That is
+# wanted: this run is the release.
+#
+# Checksums: GitHub's /archive/refs/tags/... tarballs are generated on demand and are not
+# guaranteed byte-identical to `git archive` (or to themselves over time). So the AUR PKGBUILD's
+# source is the release *asset* kyko-<version>.tar.gz uploaded here, and its sha256sums entry is the
+# checksum of exactly that file.
+#
+# The `aur` job pushes the PKGBUILD and .SRCINFO to the AUR when the AUR_SSH_KEY secret exists.
+# Without it (before the key is added) the job is skipped and the files stay in the `aur` artifact
+# and the run summary for a manual push (docs/releasing.md).
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One release at a time; a release in progress is never cancelled. GitHub keeps at most one
+# pending run per group: a second push waits, and a third replaces that waiting second run. No
+# release is lost that way, because the run that does start decides again, from the newest commit:
+# a version bump in the replaced push is in it too. (Only a version that a later bump overtook
+# while waiting is never released on its own, which is what the newer version is for.)
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    # Only in this repository: a fork with Actions enabled would otherwise tag and publish
+    # releases of its own whenever its main changes. Every later job needs `decide`, so a skipped
+    # `decide` skips the whole run.
+    if: github.repository == 'asafelobotomy/kyko'
+    runs-on: ubuntu-latest
+    # The same image the tests run the scripts in (ci.yml), so the decision is made where it is
+    # tested.
+    container: archlinux:latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      action: ${{ steps.decide.outputs.action }}
+      version: ${{ steps.decide.outputs.version }}
+      kind: ${{ steps.decide.outputs.kind }}
+      sha: ${{ steps.decide.outputs.sha }}
+    steps:
+      - name: Install git
+        # Before checkout, so actions/checkout makes a real repository with history and tags.
+        run: pacman -Syu --noconfirm --needed git
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          # The script compares against every tag, so it needs the full history and all tags.
+          fetch-depth: 0
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Decide whether to release
+        id: decide
+        run: |
+          # A non-zero exit (a refusal, exit 3, or a broken Cargo.toml) fails the run.
+          if ! out=$(scripts/release-needed.sh); then
+            echo "::error::${out:-scripts/release-needed.sh failed}"
+            exit 1
+          fi
+          echo "$out"
+          read -r action version kind <<<"$out"
+          case "$action" in
+            release)
+              case "$kind" in
+                prerelease|final) ;;
+                *) echo "::error::unexpected output: $out"; exit 1 ;;
+              esac ;;
+            skip) kind= ;;
+            *) echo "::error::unexpected output: $out"; exit 1 ;;
+          esac
+          {
+            echo "action=$action"
+            echo "version=$version"
+            echo "kind=$kind"
+            # The commit this decision is about: `build` builds it and `publish` tags it.
+            echo "sha=$(git rev-parse HEAD)"
+          } >>"$GITHUB_OUTPUT"
+          echo "Decision: $out" >>"$GITHUB_STEP_SUMMARY"
+
+  ci:
+    needs: decide
+    if: needs.decide.outputs.action == 'release'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  # Builds and checks everything the release publishes, with a read-only token that is not kept in
+  # .git/config. Its result reaches `publish` only as artifacts and job outputs.
+  build:
+    needs: [decide, ci]
+    if: needs.decide.outputs.action == 'release'
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      pkgfile: ${{ steps.packaging.outputs.pkgfile }}
+    env:
+      VERSION: ${{ needs.decide.outputs.version }}
+      SHA: ${{ needs.decide.outputs.sha }}
+    steps:
+      - name: Install build tools
+        # git before checkout, so actions/checkout makes a real repository for git archive.
+        run: pacman -Syu --noconfirm --needed base-devel git rust
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.decide.outputs.sha }}
+          persist-credentials: false
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Check the commit and the packaging
+        id: packaging
+        run: |
+          head=$(git rev-parse HEAD)
+          if [ "$head" != "$SHA" ]; then
+            echo "::error::checked out $head, but decide judged $SHA"
+            exit 1
+          fi
+          pkgver=$(sed -n 's/^pkgver=//p' packaging/kyko/PKGBUILD)
+          want=${VERSION/-rc./rc}
+          if [ "$pkgver" != "$want" ]; then
+            echo "::error::packaging/kyko/PKGBUILD pkgver $pkgver does not match $VERSION (want $want). Run scripts/bump-version.sh."
+            exit 1
+          fi
+          pkgrel=$(sed -n 's/^pkgrel=//p' packaging/kyko/PKGBUILD)
+          # makepkg also builds kyko-debug-*; only this exact main package is published.
+          pkgfile=kyko-$pkgver-$pkgrel-x86_64.pkg.tar.zst
+          echo "PKGFILE=$pkgfile" >>"$GITHUB_ENV"
+          echo "pkgfile=$pkgfile" >>"$GITHUB_OUTPUT"
+
+      - name: Create the source tarball
+        run: |
+          mkdir dist
+          # Same layout as scripts/build-local-pkg.sh: top directory kyko-<version>/.
+          git archive --format=tar.gz --prefix="kyko-$VERSION/" -o "dist/kyko-$VERSION.tar.gz" HEAD
+          (cd dist && sha256sum "kyko-$VERSION.tar.gz" >"kyko-$VERSION.tar.gz.sha256")
+          cat "dist/kyko-$VERSION.tar.gz.sha256"
+
+      # makepkg refuses to run as root.
+      - name: Create an unprivileged build user
+        run: useradd -m builder && chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Build the package from the tarball (with check())
+        run: |
+          sum=$(cut -d' ' -f1 "dist/kyko-$VERSION.tar.gz.sha256")
+          # A copy of the PKGBUILD whose source is the local tarball, with its real checksum.
+          build=$(mktemp -d)
+          cp "dist/kyko-$VERSION.tar.gz" "$build/"
+          sed -e "s|^source=.*|source=(\"kyko-$VERSION.tar.gz\")|" \
+              -e "s|^sha256sums=.*|sha256sums=('$sum')|" packaging/kyko/PKGBUILD >"$build/PKGBUILD"
+          grep -q "^source=(\"kyko-$VERSION.tar.gz\")\$" "$build/PKGBUILD"
+          chown -R builder:builder "$build"
+          su builder -c "set -e; cd '$build'
+            PKGDEST='$GITHUB_WORKSPACE/dist' makepkg --noconfirm"
+          ls -l dist
+          test -f "dist/$PKGFILE"
+
+      - name: Install the package and check both binaries' versions
+        run: |
+          pacman -U --noconfirm "dist/$PKGFILE"
+          for bin in kyko kykod; do
+            got=$("$bin" --version)
+            echo "$got"
+            if [ "$got" != "$bin $VERSION" ]; then
+              echo "::error::$bin --version printed '$got', expected '$bin $VERSION'"
+              exit 1
+            fi
+          done
+
+      - name: Write the release notes and the AUR files
+        run: |
+          sum=$(cut -d' ' -f1 "dist/kyko-$VERSION.tar.gz.sha256")
+          # Fails when the CHANGELOG has no text for this version, before anything is tagged.
+          {
+            scripts/changelog-section.sh "$VERSION"
+            echo
+            echo "### Checksums"
+            echo
+            echo "- \`kyko-$VERSION.tar.gz\` (the AUR source): sha256 \`$sum\`"
+          } >notes.md
+
+          # The AUR copy: the PKGBUILD with the asset's checksum filled in, and a fresh .SRCINFO.
+          mkdir aur
+          sed "s|^sha256sums=.*|sha256sums=('$sum')|" packaging/kyko/PKGBUILD >aur/PKGBUILD
+          chown -R builder:builder aur
+          su builder -c "set -e; cd '$GITHUB_WORKSPACE/aur' && makepkg --printsrcinfo >.SRCINFO"
+
+      # Everything above is a check. Artifacts are not part of the release; `publish` takes these.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release
+          if-no-files-found: error
+          # The exact main package only, never kyko-debug.
+          path: |
+            notes.md
+            dist/kyko-${{ env.VERSION }}.tar.gz
+            dist/kyko-${{ env.VERSION }}.tar.gz.sha256
+            dist/${{ env.PKGFILE }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: aur
+          if-no-files-found: error
+          include-hidden-files: true
+          path: aur/
+
+  # Makes the release visible. It holds the write permissions, so it checks nothing out and runs
+  # no project code: only the artifacts `build` made, the runner's own tools and pinned actions.
+  publish:
+    needs: [decide, ci, build]
+    if: needs.decide.outputs.action == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    outputs:
+      has_aur_key: ${{ steps.aur_key.outputs.present }}
+    env:
+      VERSION: ${{ needs.decide.outputs.version }}
+      KIND: ${{ needs.decide.outputs.kind }}
+      SHA: ${{ needs.decide.outputs.sha }}
+      PKGFILE: ${{ needs.build.outputs.pkgfile }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release
+          path: release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: aur
+          path: aur
+
+      - name: Check the tarball against its checksum
+        run: |
+          test -f "release/dist/$PKGFILE"
+          (cd release/dist && sha256sum -c "kyko-$VERSION.tar.gz.sha256")
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release/dist/kyko-${{ env.VERSION }}.tar.gz
+            release/dist/${{ env.PKGFILE }}
+
+      - name: Create and push the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # An annotated tag on exactly the commit `decide` judged and `build` built, made through
+          # the API since this job has no checkout. The tagger is github-actions[bot].
+          tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" \
+            -f tag="v$VERSION" -f message="kyko $VERSION" -f object="$SHA" -f type=commit --jq .sha)
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/v$VERSION" -f sha="$tag_object" >/dev/null
+          echo "Tagged $SHA as v$VERSION"
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          if [ "$KIND" = prerelease ]; then flags+=(--prerelease); fi
+          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "kyko $VERSION" --notes-file release/notes.md "${flags[@]}" \
+            "release/dist/kyko-$VERSION.tar.gz" "release/dist/kyko-$VERSION.tar.gz.sha256" \
+            "release/dist/$PKGFILE"
+
+      - name: Write the AUR files to the summary
+        run: |
+          sum=$(cut -d' ' -f1 "release/dist/kyko-$VERSION.tar.gz.sha256")
+          {
+            echo "## AUR update for $VERSION"
+            echo
+            echo "Checksum of the release asset \`kyko-$VERSION.tar.gz\`: \`$sum\`"
+            echo
+            for f in aur/PKGBUILD aur/.SRCINFO; do
+              echo "### $f"
+              echo
+              echo '```'
+              cat "$f"
+              echo '```'
+              echo
+            done
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Note whether the AUR key is set
+        id: aur_key
+        # `secrets` cannot be used in a job-level `if`, so the `aur` job tests this output instead.
+        # The secret goes through env only so it can be tested for emptiness; its value is never printed.
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          if [ -n "$AUR_SSH_KEY" ]; then
+            echo "present=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "present=false" >>"$GITHUB_OUTPUT"
+            echo "No AUR_SSH_KEY secret: the AUR push is skipped. Push the files in the 'aur' artifact by hand (docs/releasing.md)." >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+  aur:
+    needs: [decide, publish]
+    if: needs.publish.outputs.has_aur_key == 'true'
+    runs-on: ubuntu-latest
+    permissions: {}
+    env:
+      VERSION: ${{ needs.decide.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: aur
+          path: aur
+      - name: Push to the AUR
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" >~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          # Trust only the AUR's published ed25519 host key (fingerprint from the AUR's own docs).
+          ssh-keyscan -t ed25519 aur.archlinux.org >~/.ssh/known_hosts 2>/dev/null
+          fp=$(ssh-keygen -lf ~/.ssh/known_hosts | cut -d' ' -f2)
+          if [ "$fp" != "SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4" ]; then
+            echo "::error::unexpected AUR host key $fp"
+            exit 1
+          fi
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          git clone ssh://aur@aur.archlinux.org/kyko.git kyko-aur
+          cp aur/PKGBUILD aur/.SRCINFO kyko-aur/
+          cd kyko-aur
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "The AUR already has these files."
+            exit 0
+          fi
+          git commit -m "Update to $VERSION"
+          git push origin HEAD:master

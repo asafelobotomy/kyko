@@ -1,0 +1,14 @@
+pkgbase = kyko
+	pkgdesc = Drop-down terminal for uQ and other Wayland desktops
+	pkgver = 0.0.1
+	pkgrel = 1
+	url = https://github.com/asafelobotomy/kyko
+	arch = x86_64
+	license = MIT
+	makedepends = cargo
+	depends = gcc-libs
+	options = !lto
+	source = kyko-0.0.1.tar.gz::https://github.com/asafelobotomy/kyko/releases/download/v0.0.1/kyko-0.0.1.tar.gz
+	sha256sums = SKIP
+
+pkgname = kyko

@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  # Branches only, so the v* tags the release creates do not run it. release.yml also calls it
+  # (workflow_call) on a push to main that releases, so that the release waits for its own CI.
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      # base-devel is for makepkg, which also builds the package below.
+      - name: Install toolchain, makepkg and cargo-deny
+        run: pacman -Syu --noconfirm --needed rust git base-devel cargo-deny
+      # fetch-depth 0 for tests/shell/release_needed_test.sh, which ends with a read-only run of
+      # scripts/release-needed.sh on this repository: with full history and tags it sees what the
+      # release's `decide` job sees (a shallow clone has no tags). The version comes from the PKGBUILD.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # makepkg refuses to run as root (and version_test.sh skips its .SRCINFO check as root), so
+      # everything but pacman -U runs as this user.
+      - name: Create an unprivileged user
+        run: useradd -m tester && chown -R tester:tester "$GITHUB_WORKSPACE"
+      - name: Format, lint and test
+        run: |
+          su tester -c "set -e
+            cd '$GITHUB_WORKSPACE'
+            cargo fmt --all --check
+            cargo clippy --workspace --all-targets --locked -- -D warnings
+            cargo test --workspace --locked"
+      - name: Audit dependencies
+        run: |
+          su tester -c "set -e
+            cd '$GITHUB_WORKSPACE'
+            cargo deny check advisories licenses"
+      - name: Shell tests
+        run: |
+          su tester -c "set -e
+            cd '$GITHUB_WORKSPACE'
+            for t in tests/shell/*.sh; do echo \"== \$t\"; bash \"\$t\"; done"
+      # The package's check() runs the workspace tests again: intended, the run above gives a fast,
+      # readable failure and this one proves the packaged source tree builds and tests on its own.
+      - name: Build the package
+        run: |
+          su tester -c "set -e
+            cd '$GITHUB_WORKSPACE'
+            scripts/build-local-pkg.sh"
+      - name: Install the package and run both binaries
+        run: |
+          pacman -U --noconfirm target/pkg/kyko-*.pkg.tar.zst
+          kyko --version
+          kykod --version
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kyko-pkg
+          path: target/pkg/*.pkg.tar.zst
+          if-no-files-found: error
