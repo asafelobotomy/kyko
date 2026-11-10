@@ -56,6 +56,14 @@ fn spike_start(cols: u16, rows: u16) {
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(500));
                     spike_write(text.replace("\\n", "\r").as_bytes());
+                    // A second injection, KYKO_SPIKE_TYPE2, after KYKO_SPIKE_TYPE2_MS (default 3000).
+                    if let Ok(second) = std::env::var("KYKO_SPIKE_TYPE2") {
+                        let ms = std::env::var("KYKO_SPIKE_TYPE2_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+                        eprintln!("type2_at={:.3}", now.as_secs_f64());
+                        spike_write(second.replace("\\n", "\r").replace("^C", "\u{3}").as_bytes());
+                    }
                 });
             }
         },

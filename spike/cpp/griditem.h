@@ -37,6 +37,7 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
 
 private:
+    void paintRow(QPainter* painter, const FfiCell* row, int cols);
     QFont m_font;
     QFont m_bold;
     qreal m_cellW = 8;

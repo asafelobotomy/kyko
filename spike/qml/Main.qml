@@ -8,9 +8,9 @@ Window {
     id: root
     property bool shown: true
     readonly property int gap: 12
-    readonly property int panelH: Math.round(Screen.height * 0.45)
+    readonly property int panelH: Math.round(Screen.height * (toggler.big() ? 0.97 : 0.45))
 
-    width: Math.round(Screen.width * 0.88)
+    width: Math.round(Screen.width * (toggler.big() ? 1.0 : 0.88))
     height: panelH + gap
     visible: true
     color: "transparent"

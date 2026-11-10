@@ -127,3 +127,33 @@ fn on_dirty_is_coalesced() {
     assert!(n >= 1 && n < 2000, "on_dirty calls: {n}");
     assert_eq!(row_text(&e.snapshot(), 22), "20000");
 }
+
+#[test]
+fn ctrl_c_stops_a_flood() {
+    let e = sh("yes", Box::new(|| {}));
+    std::thread::sleep(Duration::from_millis(300));
+    let sent = Instant::now();
+    e.write(b"\x03");
+    let status = wait_exit(&e);
+    assert!(status.is_some(), "yes still running 5 s after Ctrl+C");
+    eprintln!("ctrl-c to exit: {:?}, status {:?}", sent.elapsed(), status);
+}
+
+#[test]
+fn ctrl_c_stops_a_flood_while_snapshots_are_taken() {
+    let (tx, rx) = mpsc::channel::<()>();
+    let e = sh("yes", Box::new(move || { let _ = tx.send(()); }));
+    let end = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < end {
+        if rx.recv_timeout(Duration::from_millis(5)).is_ok() { let _ = e.snapshot(); }
+    }
+    let sent = Instant::now();
+    e.write(b"\x03");
+    let mut status = None;
+    while sent.elapsed() < Duration::from_secs(5) && status.is_none() {
+        if rx.recv_timeout(Duration::from_millis(5)).is_ok() { let _ = e.snapshot(); }
+        status = e.exited();
+    }
+    assert!(status.is_some(), "yes still running 5 s after Ctrl+C with a reader attached");
+    eprintln!("ctrl-c to exit with snapshots: {:?}, status {:?}", sent.elapsed(), status);
+}

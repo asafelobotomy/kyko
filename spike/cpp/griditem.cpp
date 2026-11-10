@@ -1,6 +1,8 @@
 #include "griditem.h"
 
 #include <QtCore/QElapsedTimer>
+#include <QtCore/QHash>
+#include <QtGui/QImage>
 #include <QtCore/QPointer>
 #include <QtGui/QFontMetricsF>
 #include <QtGui/QGuiApplication>
@@ -30,6 +32,7 @@ void send(const QByteArray& b) {
 
 struct GridItem::Stats {
     std::vector<double> ms;
+    long misses = 0;
     bool full = false;
 };
 
@@ -39,6 +42,8 @@ GridItem::GridItem(QQuickItem* parent) : QQuickPaintedItem(parent) {
     setAcceptedMouseButtons(Qt::LeftButton);
     setActiveFocusOnTab(true);
     setOpaquePainting(true);
+    if (qEnvironmentVariableIsSet("KYKO_SPIKE_FBO"))
+        setRenderTarget(QQuickPaintedItem::FramebufferObject);
 
     m_font = QFont(QString::fromStdString(std::string(spike_palette_font())));
     m_font.setPointSize(spike_palette_font_size());
@@ -61,14 +66,19 @@ GridItem::GridItem(QQuickItem* parent) : QQuickPaintedItem(parent) {
     }
 }
 
+static void print_stats(std::vector<double>& v, int cols, int rows) {
+    if (v.empty())
+        return;
+    std::sort(v.begin(), v.end());
+    auto at = [&](double q) { return v[std::min(v.size() - 1, size_t(q * v.size()))]; };
+    std::fprintf(stderr, "paint_ms n=%zu p50=%.3f p95=%.3f max=%.3f cols=%d rows=%d\n", v.size(), at(0.50), at(0.95),
+                 v.back(), cols, rows);
+    v.clear();
+}
+
 GridItem::~GridItem() {
-    if (m_stats && !m_stats->ms.empty()) {
-        auto& v = m_stats->ms;
-        std::sort(v.begin(), v.end());
-        auto at = [&](double q) { return v[std::min(v.size() - 1, size_t(q * v.size()))]; };
-        std::fprintf(stderr, "paint_ms n=%zu p50=%.3f p95=%.3f max=%.3f cols=%d rows=%d\n", v.size(), at(0.50),
-                     at(0.95), v.back(), m_cols, m_rows);
-    }
+    if (m_stats)
+        print_stats(m_stats->ms, m_cols, m_rows);
     delete m_stats;
 }
 
@@ -90,6 +100,59 @@ void GridItem::geometryChange(const QRectF& newGeometry, const QRectF& oldGeomet
     update();
 }
 
+void GridItem::paintRow(QPainter* p, const FfiCell* row, int cols) {
+    const quint32 defBg = spike_palette_bg();
+    for (int c = 0; c < cols;) {
+        int e = c + 1;
+        while (e < cols && row[e].bg == row[c].bg)
+            ++e;
+        if (row[c].bg != defBg)
+            p->fillRect(QRectF(c * m_cellW, 0, (e - c) * m_cellW, m_cellH), rgb(row[c].bg));
+        c = e;
+    }
+    QString run;
+    int curStyle = -1;
+    quint32 curFg = 0xffffffff;
+    for (int c = 0; c < cols;) {
+        const FfiCell& cell = row[c];
+        if (cell.flags & WIDE_SPACER || cell.ch == ' ' || cell.ch == 0) {
+            ++c;
+            continue;
+        }
+        const quint8 style = cell.flags & (BOLD | ITALIC | UNDERLINE);
+        if (style != curStyle) {
+            QFont f = (style & BOLD) ? m_bold : m_font;
+            if (style & ITALIC)
+                f.setItalic(true);
+            if (style & UNDERLINE)
+                f.setUnderline(true);
+            p->setFont(f);
+            curStyle = style;
+        }
+        if (cell.fg != curFg) {
+            p->setPen(rgb(cell.fg));
+            curFg = cell.fg;
+        }
+        if (cell.ch < 0x80) {
+            int e = c;
+            run.clear();
+            while (e < cols && row[e].ch < 0x80 && row[e].ch != 0 && row[e].fg == cell.fg &&
+                   (row[e].flags & (BOLD | ITALIC | UNDERLINE)) == style && !(row[e].flags & WIDE_SPACER)) {
+                run.append(QChar(ushort(row[e].ch)));
+                ++e;
+            }
+            p->drawText(QPointF(c * m_cellW, m_ascent), run);
+            c = e;
+        } else {
+            const char32_t u = cell.ch;
+            const qreal w = (cell.flags & WIDE) ? 2 * m_cellW : m_cellW;
+            p->drawText(QRectF(c * m_cellW, 0, w, m_cellH), Qt::AlignLeft | Qt::AlignVCenter | Qt::TextDontClip,
+                        QString::fromUcs4(&u, 1));
+            ++c;
+        }
+    }
+}
+
 void GridItem::paint(QPainter* p) {
     QElapsedTimer timer;
     if (m_stats)
@@ -107,52 +170,42 @@ void GridItem::paint(QPainter* p) {
     p->setFont(m_font);
 
     const int status = spike_exit_status();
-    QString run;
+    // Each row is rendered once into an image keyed by its contents; unchanged rows, and rows that
+    // only moved (scrolling), are a single blit.
+    const bool useCache = !qEnvironmentVariableIsSet("KYKO_SPIKE_NOCACHE");
+    static QHash<quint64, QImage> cache;
+    if (cache.size() > 6 * int(rows) + 64)
+        cache.clear();
+    const QSize rowSize(int(cols * m_cellW), int(m_cellH));
     for (int r = 0; r < rows; ++r) {
         const FfiCell* row = cells.data() + size_t(r) * cols;
         const qreal y = r * m_cellH;
-        // Backgrounds: one rect per run of equal colour.
-        for (int c = 0; c < cols;) {
-            int e = c + 1;
-            while (e < cols && row[e].bg == row[c].bg)
-                ++e;
-            if (row[c].bg != spike_palette_bg())
-                p->fillRect(QRectF(c * m_cellW, y, (e - c) * m_cellW, m_cellH), rgb(row[c].bg));
-            c = e;
+        if (!useCache) {
+            p->save();
+            p->translate(0, y);
+            paintRow(p, row, cols);
+            p->restore();
+            continue;
         }
-        // Text: runs of ASCII with equal colour and style; anything else cell by cell.
-        for (int c = 0; c < cols;) {
-            const FfiCell& cell = row[c];
-            if (cell.flags & WIDE_SPACER || cell.ch == ' ' || cell.ch == 0) {
-                ++c;
-                continue;
-            }
-            const quint8 style = cell.flags & (BOLD | ITALIC | UNDERLINE);
-            QFont f = (style & BOLD) ? m_bold : m_font;
-            if (style & ITALIC)
-                f.setItalic(true);
-            if (style & UNDERLINE)
-                f.setUnderline(true);
-            p->setFont(f);
-            p->setPen(rgb(cell.fg));
-            if (cell.ch < 0x80) {
-                int e = c;
-                run.clear();
-                while (e < cols && row[e].ch < 0x80 && row[e].ch != 0 && row[e].fg == cell.fg &&
-                       (row[e].flags & (BOLD | ITALIC | UNDERLINE)) == style && !(row[e].flags & WIDE_SPACER)) {
-                    run.append(QChar(ushort(row[e].ch)));
-                    ++e;
-                }
-                p->drawText(QPointF(c * m_cellW, y + m_ascent), run);
-                c = e;
-            } else {
-                const char32_t u = cell.ch;
-                const qreal w = (cell.flags & WIDE) ? 2 * m_cellW : m_cellW;
-                p->drawText(QRectF(c * m_cellW, y, w, m_cellH), Qt::AlignLeft | Qt::AlignVCenter | Qt::TextDontClip,
-                            QString::fromUcs4(&u, 1));
-                ++c;
-            }
+        quint64 h = 1469598103934665603ull ^ quint64(cols);
+        for (int c = 0; c < cols; ++c) {
+            h = (h ^ row[c].ch) * 1099511628211ull;
+            h = (h ^ row[c].fg) * 1099511628211ull;
+            h = (h ^ row[c].bg) * 1099511628211ull;
+            h = (h ^ row[c].flags) * 1099511628211ull;
         }
+        auto it = cache.find(h);
+        if (it == cache.end()) {
+            QImage img(rowSize, QImage::Format_RGB32);
+            img.fill(bg);
+            QPainter ip(&img);
+            paintRow(&ip, row, cols);
+            ip.end();
+            it = cache.insert(h, img);
+            if (m_stats)
+                ++m_stats->misses;
+        }
+        p->drawImage(QPointF(0, y), *it);
     }
 
     if (status == -1 && cx >= 0 && cy >= 0 && cx < cols && cy < rows) {
@@ -183,6 +236,11 @@ void GridItem::paint(QPainter* p) {
 
     if (m_stats) {
         m_stats->ms.push_back(timer.nsecsElapsed() / 1e6);
+        if (m_stats->ms.size() >= 300) {
+            std::fprintf(stderr, "row_cache_misses=%ld ", m_stats->misses);
+            m_stats->misses = 0;
+            print_stats(m_stats->ms, m_cols, m_rows);
+        }
         if (m_stats->full && status == -1)
             update();
     }

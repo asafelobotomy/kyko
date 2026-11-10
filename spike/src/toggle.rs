@@ -24,6 +24,10 @@ pub mod qobject {
         #[qinvokable]
         fn layer_top(self: &Toggler) -> bool;
 
+        /// True when KYKO_SPIKE_BIG is set: the panel fills the screen, for the 200x50 measurement.
+        #[qinvokable]
+        fn big(self: &Toggler) -> bool;
+
         /// True when KYKO_SPIKE_START_HIDDEN is set.
         #[qinvokable]
         fn start_hidden(self: &Toggler) -> bool;
@@ -44,6 +48,10 @@ pub fn claim_signal() {
 pub struct TogglerRust;
 
 impl qobject::Toggler {
+    pub fn big(&self) -> bool {
+        std::env::var_os("KYKO_SPIKE_BIG").is_some()
+    }
+
     pub fn layer_top(&self) -> bool {
         std::env::var("KYKO_SPIKE_LAYER").is_ok_and(|v| v == "top")
     }
