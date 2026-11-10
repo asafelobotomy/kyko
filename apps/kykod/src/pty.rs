@@ -178,28 +178,65 @@ impl Pty {
         self.pid
     }
 
-    /// The terminal's foreground process group and its leader's program name.
-    pub fn foreground(&self) -> Option<(i32, String)> {
-        let pgid = tcgetpgrp(&self.master).ok()?.as_raw();
-        let name = std::fs::read_to_string(format!("/proc/{pgid}/comm")).ok()?;
-        Some((pgid, name.trim_end().to_string()))
+    /// The terminal's foreground process group, or `None` if it has none
+    /// (the kernel answers 0 then, for instance once the shell has ended).
+    fn foreground_group(&self) -> Option<i32> {
+        tcgetpgrp(&self.master)
+            .ok()
+            .map(|g| g.as_raw())
+            .filter(|&g| g > 0)
     }
 
-    /// The folder of the foreground group's leader, or else of the shell.
+    /// A running process of the foreground group `pgid`: its leader, or, once
+    /// the leader has ended (`dmesg | less` after `dmesg` is done), one of the
+    /// shell's children in the group. `None` if neither is found, which is
+    /// cheap to find out: the shell has few children.
+    fn group_member(&self, pgid: i32) -> Option<i32> {
+        let running_in_group =
+            |pid: i32| matches!(stat(pid), Some((state, g)) if state != 'Z' && g == pgid);
+        if running_in_group(pgid) {
+            return Some(pgid);
+        }
+        let children =
+            std::fs::read_to_string(format!("/proc/{0}/task/{0}/children", self.pid)).ok()?;
+        children
+            .split_whitespace()
+            .filter_map(|c| c.parse().ok())
+            .find(|&c| running_in_group(c))
+    }
+
+    /// The terminal's foreground process group and its program's name: the
+    /// leader's, or another member's once the leader has ended (see
+    /// [`Pty::group_member`]), or empty if no member is found.
+    pub fn foreground(&self) -> Option<(i32, String)> {
+        let pgid = self.foreground_group()?;
+        let name = self
+            .group_member(pgid)
+            .and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/comm")).ok())
+            .map(|n| n.trim_end().to_string())
+            .unwrap_or_default();
+        Some((pgid, name))
+    }
+
+    /// The folder of a running member of the foreground group, or else of
+    /// the shell.
     pub fn cwd(&self) -> Option<String> {
         let read = |pid: i32| {
             std::fs::read_link(format!("/proc/{pid}/cwd"))
                 .ok()
                 .map(|p| p.to_string_lossy().into_owned())
         };
-        self.foreground()
-            .and_then(|(pgid, _)| read(pgid))
+        self.foreground_group()
+            .and_then(|pgid| self.group_member(pgid))
+            .and_then(read)
             .or_else(|| read(self.pid))
     }
 
-    /// True when something other than the shell itself holds the terminal.
+    /// True when a process group other than the shell's holds the terminal.
+    /// It compares the group ids alone, so a program whose group's leader has
+    /// ended (`dmesg | less`) is still seen.
     pub fn is_busy(&self) -> bool {
-        matches!(self.foreground(), Some((pgid, _)) if pgid != self.pid)
+        matches!(self.foreground_group(), Some(g) if g != self.pid)
     }
 
     /// Sends `SIGHUP` to the shell's process group.
@@ -312,6 +349,17 @@ impl Pty {
         }
         *status
     }
+}
+
+/// The state letter and process group of `pid`, from `/proc/<pid>/stat`.
+fn stat(pid: i32) -> Option<(char, i32)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The fields after the program name, which is in parentheses and may hold
+    // anything: state, parent, group.
+    let mut fields = stat.rsplit_once(')')?.1.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let group = fields.nth(1)?.parse().ok()?;
+    Some((state, group))
 }
 
 /// How long a dropped [`Pty`] gives its shell after `SIGHUP`, and again after `SIGKILL`.

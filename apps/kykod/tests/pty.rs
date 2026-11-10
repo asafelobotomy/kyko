@@ -270,6 +270,28 @@ fn foreground_program_is_reported() {
 }
 
 #[test]
+fn a_pipeline_whose_leader_has_ended_is_busy_and_named() {
+    let (p, mut out) = interactive("/");
+    p.write_all(b"true | sleep 32\n").unwrap();
+    // Busy, and named after the stage still running, once the shell has
+    // reaped the group's leader (`true`).
+    let end = Instant::now() + LIMIT;
+    loop {
+        let fg = p.foreground();
+        let leader_gone = fg
+            .as_ref()
+            .is_some_and(|(g, _)| *g != p.pid() && !alive(*g));
+        if leader_gone && fg.as_ref().is_some_and(|(_, name)| name == "sleep") {
+            break;
+        }
+        assert!(Instant::now() < end, "foreground is {fg:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(p.is_busy());
+    out.buf.clear();
+}
+
+#[test]
 fn idle_shell_is_not_busy() {
     let (p, _out) = interactive("/");
     assert!(!p.is_busy());

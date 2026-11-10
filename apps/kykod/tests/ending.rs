@@ -30,6 +30,12 @@ fn idle_shell(h: &Holder, c: &mut Client, pane: PaneId, tag: &str) -> i32 {
 /// Types `command` into `pane` and returns the pid of the process whose
 /// command line is exactly `command`, once it is running.
 fn run_in(c: &mut Client, pane: PaneId, command: &str) -> i32 {
+    run_in_until(c, pane, command, command)
+}
+
+/// Types `command` into `pane` and returns the pid of the process whose
+/// command line is exactly `cmdline`, once it is running.
+fn run_in_until(c: &mut Client, pane: PaneId, command: &str, cmdline: &str) -> i32 {
     c.send(ToHolder::Input {
         pane,
         bytes: format!("{command}\n").into_bytes(),
@@ -38,13 +44,13 @@ fn run_in(c: &mut Client, pane: PaneId, command: &str) -> i32 {
     loop {
         let found: Vec<i32> = processes()
             .into_iter()
-            .filter(|p| p.cmdline == command)
+            .filter(|p| p.cmdline == cmdline)
             .map(|p| p.pid)
             .collect();
         match found.as_slice() {
             [pid] => return *pid,
             [] if Instant::now() < end => std::thread::sleep(Duration::from_millis(20)),
-            _ => panic!("expected one {command:?}, found {found:?}"),
+            _ => panic!("expected one {cmdline:?}, found {found:?}"),
         }
     }
 }
@@ -103,6 +109,34 @@ fn busy_lists_every_busy_pane_in_ascending_order() {
     let reply = c.wait_for(|f| matches!(f, ToWindow::Busy { .. }), LIMIT);
     assert_eq!(reply, Some(ToWindow::Busy { panes: vec![3, 7] }));
     assert!(h.alive(), "kykod exited");
+}
+
+#[test]
+fn a_pipeline_whose_first_stage_has_ended_is_busy() {
+    let mut h = Holder::start();
+    let mut c = Client::connect(&h);
+    c.hello();
+    idle_shell(&h, &mut c, 1, "end-pipe-1");
+    // `dmesg | less`: the group's leader, the first stage, ends at once.
+    let sleep = run_in_until(&mut c, 1, "true | sleep 3069", "sleep 3069");
+    let group = processes()
+        .into_iter()
+        .find(|p| p.pid == sleep)
+        .map(|p| p.pgrp)
+        .expect("the sleep is gone");
+    assert_ne!(group, sleep, "the sleep leads its own group");
+    // Wait until the shell has reaped the leader: then nothing in /proc has
+    // the group's id as its pid.
+    let end = Instant::now() + LIMIT;
+    while common::state(group).is_some() {
+        assert!(Instant::now() < end, "the group's leader was never reaped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    c.send(ToHolder::EndSessions { force: false });
+    let reply = c.wait_for(|f| matches!(f, ToWindow::Busy { .. }), LIMIT);
+    assert_eq!(reply, Some(ToWindow::Busy { panes: vec![1] }));
+    assert!(h.alive(), "kykod exited");
+    assert!(exists(sleep), "the sleep ended");
 }
 
 #[test]
