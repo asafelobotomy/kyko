@@ -1,0 +1,9 @@
+[package]
+name = "kyko-term"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+alacritty_terminal = "=0.26.0"

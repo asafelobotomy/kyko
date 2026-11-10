@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/kyko-core", "crates/kyko-proto", "apps/kykod", "apps/kyko"]
+members = ["crates/kyko-core", "crates/kyko-proto", "crates/kyko-term", "apps/kykod", "apps/kyko"]
 
 [workspace.package]
 edition = "2024"
