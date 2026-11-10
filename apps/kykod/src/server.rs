@@ -18,12 +18,20 @@
 //! - a pane's lock, which may be held while writing to the window;
 //! - a window's writer, taken last, held only for one frame's write.
 //!
-//! The stored layout has its own lock, never held with any other. The list of
-//! panes being closed has its own lock too: taken alone or under the pane
-//! table, and nothing is taken under it. Inside a shell's
-//! [`crate::pty::Pty`], the status lock comes before the child lock (status,
-//! then child); the two may be taken under the pane table, and nothing else is
-//! taken under them.
+//! Three more are taken alone or under the pane table, never under any other
+//! lock and never two of them at once:
+//! - the list of panes being closed;
+//! - `SPAWN` in [`crate::pty`], held while a terminal is made and its shell
+//!   forked, so that no other spawn forks while a descriptor is not yet
+//!   close-on-exec;
+//! - inside a shell's [`crate::pty::Pty`], the status lock, under which the
+//!   child lock may be taken (status, then child).
+//!
+//! Nothing else is taken under any of these. The stored layout's lock and a
+//! pane's input lock (its input queue) stand alone: never held with any other.
+//!
+//! No lock is held across a wait that is not bounded, nor across the waits of
+//! up to 2 s when a shell is closed or the sessions end.
 //!
 //! Ending: `kykod` stops only through [`Server::end_sessions`], called by an
 //! accepted `EndSessions` (on the connection's thread) or by `SIGTERM` or
@@ -306,6 +314,8 @@ fn bind(path: &Path) -> Result<(UnixListener, Flock<File>), String> {
         .create(true)
         .truncate(false)
         .mode(0o600)
+        // A link here is not ours to follow: refused (ELOOP), not locked.
+        .custom_flags(nix::libc::O_NOFOLLOW)
         .open(&lock_file)
         .map_err(|e| format!("cannot open {}: {e}", lock_file.display()))?;
     let lock = Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|(_, e)| {

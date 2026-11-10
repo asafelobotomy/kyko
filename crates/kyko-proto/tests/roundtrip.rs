@@ -18,7 +18,7 @@ fn spec(shell: &str, env: Vec<(String, String)>) -> SpawnSpec {
         pane: 9,
         shell: shell.into(),
         args: vec!["-l".into(), "ünï".into()],
-        cwd: "/home/ü".into(),
+        cwd: "/srv/ü".into(),
         env,
         cols: 80,
         rows: 24,

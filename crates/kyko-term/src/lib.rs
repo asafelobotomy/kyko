@@ -141,7 +141,8 @@ impl Emulator {
     /// that wrapped, so they start mid-stream: skip to just after the first newline, which drops
     /// a partial escape sequence or character. With no newline there is nothing safe to show.
     /// Replies the replayed output provokes are dropped: they answer queries the shell sent in the
-    /// past, and sent now they would land in the live shell as junk at its prompt.
+    /// past, and sent now they would land in the live shell as junk at its prompt. Replies from
+    /// before the replay that were not yet taken with [`Emulator::take_replies`] are dropped too.
     pub fn replay(&mut self, bytes: &[u8], truncated: bool) {
         self.term = Self::new_term(self.size, self.scrollback, &self.shared);
         self.processor = Processor::new();

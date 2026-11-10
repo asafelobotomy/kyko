@@ -6,6 +6,8 @@ ExecStart=/usr/bin/kykod
 Restart=on-failure
 KillMode=mixed
 TimeoutStopSec=5
+# One process killed for memory (a runaway build in one tab) must not stop kykod and every shell.
+OOMPolicy=continue
 
 [Install]
 WantedBy=graphical-session.target

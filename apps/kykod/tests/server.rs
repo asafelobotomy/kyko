@@ -484,6 +484,47 @@ fn eight_kykods_at_once_leave_exactly_one_serving() {
 }
 
 #[test]
+fn a_held_lock_makes_kykod_exit_1_and_leave_the_stale_file() {
+    use nix::fcntl::{Flock, FlockArg};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hold.sock");
+    std::fs::write(&path, b"stale").unwrap();
+    // This test plays the kykod that holds the lock.
+    let file = std::fs::File::create(dir.path().join("hold.sock.lock")).unwrap();
+    let _lock = Flock::lock(file, FlockArg::LockExclusiveNonblock).unwrap();
+    let mut child = bin()
+        .arg("--socket")
+        .arg(&path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    assert_eq!(wait_exit(&mut child, LIMIT), Some(1));
+    let mut err = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut err).unwrap();
+    assert!(err.contains("another kykod is serving"), "{err}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"stale");
+}
+
+#[test]
+fn a_lock_file_that_is_a_symbolic_link_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hold.sock");
+    let target = dir.path().join("elsewhere");
+    std::os::unix::fs::symlink(&target, dir.path().join("hold.sock.lock")).unwrap();
+    let mut child = bin()
+        .arg("--socket")
+        .arg(&path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    assert_eq!(wait_exit(&mut child, LIMIT), Some(1));
+    assert!(!target.exists(), "kykod created the link's target");
+    assert!(!path.exists(), "kykod made the socket");
+}
+
+#[test]
 fn input_to_a_program_that_never_reads_does_not_block_close() {
     let h = Holder::start();
     let mut c = Client::connect(&h);
@@ -538,25 +579,61 @@ fn a_mebibyte_of_input_arrives_complete() {
 }
 
 #[test]
-fn input_beyond_the_queue_bound_is_dropped_and_logged_once() {
+fn input_beyond_the_queue_bound_is_dropped_until_the_queue_empties() {
+    let dir = tempfile::tempdir().unwrap();
+    let go = dir.path().join("go");
+    // Reads nothing until `go` exists, then exactly the 4,000,000 bytes that
+    // fit, then whatever else came (for a second; `--foreground` keeps `cat`
+    // in the terminal's foreground group, so it may read), then one line.
+    let script = format!(
+        "stty raw -echo; printf ready; while [ ! -e {} ]; do sleep 0.05; done; \
+         head -c 4000000 >/dev/null; n=$(timeout --foreground 1 cat | wc -c); printf 'extra=%s;' $n; \
+         read -r line; printf 'line=%s;' \"$line\"; sleep 30",
+        go.display()
+    );
     let h = Holder::start();
     let mut c = Client::connect(&h);
     c.hello();
-    c.send(ToHolder::Spawn(spec(1, "sleep", &["300"])));
-    h.child_running("sleep 300");
-    for _ in 0..6 {
+    c.send(ToHolder::Spawn(spec(1, "/bin/sh", &["-c", &script])));
+    c.output_until(1, b"ready", LIMIT);
+    for _ in 0..4 {
         c.send(ToHolder::Input {
             pane: 1,
             bytes: vec![b'x'; 1_000_000],
         });
     }
-    // Something after the overflow is still handled at once.
+    // Past the bound: dropped. So is anything after it, however small, while
+    // the queue still holds input: a paste is cut short, never left with a
+    // hole in it.
+    c.send(ToHolder::Input {
+        pane: 1,
+        bytes: vec![b'x'; 1_000_000],
+    });
+    c.send(ToHolder::Input {
+        pane: 1,
+        bytes: b"yy".to_vec(),
+    });
+    // Frames are handled in order: once this pane talks, the ones above have
+    // been handled too.
     c.send(ToHolder::Spawn(spec(
         2,
         "/bin/sh",
         &["-c", "printf after; sleep 30"],
     )));
     c.output_until(2, b"after", LIMIT);
+    std::fs::write(&go, b"").unwrap();
+    let out = c.output_until(1, b";", Duration::from_secs(20));
+    assert!(
+        contains(&out, b"extra=0;"),
+        "{}",
+        String::from_utf8_lossy(&out)
+    );
+    // Once the queue has emptied, input is taken again.
+    c.send(ToHolder::Input {
+        pane: 1,
+        bytes: b"taken\n".to_vec(),
+    });
+    c.output_until(1, b"line=taken;", LIMIT);
     let log = h.log();
     assert_eq!(count(log.as_bytes(), b"input queue full"), 1, "{log}");
 }

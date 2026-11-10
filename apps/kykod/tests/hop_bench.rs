@@ -83,5 +83,11 @@ fn holder_hop_is_within_15_percent() {
     println!("direct runs: {direct_times:?}");
     println!("holder runs: {holder_times:?}");
     println!("direct median {d:?}, through kykod {k:?}, ratio {ratio:.3}");
+    // How idle the machine was: the result means little on a loaded one.
+    let load = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
+    println!(
+        "load average over the last minute: {}",
+        load.split_whitespace().next().unwrap_or("unknown")
+    );
     assert!(ratio <= 1.15, "the hop costs {ratio:.3}x");
 }

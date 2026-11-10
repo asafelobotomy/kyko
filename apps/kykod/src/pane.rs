@@ -80,8 +80,10 @@ struct Input {
     /// The input thread's queue; `None` once the shell has ended or the pane
     /// was closed, which also ends the input thread.
     queue: Option<Sender<Vec<u8>>>,
-    /// True from the first dropped `Input` until one fits again, so an
-    /// overflow is logged once, not once per frame.
+    /// True from the first dropped `Input` until the queue has emptied:
+    /// everything in between is dropped too, so an overflow cuts input short
+    /// rather than leaving a hole in it, and is logged once, not once per
+    /// frame.
     overflowing: bool,
 }
 
@@ -327,25 +329,31 @@ impl Pane {
     }
 
     /// Queues `bytes` to be typed into the shell; never blocks. Input that
-    /// would take the queue past [`INPUT_LIMIT`] is dropped, and logged once per
-    /// overflow. Input to a pane whose shell has ended is ignored.
+    /// would take the queue past [`INPUT_LIMIT`] is dropped, and so is all
+    /// input after it until the queue has emptied: a paste too large is cut
+    /// short, never typed with a piece missing from its middle. Logged once
+    /// per overflow. Input to a pane whose shell has ended is ignored.
     pub fn input(&self, bytes: Vec<u8>) {
         let mut input = self.lock_input();
         if input.queue.is_none() {
             return;
         }
         let len = bytes.len();
-        if self.pending.load(Ordering::Acquire) + len > INPUT_LIMIT {
-            if !input.overflowing {
-                input.overflowing = true;
-                log!(
-                    "pane {}: input queue full ({INPUT_LIMIT} bytes waiting); dropping input",
-                    self.id
-                );
+        let pending = self.pending.load(Ordering::Acquire);
+        if input.overflowing {
+            if pending > 0 {
+                return;
             }
+            input.overflowing = false;
+        }
+        if pending + len > INPUT_LIMIT {
+            input.overflowing = true;
+            log!(
+                "pane {}: input queue full ({INPUT_LIMIT} bytes waiting); dropping input until it empties",
+                self.id
+            );
             return;
         }
-        input.overflowing = false;
         self.pending.fetch_add(len, Ordering::AcqRel);
         if input.queue.as_ref().is_some_and(|q| q.send(bytes).is_err()) {
             self.pending.fetch_sub(len, Ordering::AcqRel);
