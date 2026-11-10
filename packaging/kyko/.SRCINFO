@@ -10,6 +10,6 @@ pkgbase = kyko
 	depends = gcc-libs
 	options = !lto
 	source = kyko-0.0.2.tar.gz::https://github.com/asafelobotomy/kyko/releases/download/v0.0.2/kyko-0.0.2.tar.gz
-	sha256sums = 412c4da190baa8ac8d9480ebf9eb327f7fb5e939649f13d3b6d0e779328c06f5
+	sha256sums = df1be399ed79aea99f78e5fcca32fb4da315599e128a0a77402d1fe270b41034
 
 pkgname = kyko
