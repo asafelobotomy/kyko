@@ -4,6 +4,7 @@ use std::process::{Command, ExitCode};
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
+mod bridge;
 mod engine;
 mod theme;
 mod toggle;
@@ -30,8 +31,10 @@ fn main() -> ExitCode {
     if std::env::args().nth(1).as_deref() == Some("toggle") {
         return send_toggle();
     }
+    toggle::claim_signal();
     let _ = std::fs::write(pid_file(), std::process::id().to_string());
     let mut app = QGuiApplication::new();
+    bridge::ffi::grid_register();
     let mut engine = QQmlApplicationEngine::new();
     if let Some(e) = engine.as_mut() {
         e.load(&QUrl::from("qrc:/qt/qml/org/kyko/spike/qml/Main.qml"));

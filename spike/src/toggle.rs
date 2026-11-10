@@ -15,20 +15,35 @@ pub mod qobject {
 
         #[qinvokable]
         fn start(self: Pin<&mut Toggler>);
+
+        /// True when KYKO_SPIKE_NOFOCUS is set: automated runs must not take the keyboard.
+        #[qinvokable]
+        fn no_focus(self: &Toggler) -> bool;
     }
 
     impl cxx_qt::Threading for Toggler {}
+}
+
+/// SIGUSR1 is claimed in `main` before the pid file exists: an early `toggle` must not kill us.
+pub static SIGNALS: std::sync::Mutex<Option<signal_hook::iterator::Signals>> = std::sync::Mutex::new(None);
+
+pub fn claim_signal() {
+    let s = signal_hook::iterator::Signals::new([signal_hook::consts::SIGUSR1]).expect("install SIGUSR1 handler");
+    *SIGNALS.lock().unwrap() = Some(s);
 }
 
 #[derive(Default)]
 pub struct TogglerRust;
 
 impl qobject::Toggler {
+    pub fn no_focus(&self) -> bool {
+        std::env::var_os("KYKO_SPIKE_NOFOCUS").is_some()
+    }
+
     pub fn start(self: Pin<&mut Self>) {
         let qt = self.qt_thread();
         std::thread::spawn(move || {
-            let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGUSR1])
-                .expect("install SIGUSR1 handler");
+            let Some(mut signals) = SIGNALS.lock().unwrap().take() else { return };
             for _ in signals.forever() {
                 if qt.queue(|t| t.toggled()).is_err() {
                     break;

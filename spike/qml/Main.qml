@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Window
 import org.kde.layershell as LayerShell
 import org.kyko.spike
+import org.kyko.spike.native
 
 Window {
     id: root
@@ -17,14 +18,17 @@ Window {
 
     LayerShell.Window.layer: LayerShell.Window.LayerOverlay
     LayerShell.Window.anchors: LayerShell.Window.AnchorTop
-    LayerShell.Window.keyboardInteractivity: LayerShell.Window.KeyboardInteractivityOnDemand
+    LayerShell.Window.keyboardInteractivity: toggler.no_focus() ? LayerShell.Window.KeyboardInteractivityNone : LayerShell.Window.KeyboardInteractivityOnDemand
     LayerShell.Window.scope: "kyko"
     LayerShell.Window.exclusionZone: -1
 
     onShownChanged: {
         if (shown) {
             visible = true
-            requestActivate()
+            if (!toggler.no_focus()) {
+                requestActivate()
+                grid.forceActiveFocus()
+            }
         }
         slide.to = shown ? gap : -panelH
         slide.restart()
@@ -49,6 +53,13 @@ Window {
         border.width: 2
         border.color: "#d79921"
 
+        GridItem {
+            id: grid
+            anchors.fill: parent
+            anchors.margins: 8 + panel.border.width
+            focus: true
+        }
+
         Text {
             id: counter
             property int n: 0
@@ -57,7 +68,7 @@ Window {
             anchors.margins: 10
             color: "#b0a589"
             font.pixelSize: 14
-            text: "state " + n + (root.active ? " · focused" : " · not focused")
+            text: grid.cols + "×" + grid.rows + " · state " + n + (root.active ? " · focused" : " · not focused")
             Timer { interval: 1000; running: true; repeat: true; onTriggered: counter.n++ }
         }
     }
