@@ -4,7 +4,7 @@
 # pkgver is the Cargo.toml version with '-rc.N' written 'rcN' (pacman forbids '-');
 # scripts/bump-version.sh keeps them in step.
 pkgname=kyko
-pkgver=0.0.1
+pkgver=0.0.2
 pkgrel=1
 _tag=${pkgver/rc/-rc.}
 pkgdesc="Drop-down terminal for uQ and other Wayland desktops"
@@ -13,6 +13,8 @@ url="https://github.com/asafelobotomy/kyko"
 license=(MIT)
 depends=(gcc-libs)
 makedepends=(cargo)
+# The end-to-end tests run less as their full-screen program.
+checkdepends=(less)
 options=(!lto)
 # The release asset, not GitHub's /archive/ tarball: that one is generated on demand and its bytes
 # (so its checksum) can change. The release workflow uploads exactly this file and prints its sum.
@@ -45,6 +47,8 @@ package() {
   cd "$srcdir/$pkgname-$_tag"
   install -Dm755 target/release/kyko "$pkgdir/usr/bin/kyko"
   install -Dm755 target/release/kykod "$pkgdir/usr/bin/kykod"
+  # A user unit, installed but not enabled.
+  install -Dm644 packaging/kykod.service "$pkgdir/usr/lib/systemd/user/kykod.service"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

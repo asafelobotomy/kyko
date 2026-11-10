@@ -125,8 +125,9 @@ jobs:
       SHA: ${{ needs.decide.outputs.sha }}
     steps:
       - name: Install build tools
-        # git before checkout, so actions/checkout makes a real repository for git archive.
-        run: pacman -Syu --noconfirm --needed base-devel git rust
+        # git before checkout, so actions/checkout makes a real repository for git archive. less is
+        # the PKGBUILD's checkdepends: check() runs the end-to-end tests.
+        run: pacman -Syu --noconfirm --needed base-devel git rust less
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ needs.decide.outputs.sha }}

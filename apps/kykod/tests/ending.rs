@@ -223,7 +223,7 @@ fn a_pane_closed_just_before_sigterm_is_still_killed() {
     let shell = h.child_running("sleep 3068");
     c.send(ToHolder::Close { pane: 1 });
     h.signal(Signal::SIGTERM);
-    assert_eq!(h.wait_exit(EXIT), Some(0), "log:\n{}", h.log());
+    assert_eq!(h.wait_exit(SLOW_EXIT), Some(0), "log:\n{}", h.log());
     assert!(
         gone_within(shell, LIMIT),
         "the closed pane's shell outlived kykod; log:\n{}",

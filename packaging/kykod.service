@@ -1,0 +1,11 @@
+[Unit]
+Description=kyko session holder
+
+[Service]
+ExecStart=/usr/bin/kykod
+Restart=on-failure
+KillMode=mixed
+TimeoutStopSec=5
+
+[Install]
+WantedBy=graphical-session.target

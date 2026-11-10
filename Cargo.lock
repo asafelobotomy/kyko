@@ -254,7 +254,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "kyko"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "clap",
  "kyko-core",
@@ -262,26 +262,27 @@ dependencies = [
 
 [[package]]
 name = "kyko-core"
-version = "0.0.1"
+version = "0.0.2"
 
 [[package]]
 name = "kyko-proto"
-version = "0.0.1"
+version = "0.0.2"
 
 [[package]]
 name = "kyko-term"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "alacritty_terminal",
 ]
 
 [[package]]
 name = "kykod"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "clap",
  "kyko-core",
  "kyko-proto",
+ "kyko-term",
  "nix",
  "rustix",
  "signal-hook",

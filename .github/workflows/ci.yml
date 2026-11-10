@@ -16,9 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
-      # base-devel is for makepkg, which also builds the package below.
+      # base-devel is for makepkg, which also builds the package below. less is for the end-to-end
+      # tests (the PKGBUILD lists it in checkdepends).
       - name: Install toolchain, makepkg and cargo-deny
-        run: pacman -Syu --noconfirm --needed rust git base-devel cargo-deny
+        run: pacman -Syu --noconfirm --needed rust git base-devel cargo-deny less
       # fetch-depth 0 for tests/shell/release_needed_test.sh, which ends with a read-only run of
       # scripts/release-needed.sh on this repository: with full history and tags it sees what the
       # release's `decide` job sees (a shallow clone has no tags). The version comes from the PKGBUILD.
