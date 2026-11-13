@@ -7,6 +7,6 @@ struct Cli {}
 
 fn main() {
     Cli::parse();
-    eprintln!("kyko: nothing to do yet (the window arrives in 0.0.3)");
+    eprintln!("kyko: nothing to do yet (the window arrives in 0.1.0)");
     std::process::exit(1);
 }
