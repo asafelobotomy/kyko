@@ -270,15 +270,29 @@ fn a_closing_pane_that_exits_quickly_does_not_delay_shutdown() {
     let mut h = Holder::start();
     let mut c = Client::connect(&h);
     c.hello();
-    let shell = idle_shell(&h, &mut c, 1, "end-closing-1");
+    // Not `idle_shell`: an interactive bash at its prompt now and then misses a
+    // `SIGHUP` (about 1 in 1,500 on the development machine) and stays in its
+    // read until it is killed at the 2 s grace, which is what this test must
+    // not wait for. `sleep` takes `SIGHUP`'s default action and always ends.
+    c.send(ToHolder::Spawn(spec(
+        1,
+        "/bin/sh",
+        &["-c", "printf armed; exec sleep 3070"],
+    )));
+    c.output_until(1, b"armed", LIMIT);
+    let shell = h.child_running("sleep 3070");
     c.send(ToHolder::Close { pane: 1 });
+    // SIGTERM only once kykod has taken the close, so that the pane is in the
+    // closing list rather than still in the table.
+    assert!(h.log_has("pane 1 closed", 1), "log:\n{}", h.log());
     let started = Instant::now();
     h.signal(Signal::SIGTERM);
     assert_eq!(h.wait_exit(EXIT), Some(0), "log:\n{}", h.log());
     assert!(
         started.elapsed() < Duration::from_secs(1),
-        "kykod took {:?} to exit",
-        started.elapsed()
+        "kykod took {:?} to exit; log:\n{}",
+        started.elapsed(),
+        h.log()
     );
     assert!(gone_within(shell, LIMIT), "the shell outlived kykod");
 }
