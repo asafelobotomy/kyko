@@ -1,6 +1,7 @@
 # kyko: design
 
-Date: 2026-11-10 · Status: revised after the milestone 0 spikes, awaiting spec review
+Date: 2026-11-10 · Status: revised after the milestone 0 spikes; reviewed and assumptions
+confirmed on 2026-11-13
 Spike results: `docs/notes/2026-11-10-m0-spike-result.md` and `2026-11-10-renderer-spike-result.md`.
 Related: uQ `docs/superpowers/specs/2026-11-08-uq-desktop-design.md` (§2.4 extension points) and
 `2026-11-08-uq-phase2-shell-design.md` (§2.3 launcher providers and the `run` provider).
@@ -36,7 +37,7 @@ from uQ's Spotlight search.
 - **Renderer:** a glyph atlas on Qt Quick's scene graph (§2.4), chosen after the renderer spike
   measured it against a painted item and Qt's text node.
 
-**Assumptions** (not yet confirmed by the user)
+Confirmed by the user on 2026-11-13 (until then listed as assumptions):
 
 - "Pack" means an installable package: an Arch package on the AUR and on each GitHub Release.
 - Split panes are in the first release.

@@ -19,15 +19,14 @@ milestone ends in a version bump through `docs/releasing.md`.
 
 ## 0. Housekeeping (before more code)
 
-- [ ] Confirm or change the spec's **Assumptions** (§1): split panes in the first release, hide on
-      focus loss, tab naming, `F12`, the tab provider in Spotlight, MIT. The spec still says
-      "awaiting spec review".
-- [ ] Settle the next version number. The spec says milestone 1 ends at `v0.1.0`; `apps/kyko/src/main.rs`
-      says "the window arrives in 0.0.3". Make them agree.
-- [ ] Delete the stale `origin/m1a-foundation` branch: it is the pre-rewrite history, has no work
-      missing from `main`, and lacks the `--init` and `less` fixes `main` has.
-- [ ] Decide whether `origin/archive/pre-public-main` and `origin/spike/m0` stay (the spec cites
-      `spike/m0`; keep that one).
+- [x] Confirm the spec's assumptions (§1): all confirmed on 2026-11-13; the spec is marked
+      reviewed.
+- [x] Next version: `v0.1.0`, as the spec says; `kyko`'s message now says the window arrives in
+      0.1.0.
+- [x] Deleted `origin/m1a-foundation` (slice 1a's step-by-step history, squashed into `main`'s
+      first commit, older than `main`).
+- [x] Deleted `origin/archive/pre-public-main` (no commits outside `main` and `spike/m0`). Kept
+      `spike/m0`, which the spec cites.
 - [ ] Write the implementation plan for slice 1c and later milestones under `docs/superpowers/plans/`.
 
 ## Milestone 1 (rest): one pane, end to end, `v0.1.0`
