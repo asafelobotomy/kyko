@@ -34,11 +34,17 @@ milestone ends in a version bump through `docs/releasing.md`.
 ## Milestone 1 (rest): one pane, end to end, `v0.1.0`
 
 ### Slice 1c: holder follow-ups
-- [ ] Open risk 8: terminal modes after the ring wraps (alternate screen, mouse reporting,
-      application cursor keys, kitty keyboard). Designed in the slice 1c plan: `kykod` scans the
-      bytes the ring drops and sends a mode preamble before a truncated replay.
+- [x] Open risk 8: terminal modes after the ring wraps. Built in slice 1c: `kykod` scans the
+      bytes the ring drops and sends a mode preamble before a truncated replay
+      (`docs/notes/2026-11-14-m1c-checks.md`).
+- [ ] Slice 1c release: rerun the hop bench on an idle machine (under load even `main` missed
+      1.15), then bump to `0.0.3`.
+- [ ] Report the alacritty kitty stack bug upstream (draft in the m1c checks note; needs the
+      user's go-ahead).
+- [ ] `htop` does not repaint unchanged cells after the same-size resize nudge: change the size
+      by a row and back after an attach instead (m1c checks note).
 - [ ] The kitty keyboard protocol is off: `kyko-term` never sets alacritty's `kitty_keyboard`
-      (default false). Slice 1c adds an option, off by default. Turn it on only in the slice
+      (default false). Slice 1c added an option, off by default. Turn it on only in the slice
       that adds the window's key encoder (once on, the emulator answers `CSI ? u`, and nvim,
       fish and helix switch to kitty key encoding), and only once the panic in
       `alacritty_terminal` 0.26.0 is fixed: a full kitty stack (4096) removes from the title
