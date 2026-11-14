@@ -38,9 +38,11 @@ milestone ends in a version bump through `docs/releasing.md`.
       application cursor keys, kitty keyboard). Designed in the slice 1c plan: `kykod` scans the
       bytes the ring drops and sends a mode preamble before a truncated replay.
 - [ ] The kitty keyboard protocol is off: `kyko-term` never sets alacritty's `kitty_keyboard`
-      (default false). Turning it on exposes a panic in `alacritty_terminal` 0.26.0 (the latest
-      release): a full kitty stack (4096) drops from the title stack instead. Fix or guard first,
-      and report upstream (slice 1c, Task 3).
+      (default false). Slice 1c adds an option, off by default. Turn it on only in the slice
+      that adds the window's key encoder (once on, the emulator answers `CSI ? u`, and nvim,
+      fish and helix switch to kitty key encoding), and only once the panic in
+      `alacritty_terminal` 0.26.0 is fixed: a full kitty stack (4096) removes from the title
+      stack instead, which panics with no titles pushed. Slice 1c reports it upstream.
 - [x] `Info{program, cwd}` and `SaveLayout` storage are in `kykod` already (slice 1b).
 - [ ] Window side: reconcile the layout blob on attach (drop dead panes, give orphan panes a tab
       each) and handle a protocol version mismatch; both tested from the window.
