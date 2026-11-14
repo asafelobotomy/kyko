@@ -9,6 +9,7 @@ macro_rules! log {
     }};
 }
 
+pub mod modes;
 pub mod pane;
 pub mod pty;
 pub mod ring;

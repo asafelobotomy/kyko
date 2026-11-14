@@ -283,6 +283,7 @@ dependencies = [
  "kyko-core",
  "kyko-proto",
  "kyko-term",
+ "memchr",
  "nix",
  "rustix",
  "signal-hook",

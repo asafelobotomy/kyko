@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 
 pub use colors::{Colors, resolve};
@@ -39,6 +39,43 @@ pub struct Snapshot {
     pub cells: Vec<Cell>,
     /// Column and row, or `None` when the program hid the cursor.
     pub cursor: Option<(u16, u16)>,
+}
+
+/// A cursor shape, as a program set it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shape {
+    Block,
+    Underline,
+    Beam,
+    /// Any other shape alacritty knows (hollow block, hidden).
+    Other,
+}
+
+/// The terminal modes programs set, read from the emulator. Mouse tracking and mouse encoding
+/// each hold at most one of their flags: setting one clears the others.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TermModes {
+    pub alt_screen: bool,
+    pub app_cursor: bool,
+    pub app_keypad: bool,
+    pub origin: bool,
+    pub line_wrap: bool,
+    pub show_cursor: bool,
+    pub focus_reporting: bool,
+    pub alternate_scroll: bool,
+    pub urgency_hints: bool,
+    pub bracketed_paste: bool,
+    pub insert: bool,
+    pub line_feed_new_line: bool,
+    pub mouse_click: bool,
+    pub mouse_drag: bool,
+    pub mouse_motion: bool,
+    pub utf8_mouse: bool,
+    pub sgr_mouse: bool,
+    /// The active kitty keyboard flags (the protocol's bits 1, 2, 4, 8 and 16).
+    pub kitty_flags: u8,
+    pub cursor_shape: Shape,
+    pub cursor_blinking: bool,
 }
 
 #[derive(Default)]
@@ -106,6 +143,7 @@ pub struct Emulator {
     title: Option<String>,
     size: Size,
     scrollback: usize,
+    kitty_keyboard: bool,
 }
 
 impl Emulator {
@@ -114,21 +152,90 @@ impl Emulator {
         let size = Size::clamped(cols, rows);
         let shared = Listener(Arc::new(Mutex::new(Shared::default())));
         Emulator {
-            term: Self::new_term(size, scrollback, &shared),
+            term: Self::new_term(size, scrollback, false, &shared),
             processor: Processor::new(),
             shared,
             title: None,
             size,
             scrollback,
+            kitty_keyboard: false,
         }
     }
 
-    fn new_term(size: Size, scrollback: usize, shared: &Listener) -> Term<Listener> {
-        let config = Config {
+    fn config(scrollback: usize, kitty_keyboard: bool) -> Config {
+        Config {
             scrolling_history: scrollback,
+            kitty_keyboard,
             ..Config::default()
-        };
-        Term::new(config, &size, shared.clone())
+        }
+    }
+
+    fn new_term(
+        size: Size,
+        scrollback: usize,
+        kitty_keyboard: bool,
+        shared: &Listener,
+    ) -> Term<Listener> {
+        Term::new(
+            Self::config(scrollback, kitty_keyboard),
+            &size,
+            shared.clone(),
+        )
+    }
+
+    /// Turns the kitty keyboard protocol on or off; it is off until this is called. While it
+    /// is on, the emulator answers a program's `CSI ? u` query, so programs switch to kitty key
+    /// encoding: the caller must then encode keys that way.
+    ///
+    /// Not safe to turn on for untrusted output yet: `alacritty_terminal` 0.26.0 panics on a
+    /// kitty stack 4096 deep when no window title has been pushed (`push_keyboard_mode` removes
+    /// from the title stack). Tests only, until that is fixed.
+    pub fn set_kitty_keyboard(&mut self, on: bool) {
+        self.kitty_keyboard = on;
+        self.term.set_options(Self::config(self.scrollback, on));
+    }
+
+    /// The terminal modes now in force.
+    pub fn modes(&self) -> TermModes {
+        let m = *self.term.mode();
+        let style = self.term.cursor_style();
+        TermModes {
+            alt_screen: m.contains(TermMode::ALT_SCREEN),
+            app_cursor: m.contains(TermMode::APP_CURSOR),
+            app_keypad: m.contains(TermMode::APP_KEYPAD),
+            origin: m.contains(TermMode::ORIGIN),
+            line_wrap: m.contains(TermMode::LINE_WRAP),
+            show_cursor: m.contains(TermMode::SHOW_CURSOR),
+            focus_reporting: m.contains(TermMode::FOCUS_IN_OUT),
+            alternate_scroll: m.contains(TermMode::ALTERNATE_SCROLL),
+            urgency_hints: m.contains(TermMode::URGENCY_HINTS),
+            bracketed_paste: m.contains(TermMode::BRACKETED_PASTE),
+            insert: m.contains(TermMode::INSERT),
+            line_feed_new_line: m.contains(TermMode::LINE_FEED_NEW_LINE),
+            mouse_click: m.contains(TermMode::MOUSE_REPORT_CLICK),
+            mouse_drag: m.contains(TermMode::MOUSE_DRAG),
+            mouse_motion: m.contains(TermMode::MOUSE_MOTION),
+            utf8_mouse: m.contains(TermMode::UTF8_MOUSE),
+            sgr_mouse: m.contains(TermMode::SGR_MOUSE),
+            kitty_flags: [
+                TermMode::DISAMBIGUATE_ESC_CODES,
+                TermMode::REPORT_EVENT_TYPES,
+                TermMode::REPORT_ALTERNATE_KEYS,
+                TermMode::REPORT_ALL_KEYS_AS_ESC,
+                TermMode::REPORT_ASSOCIATED_TEXT,
+            ]
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| m.contains(**f))
+            .fold(0, |acc, (i, _)| acc | 1 << i),
+            cursor_shape: match style.shape {
+                CursorShape::Block => Shape::Block,
+                CursorShape::Underline => Shape::Underline,
+                CursorShape::Beam => Shape::Beam,
+                _ => Shape::Other,
+            },
+            cursor_blinking: style.blinking,
+        }
     }
 
     /// Output from the shell.
@@ -144,7 +251,12 @@ impl Emulator {
     /// past, and sent now they would land in the live shell as junk at its prompt. Replies from
     /// before the replay that were not yet taken with [`Emulator::take_replies`] are dropped too.
     pub fn replay(&mut self, bytes: &[u8], truncated: bool) {
-        self.term = Self::new_term(self.size, self.scrollback, &self.shared);
+        self.term = Self::new_term(
+            self.size,
+            self.scrollback,
+            self.kitty_keyboard,
+            &self.shared,
+        );
         self.processor = Processor::new();
         *self.shared.lock() = Shared::default();
         self.title = None;
