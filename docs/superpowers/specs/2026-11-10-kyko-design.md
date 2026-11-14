@@ -192,7 +192,11 @@ Default keys (all settable; shown with the kyko window focused):
 - Bracketed paste is on; a multi-line paste into a shell that has not enabled it asks first.
 - Modern protocol support, as `alacritty_terminal` 0.26 provides it: the kitty keyboard protocol,
   OSC 8 hyperlinks, synchronised output, styled and coloured underlines, focus reporting. Each is
-  confirmed by a test in milestone 1 or removed from this list.
+  confirmed by a test in milestone 1 or removed from this list. The kitty keyboard protocol is an
+  option of the emulator, off by default (alacritty leaves it off too): it is switched on in the
+  same slice as the window's key encoder, because once on the emulator answers a program's
+  `CSI ? u` query and programs start sending kitty key codes, and only after a crash in
+  `alacritty_terminal` 0.26.0 with a full kitty stack is fixed (slice 1c's checks note).
 - The window follows the monitor's scale, including fractional scales, when it moves between
   monitors.
 
@@ -289,15 +293,25 @@ already used by another kyko action. The same settings are properties on `org.ky
   `Replayed{pane, truncated}`, `Info{pane, program, cwd}`, `Exited{pane, status}`,
   `SpawnFailed{pane, message}`, `Busy{panes}`. `Attach` is answered with the pane's ring as
   `Output`, then `Replayed`, then `Exited` if the pane's shell has already ended.
-- **Version:** `Hello` carries one protocol number. On a mismatch (the window was upgraded and
+- **Version:** `Hello` carries one protocol number, 2 since kyko 0.0.3 (the holder cuts a
+  wrapped replay, below). On a mismatch (the window was upgraded and
   `kykod` is still the old one) the window does not attach; it shows a notice that sessions from
   before the update keep running in the old holder and names `kyko end-sessions` as the way to
   move over.
 - **Output ring:** `kykod` always reads every PTY, so a program never blocks because the window
   is away. It keeps the last 2 MiB of each pane's output (setting, 256 KiB–16 MiB).
-- **Replay on attach:** the window resets the pane's emulator and feeds it the ring, from the
-  first line break only when `Replayed.truncated` says the ring has wrapped (it then starts
-  mid-stream). It then sends `Resize` with the pane's current size. The kernel signals a program
+- **Replay on attach:** the window resets the pane's emulator and feeds it the replay whole.
+  For a ring that has not wrapped, the replay is the ring. For one that has, `kykod` makes it
+  safe to feed: it starts at a clean place (outside any escape sequence or string, not inside a
+  UTF-8 character, and just after a line break if one comes within 64 KiB), and in front it puts
+  a preamble that restores the terminal modes in force there. `kykod` knows them without
+  emulating the terminal: a small scanner (`apps/kykod/src/modes.rs`) reads every byte the ring
+  drops, recognising only the sequences that set the alternate screen, mouse tracking and
+  encoding, cursor keys, keypad, origin, autowrap, cursor visibility and style, focus reporting,
+  alternate scroll, urgency hints, bracketed paste, insert and new-line modes, and the kitty
+  keyboard stacks. Its rules are those of the window's emulator, checked by a differential test
+  against it. `Replayed.truncated` remains, for a notice that earlier output was not kept. The
+  window then sends `Resize` with the pane's current size. The kernel signals a program
   only when its size changes, so `kykod` answers the first same-size `Resize` after an `Attach`
   by sending `SIGWINCH` to the terminal's foreground process group itself, which makes
   full-screen programs such as `vim`, `less` and `top` redraw themselves; a later same-size
@@ -570,8 +584,10 @@ Each is checked in the milestone named, before work is built on it.
 8. **Terminal modes after the ring has wrapped** (milestone 1, slice 1c): a reattach then loses
    not only old output but the terminal modes set before the cut: the alternate screen, mouse
    reporting, application cursor keys, the kitty keyboard protocol. A long-running `htop` or
-   `vim` outlives a 2 MiB ring. To be designed in slice 1c, for example by `kykod` tracking those
-   mode switches and putting them before a truncated replay.
+   `vim` outlives a 2 MiB ring. **Closed by slice 1c:** `kykod` tracks the mode switches and
+   puts them before a truncated replay (§2.8; `docs/notes/2026-11-14-m1c-checks.md`). Still lost
+   at a cut, and left to the redraw nudge: SGR, the scroll region and the character sets. The
+   nudge does not make `htop` repaint what has not changed (same note).
 
 If the renderer's unbuilt parts cannot be made to work on Hyprland or at fractional scales, the
 fallback remains `alacritty_terminal` with `wgpu` in a plain layer surface, with QML out of the

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A window that reattaches after a pane's output ring has wrapped gets the pane back in the
+  terminal modes its program had set: the alternate screen, mouse reporting, cursor keys and
+  keypad, bracketed paste, focus reporting, the cursor style, the kitty keyboard flags and
+  others. `kykod` reads them from the output it drops, without emulating the terminal.
+
+### Changed
+
+- The replay of a wrapped ring is cut by `kykod`, at a clean place (never inside an escape
+  sequence or a character, and after a line break when there is one nearby), instead of by the
+  window at the first line break. A full-screen program that draws without line breaks no longer
+  replays as a blank screen.
+- Protocol version 2. After upgrading from 0.0.2, a `kykod` 0.0.2 that is still running refuses
+  the new version's window, and `kyko end-sessions` does not exist yet: restart it with
+  `systemctl --user restart kykod`, which ends its shells.
+
 ## [0.0.2] - 2026-11-10
 
 ### Added
