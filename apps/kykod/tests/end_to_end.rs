@@ -69,11 +69,11 @@ impl Window {
     fn open(h: &Holder, pane: PaneId) -> Window {
         let mut client = Client::connect(h);
         client.hello();
-        Window {
-            client,
-            emu: Emulator::new(COLS, ROWS, SCROLLBACK),
-            pane,
-        }
+        // The kitty keyboard protocol on, as the window will have it once it encodes keys
+        // that way, so that kitty flags can be checked across a reattach.
+        let mut emu = Emulator::new(COLS, ROWS, SCROLLBACK);
+        emu.set_kitty_keyboard(true);
+        Window { client, emu, pane }
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -412,4 +412,72 @@ fn debris_is_recognised() {
     assert!(sgr_debris(";m"));
     assert!(!sgr_debris("numbered line 00001"));
     assert!(!sgr_debris("1,2,3,"));
+}
+
+/// Flood for the tests below: 20,000 blocks drawn by cursor position, about 400 KB, with no
+/// line break, as a full-screen program draws. A 256 KiB ring wraps well inside it.
+const DRAW_FLOOD: &str = "awk 'BEGIN { for (i = 0; i < 20000; i++) \
+                          printf \"\\033[%d;%dHblock%05d\", i % 24 + 1, (i * 7) % 60 + 1, i }'";
+
+#[test]
+fn modes_set_before_the_cut_survive_it() {
+    let h = Holder::start();
+    let mut w = Window::open(&h, 1);
+    let script = format!(
+        "printf '\\033[>1u\\033[?1049h\\033[>5u\\033[?1h\\033=\\033[?1002h\\033[?1006h\\033[?1004h\\033[?2004h\\033[5 q'; \
+         {DRAW_FLOOD}; printf '\\033[2J\\033[12;30HMARKER'; sleep 300.11"
+    );
+    let mut s = spec(1, "/bin/sh", &["-c", &script]);
+    s.ring_bytes = 262_144;
+    w.client.send(ToHolder::Spawn(s));
+    w.client.output_until(1, b"MARKER", Duration::from_secs(20));
+
+    let (w, bytes, truncated) = w.reattach(&h);
+    assert!(truncated, "the ring did not wrap");
+    assert!(
+        !bytes[..bytes.len().min(4096)].contains(&b'\n'),
+        "the replay was expected to start in the drawing, which has no line break"
+    );
+    let m = w.emu.modes();
+    assert!(m.alt_screen, "{m:?}");
+    assert!(m.app_cursor && m.app_keypad, "{m:?}");
+    assert!(
+        m.mouse_drag && !m.mouse_click && !m.mouse_motion && m.sgr_mouse,
+        "{m:?}"
+    );
+    assert!(m.focus_reporting && m.bracketed_paste, "{m:?}");
+    assert_eq!(
+        (m.cursor_shape, m.cursor_blinking),
+        (kyko_term::Shape::Beam, true)
+    );
+    assert_eq!(m.kitty_flags, 5, "the alternate screen's kitty flags");
+    let snap = w.snapshot();
+    assert_eq!(&row(&snap, 11)[29..], "MARKER", "\n{}", dump(&snap));
+
+    // The main screen's kitty stack came back too.
+    let mut emu = w.emu;
+    emu.feed(b"\x1b[?1049l");
+    assert_eq!(emu.modes().kitty_flags, 1);
+}
+
+#[test]
+fn a_mode_cleared_after_the_cut_stays_cleared() {
+    let h = Holder::start();
+    let mut w = Window::open(&h, 1);
+    let script = format!(
+        "printf '\\033[?2004h\\033[?1000h'; {DRAW_FLOOD}; \
+         printf '\\033[?2004l\\033[?1000l\\033[2J\\033[1;1HMARKER'; sleep 300.12"
+    );
+    let mut s = spec(1, "/bin/sh", &["-c", &script]);
+    s.ring_bytes = 262_144;
+    w.client.send(ToHolder::Spawn(s));
+    w.client.output_until(1, b"MARKER", Duration::from_secs(20));
+
+    let (w, bytes, truncated) = w.reattach(&h);
+    assert!(truncated, "the ring did not wrap");
+    // Set before the cut, so the preamble sets them; cleared after it, in the replay.
+    assert!(bytes.starts_with(b"\x1b[?1000h"), "{:?}", &bytes[..24]);
+    let m = w.emu.modes();
+    assert!(!m.bracketed_paste && !m.mouse_click, "{m:?}");
+    assert_eq!(row(&w.snapshot(), 0), "MARKER");
 }
