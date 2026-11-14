@@ -195,8 +195,9 @@ Default keys (all settable; shown with the kyko window focused):
   confirmed by a test in milestone 1 or removed from this list. The kitty keyboard protocol is an
   option of the emulator, off by default (alacritty leaves it off too): it is switched on in the
   same slice as the window's key encoder, because once on the emulator answers a program's
-  `CSI ? u` query and programs start sending kitty key codes, and only after a crash in
-  `alacritty_terminal` 0.26.0 with a full kitty stack is fixed (slice 1c's checks note).
+  `CSI ? u` query and programs start sending kitty key codes, and only on an
+  `alacritty_terminal` without the full-kitty-stack crash of 0.26.0, fixed upstream but not
+  yet released (slice 1c's checks note).
 - The window follows the monitor's scale, including fractional scales, when it moves between
   monitors.
 
