@@ -4,7 +4,7 @@
 # pkgver is the Cargo.toml version with '-rc.N' written 'rcN' (pacman forbids '-');
 # scripts/bump-version.sh keeps them in step.
 pkgname=kyko
-pkgver=0.0.2
+pkgver=0.0.3
 pkgrel=1
 _tag=${pkgver/rc/-rc.}
 pkgdesc="Drop-down terminal for uQ and other Wayland desktops"

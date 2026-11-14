@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-11-14
+
 ### Added
 
 - A window that reattaches after a pane's output ring has wrapped gets the pane back in the
