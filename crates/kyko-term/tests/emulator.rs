@@ -143,30 +143,50 @@ fn title_is_kept() {
 fn replay_resets_first() {
     let mut e = emu();
     e.feed(b"old");
-    e.replay(b"new\r\n", false);
+    e.replay(b"new\r\n");
     assert_eq!(row(&snap(&e), 0), "new");
 }
 
 #[test]
-fn truncated_replay_skips_the_partial_first_line() {
-    // The ring wrapped inside an escape sequence: "8;5;196mjunk\n" is the tail of a colour sequence.
+fn replay_feeds_everything() {
+    // Cutting a wrapped ring is the holder's job now (protocol version 2): nothing is skipped.
     let mut e = emu();
-    e.replay(b"8;5;196mjunk\r\nclean\r\n", true);
-    assert_eq!(row(&snap(&e), 0), "clean");
+    e.replay(b"\x1b[?1049hfirst\r\nsecond");
+    assert!(e.modes().alt_screen);
+    assert_eq!(row(&snap(&e), 0), "first");
+    assert_eq!(row(&snap(&e), 1), "second");
 }
 
 #[test]
-fn truncated_replay_with_no_newline_shows_nothing() {
+fn modes_follow_what_was_fed() {
     let mut e = emu();
-    e.replay(b"partial", true);
-    assert_eq!(row(&snap(&e), 0), "");
+    let m = e.modes();
+    assert!(m.line_wrap && m.show_cursor && m.alternate_scroll && !m.app_cursor);
+    e.feed(b"\x1b[?1h\x1b=\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?1004h\x1b[?25l\x1b[5 q");
+    let m = e.modes();
+    assert!(m.app_cursor && m.app_keypad && m.mouse_drag && m.sgr_mouse);
+    assert!(m.bracketed_paste && m.focus_reporting && !m.show_cursor);
+    assert_eq!(
+        (m.cursor_shape, m.cursor_blinking),
+        (kyko_term::Shape::Beam, true)
+    );
 }
 
 #[test]
-fn truncated_replay_starting_mid_character_is_clean() {
+fn kitty_keyboard_is_off_unless_asked_for() {
     let mut e = emu();
-    e.replay(&[0x97, 0xa5, b'\n', b'o', b'k'], true); // tail of a 3-byte character, then a line
-    assert_eq!(row(&snap(&e), 0), "ok");
+    e.feed(b"\x1b[>1u");
+    assert_eq!(e.modes().kitty_flags, 0);
+    e.feed(b"\x1b[?u");
+    assert!(e.take_replies().is_empty(), "the query was answered");
+    e.set_kitty_keyboard(true);
+    e.feed(b"\x1b[>1u");
+    assert_eq!(e.modes().kitty_flags, 1);
+    e.feed(b"\x1b[?u");
+    assert_eq!(e.take_replies(), b"\x1b[?1u");
+    // And it survives a replay.
+    e.replay(b"\x1b[>5u");
+    assert_eq!(e.modes().kitty_flags, 5);
 }
 
 #[test]
@@ -182,7 +202,7 @@ fn synchronised_update_is_held_until_flushed() {
 #[test]
 fn replay_discards_replies_to_old_queries() {
     let mut e = emu();
-    e.replay(b"\x1b[6n\r\nprompt", false);
+    e.replay(b"\x1b[6n\r\nprompt");
     assert!(e.take_replies().is_empty());
     assert_eq!(row(&snap(&e), 1), "prompt");
 }
@@ -190,7 +210,7 @@ fn replay_discards_replies_to_old_queries() {
 #[test]
 fn queries_after_a_replay_are_still_answered() {
     let mut e = emu();
-    e.replay(b"\x1b[6n\r\nprompt", false);
+    e.replay(b"\x1b[6n\r\nprompt");
     e.feed(b"\x1b[6n");
     assert!(!e.take_replies().is_empty());
 }

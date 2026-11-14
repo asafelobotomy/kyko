@@ -137,7 +137,7 @@ impl Window {
     /// emulator; returns it with the replayed bytes and the `truncated` flag.
     fn reattach_here(mut self) -> (Window, Vec<u8>, bool) {
         let (bytes, truncated) = self.client.attach(self.pane);
-        self.emu.replay(&bytes, truncated);
+        self.emu.replay(&bytes);
         (self, bytes, truncated)
     }
 
@@ -384,7 +384,7 @@ fn reattach_after_the_ring_wrapped_is_clean() {
     // the same bytes into a terminal tall enough to show all of it: every row
     // is a whole numbered line, in order, up to the marker.
     let mut tall = Emulator::new(COLS, 6000, 0);
-    tall.replay(&bytes, truncated);
+    tall.replay(&bytes);
     let all = rows(&tall.snapshot(&GRUVBOX));
     let text: Vec<&String> = all.iter().filter(|r| !r.is_empty()).collect();
     assert!(text.len() > 1000, "only {} rows replayed", text.len());

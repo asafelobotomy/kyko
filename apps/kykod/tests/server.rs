@@ -223,7 +223,7 @@ fn wrong_version_gets_hello_then_close() {
     let mut c = Client::connect(&h);
     c.send(ToHolder::Hello { version: 999 });
     match c.recv(LIMIT) {
-        Some(ToWindow::Hello { version, .. }) => assert_eq!(version, 1),
+        Some(ToWindow::Hello { version, .. }) => assert_eq!(version, VERSION),
         other => panic!("expected Hello, got {other:?}"),
     }
     assert!(c.closed_within(LIMIT), "the connection stayed open");

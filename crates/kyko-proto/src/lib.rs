@@ -10,7 +10,9 @@ mod codec;
 
 use codec::{Reader, framed, put_bool, put_bytes, put_i32, put_str, put_u16, put_u32};
 
-pub const VERSION: u32 = 1;
+/// 2 since kyko 0.0.3: the holder, not the window, cuts the replay of a ring that has wrapped
+/// and puts the terminal modes in front of it, so the window feeds a replay whole.
+pub const VERSION: u32 = 2;
 pub const MAX_FRAME: usize = 1 << 20;
 
 pub type PaneId = u32;

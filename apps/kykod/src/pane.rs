@@ -475,7 +475,7 @@ impl Pane {
         }
         st.live = None;
         let end = Instant::now() + WRITE_TIMEOUT;
-        let replay = st.ring.contents();
+        let (replay, truncated) = st.ring.replay();
         for chunk in replay.chunks(OUTPUT_CHUNK) {
             let frame = ToWindow::Output {
                 pane: self.id,
@@ -485,7 +485,7 @@ impl Pane {
         }
         let done = ToWindow::Replayed {
             pane: self.id,
-            truncated: st.ring.truncated(),
+            truncated,
         };
         window.send_by(&done, end)?;
         if let Some(status) = st.exited {

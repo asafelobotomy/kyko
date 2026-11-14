@@ -244,13 +244,13 @@ impl Emulator {
         self.sync_title();
     }
 
-    /// Forget everything, then feed `bytes`. When `truncated` the bytes are the tail of a ring
-    /// that wrapped, so they start mid-stream: skip to just after the first newline, which drops
-    /// a partial escape sequence or character. With no newline there is nothing safe to show.
+    /// Forget everything, then feed `bytes`, a pane's replay from `kykod`. When the pane's ring
+    /// has wrapped, `kykod` has already cut the replay at a clean place and put the terminal
+    /// modes in force there in front of it (protocol version 2), so it is fed whole.
     /// Replies the replayed output provokes are dropped: they answer queries the shell sent in the
     /// past, and sent now they would land in the live shell as junk at its prompt. Replies from
     /// before the replay that were not yet taken with [`Emulator::take_replies`] are dropped too.
-    pub fn replay(&mut self, bytes: &[u8], truncated: bool) {
+    pub fn replay(&mut self, bytes: &[u8]) {
         self.term = Self::new_term(
             self.size,
             self.scrollback,
@@ -260,14 +260,6 @@ impl Emulator {
         self.processor = Processor::new();
         *self.shared.lock() = Shared::default();
         self.title = None;
-        let bytes = if truncated {
-            match bytes.iter().position(|&b| b == b'\n') {
-                Some(i) => &bytes[i + 1..],
-                None => &[],
-            }
-        } else {
-            bytes
-        };
         self.feed(bytes);
         self.shared.lock().replies.clear();
     }
