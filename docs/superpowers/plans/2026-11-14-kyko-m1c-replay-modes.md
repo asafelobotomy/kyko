@@ -105,7 +105,7 @@ that release):
 | Insert mode, line feed/new line | `CSI 4 h/l`, `CSI 20 h/l` | ANSI (non-private) modes alacritty implements |
 | Keypad | `ESC =` / `ESC >` | |
 | Cursor style: none, or shape and blinking | `CSI Ps SP q`; `CSI ? 12 h/l` | One value: alacritty writes both to `cursor_style` (mod.rs ~1988, ~2204); 12 sets blinking on the style, creating the default style if none. The preamble sends one `DECSCUSR` |
-| Kitty keyboard: a stack per screen, and the active flags | `CSI > f u` push, `CSI < n u` pop, `CSI = f ; m u` | `=` changes only the **active flags**, never a stack entry (mod.rs ~1029); a push, a pop and a screen switch reload the active flags from the current stack's top (~1303, ~1314, ~726). Push depth capped at `KITTY_STACK`, equal to the cap `kyko-term` enforces (Task 3) |
+| Kitty keyboard: a stack per screen, and the active flags | `CSI > f u` push, `CSI < n u` pop, `CSI = f ; m u` | `=` changes only the **active flags**, never a stack entry (mod.rs ~1029); a push, a pop and a screen switch reload the active flags from the current stack's top (~1303, ~1314, ~726). Push depth capped at `KITTY_STACK` (4096, the oldest dropped: what alacritty intends; see Task 3 for the bug that stops it doing so) |
 | Everything back to default | `ESC c` | RIS, which also clears both kitty stacks (mod.rs ~1849) |
 
 Sequences alacritty does not act on are ignored, among them `CSI ! p` (vte has no DECSTR arm),
