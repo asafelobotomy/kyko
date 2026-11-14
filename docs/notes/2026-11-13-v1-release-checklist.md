@@ -27,14 +27,20 @@ milestone ends in a version bump through `docs/releasing.md`.
       first commit, older than `main`).
 - [x] Deleted `origin/archive/pre-public-main` (no commits outside `main` and `spike/m0`). Kept
       `spike/m0`, which the spec cites.
-- [ ] Write the implementation plan for slice 1c and later milestones under `docs/superpowers/plans/`.
+- [x] Slice 1c plan: `docs/superpowers/plans/2026-11-14-kyko-m1c-replay-modes.md`.
+- [ ] Plans for slice 1d onward (`kyko-core`, the window and renderer), each written when the
+      slice before it lands.
 
 ## Milestone 1 (rest): one pane, end to end, `v0.1.0`
 
 ### Slice 1c: holder follow-ups
 - [ ] Open risk 8: terminal modes after the ring wraps (alternate screen, mouse reporting,
-      application cursor keys, kitty keyboard). Design and test, e.g. `kykod` tracks mode switches
-      and prefixes a truncated replay.
+      application cursor keys, kitty keyboard). Designed in the slice 1c plan: `kykod` scans the
+      bytes the ring drops and sends a mode preamble before a truncated replay.
+- [ ] The kitty keyboard protocol is off: `kyko-term` never sets alacritty's `kitty_keyboard`
+      (default false). Turning it on exposes a panic in `alacritty_terminal` 0.26.0 (the latest
+      release): a full kitty stack (4096) drops from the title stack instead. Fix or guard first,
+      and report upstream (slice 1c, Task 3).
 - [x] `Info{program, cwd}` and `SaveLayout` storage are in `kykod` already (slice 1b).
 - [ ] Window side: reconcile the layout blob on attach (drop dead panes, give orphan panes a tab
       each) and handle a protocol version mismatch; both tested from the window.
