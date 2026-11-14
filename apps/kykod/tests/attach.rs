@@ -30,16 +30,14 @@ fn collect_for(c: &mut Client, pane: PaneId, period: Duration) -> Vec<u8> {
     }
 }
 
-/// The numbers in `bytes`, one per line (`<prefix><n>\r\n`). A first line that
-/// may have been cut by the ring (`cut`) and an unfinished last line are left
-/// out; any other line that is not a number fails the test.
-fn numbers(bytes: &[u8], prefix: &str, cut: bool) -> Vec<u64> {
+/// The numbers in `bytes`, one per line (`<prefix><n>\r\n`). An unfinished
+/// last line is left out; any other line that is not a number fails the test,
+/// the first one included: `kykod` starts the replay of a wrapped ring on a
+/// whole line.
+fn numbers(bytes: &[u8], prefix: &str) -> Vec<u64> {
     let text = String::from_utf8_lossy(bytes);
     let mut lines: Vec<&str> = text.split("\r\n").collect();
     lines.pop(); // after the last "\r\n": empty or unfinished
-    if cut && !lines.is_empty() {
-        lines.remove(0);
-    }
     lines
         .iter()
         .map(|l| {
@@ -111,7 +109,7 @@ fn live_output_follows_the_replay_without_loss() {
     assert_eq!(b.recv(Duration::from_millis(400)), None);
     let (replay, truncated) = b.attach(1);
     let live = collect_for(&mut b, 1, Duration::from_secs(1));
-    let before = numbers(&replay, "L", truncated);
+    let before = numbers(&replay, "L");
     assert!(
         before.len() >= 100,
         "only {} numbers replayed: the attach was not mid-stream",
@@ -119,7 +117,7 @@ fn live_output_follows_the_replay_without_loss() {
     );
     let mut all = replay.clone();
     all.extend(&live);
-    let seen = numbers(&all, "L", truncated);
+    let seen = numbers(&all, "L");
     assert!(
         seen.len() >= before.len() + 100,
         "only {} numbers arrived live",
@@ -150,9 +148,15 @@ fn ring_wrap_sets_truncated_and_bounds_the_replay() {
     let mut b = Client::connect(&h);
     b.hello();
     let (bytes, truncated) = b.attach(1);
-    assert_eq!(bytes.len(), 262_144);
     assert!(truncated);
-    assert!(contains(&bytes, b"ringwrap\r\n"));
+    // `yes` sets no mode, so there is no preamble: the replay is the ring's
+    // tail from its first whole line, a few bytes short of the ring.
+    assert!(
+        (262_144 - 10..262_144).contains(&bytes.len()),
+        "{} bytes replayed",
+        bytes.len()
+    );
+    assert!(bytes.starts_with(b"ringwrap\r\n"), "{:?}", &bytes[..12]);
 }
 
 #[test]
@@ -188,15 +192,15 @@ fn window_killed_mid_output_leaves_shells_running() {
     a.send(ToHolder::Spawn(spec(1, "/bin/sh", &["-c", script])));
     let pid = h.child_running(&format!("/bin/sh -c {script}"));
     let got = a.output_until(1, b"k20\r\n", LIMIT);
-    let last = *numbers(&got, "k", false).last().unwrap();
+    let last = *numbers(&got, "k").last().unwrap();
     // Gone without a word, in the middle of the output.
     drop(a);
     std::thread::sleep(Duration::from_secs(1));
     assert!(exists(pid), "the shell died with its window");
     let mut b = Client::connect(&h);
     b.hello();
-    let (replay, truncated) = b.attach(1);
-    let replayed = numbers(&replay, "k", truncated);
+    let (replay, _) = b.attach(1);
+    let replayed = numbers(&replay, "k");
     let newest = *replayed.last().unwrap();
     assert!(
         newest > last + 10,

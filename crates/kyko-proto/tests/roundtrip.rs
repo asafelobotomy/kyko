@@ -335,7 +335,7 @@ fn huge_claimed_list_count_is_malformed_without_allocating() {
     ));
     // Hello with a huge pane count
     let mut body = vec![65u8];
-    body.extend(1u32.to_le_bytes());
+    body.extend(VERSION.to_le_bytes());
     body.extend(u32::MAX.to_le_bytes());
     let mut d = Decoder::new();
     d.push(&framed(&body));
@@ -400,7 +400,7 @@ fn bad_bool_and_option_flags_are_malformed() {
     ));
     // Hello with one pane whose exited flag is 2
     body = vec![65u8];
-    body.extend(1u32.to_le_bytes());
+    body.extend(VERSION.to_le_bytes());
     body.extend(1u32.to_le_bytes()); // one pane
     body.extend(1u32.to_le_bytes()); // pane id
     body.extend(0u32.to_le_bytes()); // program
@@ -490,27 +490,29 @@ fn arbitrary_bytes_never_panic() {
 #[test]
 fn holder_hello_of_another_version_ignores_the_rest() {
     let mut body = vec![1u8];
-    body.extend(2u32.to_le_bytes());
+    body.extend((VERSION + 1).to_le_bytes());
     body.extend([0xeeu8; 16]);
     let mut d = Decoder::new();
     d.push(&framed(&body));
     assert_eq!(
         d.next::<ToHolder>().unwrap(),
-        Some(ToHolder::Hello { version: 2 })
+        Some(ToHolder::Hello {
+            version: VERSION + 1
+        })
     );
 }
 
 #[test]
 fn window_hello_of_another_version_ignores_the_rest() {
     let mut body = vec![65u8];
-    body.extend(2u32.to_le_bytes());
-    body.extend([0xffu8; 7]); // not a version-1 layout
+    body.extend((VERSION + 1).to_le_bytes());
+    body.extend([0xffu8; 7]); // not this version's layout
     let mut d = Decoder::new();
     d.push(&framed(&body));
     assert_eq!(
         d.next::<ToWindow>().unwrap(),
         Some(ToWindow::Hello {
-            version: 2,
+            version: VERSION + 1,
             panes: vec![],
             layout: vec![]
         })
