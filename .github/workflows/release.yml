@@ -64,7 +64,7 @@ jobs:
       - name: Install git
         # Before checkout, so actions/checkout makes a real repository with history and tags.
         run: pacman -Syu --noconfirm --needed git
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # The script compares against every tag, so it needs the full history and all tags.
@@ -132,7 +132,7 @@ jobs:
         # git before checkout, so actions/checkout makes a real repository for git archive. less is
         # the PKGBUILD's checkdepends: check() runs the end-to-end tests.
         run: pacman -Syu --noconfirm --needed base-devel git rust less
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.decide.outputs.sha }}
           persist-credentials: false
@@ -217,7 +217,7 @@ jobs:
           su builder -c "set -e; cd '$GITHUB_WORKSPACE/aur' && makepkg --printsrcinfo >.SRCINFO"
 
       # Everything above is a check. Artifacts are not part of the release; `publish` takes these.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release
           if-no-files-found: error
@@ -227,7 +227,7 @@ jobs:
             dist/kyko-${{ env.VERSION }}.tar.gz
             dist/kyko-${{ env.VERSION }}.tar.gz.sha256
             dist/${{ env.PKGFILE }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: aur
           if-no-files-found: error
@@ -252,11 +252,11 @@ jobs:
       SHA: ${{ needs.decide.outputs.sha }}
       PKGFILE: ${{ needs.build.outputs.pkgfile }}
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release
           path: release
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: aur
           path: aur
@@ -335,7 +335,7 @@ jobs:
     env:
       VERSION: ${{ needs.decide.outputs.version }}
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: aur
           path: aur

@@ -28,7 +28,7 @@ jobs:
       # fetch-depth 0 for tests/shell/release_needed_test.sh, which ends with a read-only run of
       # scripts/release-needed.sh on this repository: with full history and tags it sees what the
       # release's `decide` job sees (a shallow clone has no tags). The version comes from the PKGBUILD.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -65,7 +65,7 @@ jobs:
           pacman -U --noconfirm target/pkg/kyko-*.pkg.tar.zst
           kyko --version
           kykod --version
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kyko-pkg
           path: target/pkg/*.pkg.tar.zst
