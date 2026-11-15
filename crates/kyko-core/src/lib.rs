@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod keys;
+pub mod layout;
 pub mod paths;
 pub mod session;
 pub mod theme;

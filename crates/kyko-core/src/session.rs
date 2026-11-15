@@ -590,6 +590,28 @@ impl Session {
         }
     }
 
+    /// Takes `pane` out without effects, as reconcile does: its split collapses as in
+    /// [`Session::close_pane`], and a tab left empty goes, the tab to its right (else left)
+    /// becoming active in its place. The session may be left with no tab.
+    pub(crate) fn remove_quietly(&mut self, pane: PaneId) {
+        self.panes.remove(&pane);
+        let Some(i) = self.tab_of(pane) else {
+            return;
+        };
+        let tab = &mut self.tabs[i];
+        let root = std::mem::replace(&mut tab.root, Node::Leaf(0));
+        tab.focus.retain(|p| *p != pane);
+        match root.without(pane) {
+            Some(r) => tab.root = r,
+            None => {
+                let gone = self.tabs.remove(i).id;
+                if gone == self.active && !self.tabs.is_empty() {
+                    self.active = self.tabs[i.min(self.tabs.len() - 1)].id;
+                }
+            }
+        }
+    }
+
     /// Closes a pane: its sibling takes its parent's place, the focus goes to the most recently
     /// focused pane left in the tab, and the last pane closes the tab.
     pub fn close_pane(&mut self, pane: PaneId, shell: &str) -> Vec<Effect> {
