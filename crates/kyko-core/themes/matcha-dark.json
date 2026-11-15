@@ -1,0 +1,55 @@
+{
+  "id": "matcha",
+  "name": "Matcha",
+  "variant": "dark",
+  "colors": {
+    "bg": "#1b2224",
+    "surface": "#262d2f",
+    "surface_alt": "#303738",
+    "overlay": "#414849",
+    "text": "#d8e0dc",
+    "text_muted": "#9fa7a5",
+    "accent": "#2eb398",
+    "accent_text": "#1b2224",
+    "border": "#545b5b",
+    "success": "#2eb398",
+    "warning": "#d9b866",
+    "error": "#e06c75"
+  },
+  "ui": {
+    "radius": 10,
+    "gap_in": 5,
+    "gap_out": 12,
+    "border_width": 2
+  },
+  "fonts": {
+    "ui": "Inter",
+    "mono": "JetBrains Mono",
+    "size": 11
+  },
+  "icons": {
+    "theme": "Papirus-Dark",
+    "cursor_theme": "Bibata-Modern-Classic",
+    "cursor_size": 24
+  },
+  "terminal": {
+    "ansi": [
+      "#1b2224",
+      "#e06c75",
+      "#2eb398",
+      "#d9b866",
+      "#5aa5c9",
+      "#b48ead",
+      "#56c2b6",
+      "#9fa7a5",
+      "#414849",
+      "#e89198",
+      "#62c6b2",
+      "#e2ca8c",
+      "#83bcd6",
+      "#c7aac2",
+      "#80d1c8",
+      "#d8e0dc"
+    ]
+  }
+}

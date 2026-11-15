@@ -1,0 +1,55 @@
+{
+  "id": "velvet",
+  "name": "Velvet",
+  "variant": "light",
+  "colors": {
+    "bg": "#f7f3fc",
+    "surface": "#ebe6f0",
+    "surface_alt": "#e0dce6",
+    "overlay": "#cec9d5",
+    "text": "#2a2238",
+    "text_muted": "#686173",
+    "accent": "#7a4f8f",
+    "accent_text": "#f7f3fc",
+    "border": "#bab4c1",
+    "success": "#4a7a35",
+    "warning": "#866112",
+    "error": "#a83250"
+  },
+  "ui": {
+    "radius": 10,
+    "gap_in": 5,
+    "gap_out": 12,
+    "border_width": 2
+  },
+  "fonts": {
+    "ui": "Inter",
+    "mono": "JetBrains Mono",
+    "size": 11
+  },
+  "icons": {
+    "theme": "Papirus-Light",
+    "cursor_theme": "Bibata-Modern-Ice",
+    "cursor_size": 24
+  },
+  "terminal": {
+    "ansi": [
+      "#2a2238",
+      "#a83250",
+      "#4a7a35",
+      "#866112",
+      "#3e58a8",
+      "#7a4f8f",
+      "#1f6f7a",
+      "#f7f3fc",
+      "#cec9d5",
+      "#7e263c",
+      "#385c28",
+      "#64490e",
+      "#2e427e",
+      "#5c3b6b",
+      "#17535c",
+      "#2a2238"
+    ]
+  }
+}

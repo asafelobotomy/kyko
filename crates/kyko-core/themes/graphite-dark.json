@@ -1,0 +1,55 @@
+{
+  "id": "graphite",
+  "name": "Graphite",
+  "variant": "dark",
+  "colors": {
+    "bg": "#1f1f22",
+    "surface": "#2b2b2e",
+    "surface_alt": "#353538",
+    "overlay": "#464649",
+    "text": "#e4e4e7",
+    "text_muted": "#a9a9ac",
+    "accent": "#8ab4f8",
+    "accent_text": "#1f1f22",
+    "border": "#5a5a5d",
+    "success": "#81c995",
+    "warning": "#fdd663",
+    "error": "#f28b82"
+  },
+  "ui": {
+    "radius": 10,
+    "gap_in": 5,
+    "gap_out": 12,
+    "border_width": 2
+  },
+  "fonts": {
+    "ui": "Inter",
+    "mono": "JetBrains Mono",
+    "size": 11
+  },
+  "icons": {
+    "theme": "Papirus-Dark",
+    "cursor_theme": "Bibata-Modern-Classic",
+    "cursor_size": 24
+  },
+  "terminal": {
+    "ansi": [
+      "#1f1f22",
+      "#f28b82",
+      "#81c995",
+      "#fdd663",
+      "#8ab4f8",
+      "#d7aefb",
+      "#78d9ec",
+      "#a9a9ac",
+      "#464649",
+      "#f5a8a1",
+      "#a0d6b0",
+      "#fee08a",
+      "#a7c7fa",
+      "#e1c2fc",
+      "#9ae2f1",
+      "#e4e4e7"
+    ]
+  }
+}
