@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-11-15
+
+Nothing is usable yet: this is the logic the window will use, with no window around it.
+
+### Added
+
+- `kyko-core` reads `config.toml`: every setting of the Preferences table, with a bad value
+  costing only its own key, unknown keys warned, and a file that does not parse at all kept
+  from replacing the last good settings.
+- Themes: uQ's live `tokens.json`, uQ's fourteen themes built in (with their credits, installed
+  as `/usr/share/licenses/kyko/THEMES.md`), or custom terminal colours over a built-in.
+- Tabs and split panes as data: focus by direction, tab names from the running program or
+  folder, held panes that show their exit status, and the close rules.
+- The saved layout: tabs and splits come back after the window restarts, reconciled with the
+  shells `kykod` still has.
+
 ### Changed
 
 - `kykod` refuses to start when the socket path holds a file that is not a socket, and leaves
