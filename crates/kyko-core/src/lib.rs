@@ -3,6 +3,7 @@
 pub mod config;
 pub mod keys;
 pub mod paths;
+pub mod session;
 pub mod theme;
 
 /// A problem with one setting or one field, which fell back to its default. The window logs
