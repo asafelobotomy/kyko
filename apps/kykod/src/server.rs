@@ -185,6 +185,10 @@ struct Server {
     next_window: AtomicU64,
     /// True while a connection holds the one window slot.
     window_live: AtomicBool,
+    /// Connections refused because a window was live, since that window
+    /// took the slot. Only the first is logged; the rest are summed up when
+    /// the window leaves, so a client retrying in a loop cannot flood the log.
+    refused: AtomicU64,
     /// The last blob `SaveLayout` stored, returned by `Hello`.
     layout: Mutex<Vec<u8>>,
     /// The socket file, removed when the sessions end.
@@ -233,6 +237,7 @@ pub fn run(path: &Path) -> Result<Infallible, String> {
         uid: rustix::process::geteuid().as_raw(),
         next_window: AtomicU64::new(1),
         window_live: AtomicBool::new(false),
+        refused: AtomicU64::new(0),
         layout: Mutex::new(Vec::new()),
         path: path.to_path_buf(),
         ending: AtomicBool::new(false),
@@ -283,6 +288,10 @@ fn handle_signals(server: &Arc<Server>) -> Result<(), String> {
         .map_err(|e| format!("cannot start the signal thread: {e}"))
 }
 
+/// The longest socket path Linux binds: `sun_path` is 108 bytes, one of them
+/// the terminating NUL.
+const MAX_SOCKET_PATH: usize = 107;
+
 /// The lock file beside `socket`: `<socket path>.lock`.
 fn lock_path(socket: &Path) -> PathBuf {
     let mut p = socket.as_os_str().to_owned();
@@ -298,6 +307,14 @@ fn lock_path(socket: &Path) -> PathBuf {
 /// lock for the life of the process.
 fn bind(path: &Path) -> Result<(UnixListener, Flock<File>), String> {
     let shown = path.display();
+    // Checked before anything is created, so a path too long to bind leaves
+    // no folder or lock file behind.
+    if std::os::unix::net::SocketAddr::from_pathname(path).is_err() {
+        return Err(format!(
+            "{shown} is {} bytes long; a socket path must be at most {MAX_SOCKET_PATH}",
+            path.as_os_str().len()
+        ));
+    }
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
         && fs::symlink_metadata(dir).is_err()
     {
@@ -404,9 +421,15 @@ impl Server {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            log!("window {id}: refused: another window is connected");
+            if self.refused.fetch_add(1, Ordering::Relaxed) == 0 {
+                log!(
+                    "window {id}: refused: another window is connected \
+                     (further refusals are counted until it leaves)"
+                );
+            }
             return;
         }
+        self.refused.store(0, Ordering::Relaxed);
         let slot = Slot(self.clone());
         // On failure the closure, and with it the slot, is dropped.
         if let Err(e) = std::thread::Builder::new()
@@ -435,8 +458,15 @@ impl Server {
         for pane in self.all_panes() {
             pane.detach(&window);
         }
+        // Taken before the slot is let go, so it counts only refusals made
+        // while this window held it.
+        let more = self.refused.swap(0, Ordering::Relaxed).saturating_sub(1);
         drop(slot);
-        log!("window {id} disconnected: {why}");
+        if more == 0 {
+            log!("window {id} disconnected: {why}");
+        } else {
+            log!("window {id} disconnected: {why}; {more} more connection(s) refused meanwhile");
+        }
     }
 
     /// Reads and handles frames until the connection ends; returns why it ended.
