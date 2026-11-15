@@ -11,3 +11,8 @@ repository = "https://github.com/asafelobotomy/kyko"
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
 kyko-core = { path = "crates/kyko-core" }
+
+# kyko-core's random tests run a million session operations; unoptimised they take half a
+# minute.
+[profile.test.package.kyko-core]
+opt-level = 2
