@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `kykod` refuses to start when the socket path holds a file that is not a socket, and leaves
+  the file alone; before, it removed any such file as stale.
+
 ## [0.0.3] - 2026-11-14
 
 ### Added
