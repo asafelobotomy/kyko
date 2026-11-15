@@ -230,13 +230,22 @@ fn wrong_version_gets_hello_then_close() {
 }
 
 #[test]
-fn stale_socket_file_is_replaced() {
+fn a_file_that_is_not_a_socket_is_refused_and_kept() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("hold.sock");
     std::fs::write(&path, b"not a socket").unwrap();
-    let h = Holder::start_at(dir, path);
-    let mut c = Client::connect(&h);
-    assert_eq!(c.hello().0, VERSION);
+    let mut child = bin()
+        .arg("--socket")
+        .arg(&path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    assert_eq!(wait_exit(&mut child, LIMIT), Some(1));
+    let mut err = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut err).unwrap();
+    assert!(err.contains("is not a socket"), "{err}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"not a socket");
 }
 
 #[test]
@@ -445,7 +454,8 @@ fn eight_kykods_at_once_leave_exactly_one_serving() {
     }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("hold.sock");
-    std::fs::write(&path, b"stale").unwrap();
+    // Bound and closed: a stale socket every one of them would like to replace.
+    drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
     let mut all = Kill(
         (0..8)
             .map(|_| {

@@ -59,7 +59,7 @@ use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -292,7 +292,7 @@ fn lock_path(socket: &Path) -> PathBuf {
 
 /// Makes the socket: its folder 0700 if it has to be created, then an
 /// exclusive lock on `<socket path>.lock` (0600), then a stale socket file
-/// replaced, then the socket itself, 0600. Only the holder of the lock touches
+/// replaced (any other kind of file there is refused, never removed), then the socket itself, 0600. Only the holder of the lock touches
 /// the socket file, so two kykods starting together cannot both decide the
 /// socket is stale and take it from each other. The caller keeps the returned
 /// lock for the life of the process.
@@ -326,6 +326,11 @@ fn bind(path: &Path) -> Result<(UnixListener, Flock<File>), String> {
         }
     })?;
     match fs::symlink_metadata(path) {
+        // Only a socket is ours to replace: any other file there was put by
+        // someone else (a mistyped --socket, say) and is left alone.
+        Ok(meta) if !meta.file_type().is_socket() => {
+            return Err(format!("{shown} exists and is not a socket"));
+        }
         Ok(_) => match UnixStream::connect(path) {
             Ok(_) => return Err(format!("{shown} is already served by a running kykod")),
             Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
