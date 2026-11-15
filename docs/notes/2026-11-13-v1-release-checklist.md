@@ -12,8 +12,10 @@ milestone ends in a version bump through `docs/releasing.md`.
 - **Checked locally on 2026-11-13:** `cargo build`, `cargo fmt --check`,
   `cargo clippy --all-targets -D warnings`, `cargo test --workspace` (144 passed, 1 ignored bench),
   `tests/shell/*.sh` all pass. `cargo deny` was not run locally (not installed); CI runs it.
-- **Not started:** the `kyko` window (it prints its version and exits 1), `kyko-core`'s logic
-  (only `VERSION` exists), everything in milestones 2 to 5, and every uQ-side change.
+- **Done in slice 1d (v0.0.4):** `kyko-core`'s config, themes, session tree and layout blob,
+  with no Qt in them; the window only has to wire them up.
+- **Not started:** the `kyko` window (it prints its version and exits 1), everything in
+  milestones 2 to 5, and every uQ-side change.
 - **Roughly 80% of the spec is still to build.** The remaining risk sits in the renderer, focus
   and hotkeys, not in the holder.
 
@@ -28,8 +30,9 @@ milestone ends in a version bump through `docs/releasing.md`.
 - [x] Deleted `origin/archive/pre-public-main` (no commits outside `main` and `spike/m0`). Kept
       `spike/m0`, which the spec cites.
 - [x] Slice 1c plan: `docs/superpowers/plans/2026-11-14-kyko-m1c-replay-modes.md`.
-- [ ] Plans for slice 1d onward (`kyko-core`, the window and renderer), each written when the
-      slice before it lands.
+- [x] Slice 1d plan: `docs/superpowers/plans/2026-11-15-kyko-m1d-core.md`.
+- [ ] Plans for slice 1e onward (the window and renderer), each written when the slice before it
+      lands.
 
 ## Milestone 1 (rest): one pane, end to end, `v0.1.0`
 
@@ -52,18 +55,22 @@ milestone ends in a version bump through `docs/releasing.md`.
       the fix for the full-kitty-stack panic (alacritty/alacritty#9073): the first release after
       0.26.0, or that commit pinned with `[patch.crates-io]`.
 - [x] `Info{program, cwd}` and `SaveLayout` storage are in `kykod` already (slice 1b).
-- [ ] Window side: reconcile the layout blob on attach (drop dead panes, give orphan panes a tab
-      each) and handle a protocol version mismatch; both tested from the window.
+- [x] Reconcile the layout blob (drop dead panes, close exited ones, give orphan panes a tab
+      each): `kyko-core`, slice 1d.
+- [ ] Wire reconcile on attach and handle a protocol version mismatch, tested from the window.
 
 ### `kyko-core`
-- [ ] `config`: load and validate `~/.config/kyko/config.toml`, per-field fallback, unknown keys
-      warned, live reload on change (§2.6 table).
-- [ ] `theme`: parse uQ `tokens.json`; built-in fallback; `builtin:<id>` for uQ's seven themes in
-      dark and light, with credits; `custom`. Tests against all fourteen.
-- [ ] `session`: tab and split tree, focus by direction, last-pane and last-tab rules, naming
-      (milestone 2 uses most of it, but the data model lands here).
+- [x] `config`: load and validate `~/.config/kyko/config.toml`, per-field fallback, unknown keys
+      warned (§2.6 table). Slice 1d.
+- [x] `theme`: parse uQ `tokens.json`; built-in fallback; `builtin:<id>` for uQ's seven themes in
+      dark and light, with credits; `custom`. Tests against all fourteen. Slice 1d.
+- [x] `session`: tab and split tree, focus by direction, last-pane and last-tab rules, naming
+      (milestone 2 uses most of it, but the data model lands here). Slice 1d.
+- [x] Slice 1d: version bumped to `0.0.4` (released when the PR merges to `main`).
 
 ### The window (`apps/kyko`, cxx-qt + QML)
+- [ ] Live reload: `config.toml` and `tokens.json` re-read on change (keeping the last good one
+      on a syntax error), and `ThemeChanged` on `org.uq.Desktop1`.
 - [ ] cxx-qt 0.10 + Qt 6.11 build in `build.rs` (moc, Qt shader tool) and in the Arch CI container.
 - [ ] Link to `kykod`: Hello, Attach, replay, reconnect every 2 s, "Sessions aren't available"
       notice, version-mismatch notice.

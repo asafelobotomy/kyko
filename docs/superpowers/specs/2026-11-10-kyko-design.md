@@ -151,6 +151,13 @@ Everything except `apps/kyko` has no Qt dependency and is tested with plain `car
   opens a fresh one and hides kyko.
 - Closing a tab or pane whose foreground process is not the shell asks for confirmation.
 - Scrollback is 10,000 lines per pane (setting, 0–100,000).
+- A new tab goes right after the active one. A split puts the new pane right of or below the
+  focused one, at half its size, in the focused pane's folder, and focuses it.
+- Closing the active tab makes the tab to its right active, else the one to its left. Closing a
+  pane gives the focus to the pane in that tab focused most recently.
+- Focus by direction moves to the pane whose edge touches the focused pane's on that side and
+  overlaps it most on the other axis; ties go to the most recently focused.
+- At most 256 panes (`MAX_PANES`), counting panes held open after their shell ended.
 
 Default keys (all settable; shown with the kyko window focused):
 
@@ -207,8 +214,14 @@ Default keys (all settable; shown with the kyko window focused):
   `{id, name, variant, colors, ui, fonts, icons, terminal: {ansi: [16]}}`.
 - kyko subscribes to `ThemeChanged` on `org.uq.Desktop1` and re-reads the file; it also watches
   the file, so it follows the theme when `uqd` restarts.
-- If the file is missing or does not parse, kyko uses a built-in dark palette and logs once.
-  A missing field falls back for that field only.
+- If the file is missing, kyko uses a built-in dark palette and logs once. A file that does not
+  parse keeps the theme kyko had (it may be mid-write); a missing or bad field falls back to the
+  built-in Gruvbox of the same variant for that field only.
+- The terminal palette from uQ's tokens is the one uQ gives its own terminals
+  (`templates/kitty.conf.j2`): foreground `colors.text`, background `colors.bg`, cursor and
+  selection `colors.accent`, selection text `colors.accent_text`, and `terminal.ansi`.
+- The built-ins are uQ's own rendered `tokens.json` files, copied into `kyko-core` by
+  `scripts/sync-uq-themes.sh` and keyed `<id>-<variant>` (`gruvbox-dark`).
 - `theme.source` chooses: `uq` (follow uQ; the default when `uqd` is present), `builtin:<id>`
   (uQ's seven themes in dark and light ship inside kyko, with their credits, so they are
   available on any desktop; the default elsewhere is `builtin:gruvbox-dark`), or `custom` (the
@@ -221,7 +234,8 @@ kyko has its own Preferences window, opened from the settings button on the tab 
 **Appearance**, **Window**, **Terminal**, **Keys**, **Sessions**, **Advanced**. Changes apply at
 once and are written to `~/.config/kyko/config.toml`, which can also be edited by hand; kyko
 re-reads it on change. Unknown keys are ignored with a warning, and a bad value costs only that
-key. Every page has "Reset this page".
+key; a file that does not parse at all keeps the previous settings and shows the error. Every
+page has "Reset this page".
 
 | Key | Values | Default |
 |---|---|---|
@@ -236,7 +250,8 @@ key. Every page has "Reset this page".
 | `window.animations` | bool | true |
 | `window.opacity` | 0.5–1.0 | 1.0 |
 | `theme.source` | `uq`, `builtin:<id>`, `custom` | see §2.5 |
-| `theme.custom.*` | foreground, background, cursor, selection, 16 ANSI colours | — |
+| `theme.custom.*` | foreground, background, cursor, selection, selection_text, `ansi` (up to 16 `#rrggbb`) | — |
+| `theme.custom.base` | the built-in the custom colours are laid over, and the chrome comes from | `gruvbox-dark` |
 | `terminal.font` | a font family, or unset to follow the theme | unset |
 | `terminal.line_height` | 0.8–2.0 | 1.0 |
 | `terminal.padding` | 0–32 px | 8 |
@@ -249,12 +264,14 @@ key. Every page has "Reset this page".
 | `sessions.ring_kib` | 256–16384, output kept per pane for replay (§2.8); applies to new panes | 2048 |
 | `terminal.font_size` | 6–48, or unset to follow the theme | unset |
 | `terminal.shell` | path, or unset for `$SHELL` | unset |
-| `keys.*` | key sequences for the actions in §2.3 | as §2.3 |
+| `keys.*` | key sequences for the actions in §2.3, or `""` for none: `new_tab`, `close_pane`, `prev_tab`, `next_tab`, `tab_1`…`tab_9`, `split_side`, `split_stacked`, `focus_left`, `focus_right`, `focus_up`, `focus_down`, `copy`, `paste`, `search`, `font_bigger`, `font_smaller`, `font_reset` | as §2.3 |
 | `advanced.programs_write_clipboard` | bool: programs in the terminal may set the clipboard | false |
 | `advanced.allow_run` | bool: other apps may call `Run` (§3.1); off disables **Run in kyko** | true |
 
 The Keys page captures a key press for each action and for the hotkey, and refuses a sequence
-already used by another kyko action. The same settings are properties on `org.kyko.Terminal1`.
+already used by another kyko action. In a hand-edited file, a sequence used twice stays with its
+first holder, in the order of the list above with the hotkey first; the later ones are unbound
+with a warning. The same settings are properties on `org.kyko.Terminal1`.
 
 ### 2.7 Staying in the background
 
@@ -328,6 +345,18 @@ already used by another kyko action. The same settings are properties on `org.ky
 - **Layout:** the window sends its tab and split tree, names and focus as an opaque blob whenever
   it changes; `kykod` stores the latest and returns it in `Hello`. Panes in the blob that no
   longer exist are dropped; panes `kykod` has that the blob lacks get a tab each.
+  The blob is versioned JSON (`v` 1), written and read by `kyko-core`: each tab's tree is a flat
+  list of nodes in preorder, a split naming its children by index, because a nested encoding
+  would pass `serde_json`'s depth limit long before the 255 levels `MAX_PANES` allows. It is
+  capped at `MAX_LAYOUT` (256 KiB); the worst case is well under 200 KB. A blob from a newer
+  window is read for the fields this one knows; a corrupt one is ignored, with a warning.
+- **Pane ids are never reused** within a session: the window hands them out from a counter that
+  only goes up, above every id `kykod` reports, because `Output`, `Info` or `Exited` for a closed
+  pane may still be in flight.
+- **Exited panes are closed by the window.** `kykod` keeps an exited pane, counted against
+  `MAX_PANES` (256), until it gets `Close`, and lists it in `Hello` with its status. The window
+  sends `Close` for every pane that ends, at once, including one held open to show its status;
+  on attach it closes the exited panes it finds, keeping a held one on screen.
 - **Foreground program and folder:** `kykod` reads them from the PTY's foreground process group
   and `/proc`, and sends `Info` when they change. It checks once after `Spawn` and after
   `Attach`, then whenever a pane's output has been quiet for 100 ms; never on a timer. Tab names
