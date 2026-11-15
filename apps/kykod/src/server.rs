@@ -66,7 +66,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use kyko_proto::{Decoder, Frame, PaneId, SpawnSpec, ToHolder, ToWindow, VERSION};
+use kyko_proto::{
+    Decoder, Frame, MAX_LAYOUT, MAX_PANES, PaneId, SpawnSpec, ToHolder, ToWindow, VERSION,
+};
 use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg};
 use nix::sys::stat::{Mode, umask};
@@ -75,17 +77,10 @@ use signal_hook::iterator::Signals;
 
 use crate::pane::Pane;
 
-/// The most panes `kykod` holds at once, exited ones included.
-pub const MAX_PANES: usize = 256;
-
 /// How long one write to a window may block. A frame that cannot be written
 /// within it (about twice this at worst, see [`write_within`]) drops the
 /// connection.
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
-
-/// The largest layout blob `SaveLayout` may store; a larger one closes the
-/// connection.
-pub const MAX_LAYOUT: usize = 256 * 1024;
 
 /// How long ending the sessions waits, in all, for the hung-up shells to end
 /// before `kykod` exits anyway.
