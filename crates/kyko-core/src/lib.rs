@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod keys;
+
 /// The workspace version, shared by every kyko binary.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

@@ -15,6 +15,14 @@ use codec::{Reader, framed, put_bool, put_bytes, put_i32, put_str, put_u16, put_
 pub const VERSION: u32 = 2;
 pub const MAX_FRAME: usize = 1 << 20;
 
+/// The most panes `kykod` holds at once, exited ones included. The window
+/// keeps to it too: a `Spawn` beyond it is answered with `SpawnFailed`.
+pub const MAX_PANES: usize = 256;
+
+/// The largest layout blob `SaveLayout` may store; a larger one closes the
+/// connection.
+pub const MAX_LAYOUT: usize = 256 * 1024;
+
 pub type PaneId = u32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
