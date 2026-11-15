@@ -232,6 +232,26 @@ fn second_window_is_refused_while_one_is_live() {
 }
 
 #[test]
+fn repeated_refusals_are_logged_once_and_counted_on_leaving() {
+    let h = Holder::start();
+    let mut a = Client::connect(&h);
+    a.hello();
+    for _ in 0..5 {
+        let mut b = Client::connect(&h);
+        assert_eq!(b.hello_once(), None);
+    }
+    assert!(h.log_has("refused", 1), "{}", h.log());
+    drop(a);
+    assert!(h.log_has("4 more connection(s) refused", 1), "{}", h.log());
+    assert_eq!(
+        h.log().matches("refused: another window").count(),
+        1,
+        "{}",
+        h.log()
+    );
+}
+
+#[test]
 fn second_window_is_accepted_after_the_first_leaves() {
     let h = Holder::start();
     let mut a = Client::connect(&h);

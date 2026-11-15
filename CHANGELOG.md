@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `kykod` refuses to start when the socket path holds a file that is not a socket, and leaves
   the file alone; before, it removed any such file as stale.
+- `kykod` checks the socket path's length before creating anything, so a path too long to bind
+  no longer leaves a folder and lock file behind.
+- While a window is connected, `kykod` logs only the first connection it refuses and counts the
+  rest in the line logged when the window leaves.
 
 ## [0.0.3] - 2026-11-14
 

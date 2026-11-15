@@ -535,6 +535,25 @@ fn a_lock_file_that_is_a_symbolic_link_is_refused() {
 }
 
 #[test]
+fn a_socket_path_too_long_to_bind_creates_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("x".repeat(120));
+    let path = folder.join("hold.sock");
+    let mut child = bin()
+        .arg("--socket")
+        .arg(&path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    assert_eq!(wait_exit(&mut child, LIMIT), Some(1));
+    let mut err = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut err).unwrap();
+    assert!(err.contains("a socket path must be at most 107"), "{err}");
+    assert!(!folder.exists(), "kykod created the socket's folder");
+}
+
+#[test]
 fn input_to_a_program_that_never_reads_does_not_block_close() {
     let h = Holder::start();
     let mut c = Client::connect(&h);
