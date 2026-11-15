@@ -192,13 +192,15 @@ fn reattach_restores_a_shell_screen() {
     let h = Holder::start();
     let mut w = Window::open(&h, 1);
     w.client.send(ToHolder::Spawn(plain_shell(1)));
+    // Each command is typed only once the prompt after the last one is drawn: typed
+    // early, the terminal echoes it before bash prints `$ `, and every row below moves.
     w.until(|s| row(s, 0) == "$", LIMIT);
     w.type_text("echo alpha\n");
-    w.until(|s| rows(s).iter().any(|r| r == "alpha"), LIMIT);
+    w.until(|s| row(s, 1) == "alpha" && row(s, 2) == "$", LIMIT);
     w.type_text("printf '\\033[1;32mbeta\\033[0m %s\\n' gamma\n");
-    w.until(|s| rows(s).iter().any(|r| r == "beta gamma"), LIMIT);
+    w.until(|s| row(s, 3) == "beta gamma" && row(s, 4) == "$", LIMIT);
     w.type_text("seq 3 | tr '\\n' ,; echo\n");
-    w.until(|s| rows(s).iter().any(|r| r == "1,2,3,"), LIMIT);
+    w.until(|s| row(s, 5) == "1,2,3," && row(s, 6) == "$", LIMIT);
     let s1 = w.settle();
     assert_eq!(
         row(&s1, 6),
