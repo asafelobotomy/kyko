@@ -1,0 +1,55 @@
+{
+  "id": "gruvbox",
+  "name": "Gruvbox",
+  "variant": "dark",
+  "colors": {
+    "bg": "#282828",
+    "surface": "#343330",
+    "surface_alt": "#3d3c37",
+    "overlay": "#4f4c44",
+    "text": "#ebdbb2",
+    "text_muted": "#b0a589",
+    "accent": "#d79921",
+    "accent_text": "#282828",
+    "border": "#625e51",
+    "success": "#98971a",
+    "warning": "#d79921",
+    "error": "#cc241d"
+  },
+  "ui": {
+    "radius": 10,
+    "gap_in": 5,
+    "gap_out": 12,
+    "border_width": 2
+  },
+  "fonts": {
+    "ui": "Inter",
+    "mono": "JetBrains Mono",
+    "size": 11
+  },
+  "icons": {
+    "theme": "Papirus-Dark",
+    "cursor_theme": "Bibata-Modern-Classic",
+    "cursor_size": 24
+  },
+  "terminal": {
+    "ansi": [
+      "#282828",
+      "#cc241d",
+      "#98971a",
+      "#d79921",
+      "#458588",
+      "#b16286",
+      "#689d6a",
+      "#a89984",
+      "#928374",
+      "#fb4934",
+      "#b8bb26",
+      "#fabd2f",
+      "#83a598",
+      "#d3869b",
+      "#8ec07c",
+      "#ebdbb2"
+    ]
+  }
+}

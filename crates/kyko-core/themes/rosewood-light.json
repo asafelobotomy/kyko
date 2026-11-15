@@ -1,0 +1,55 @@
+{
+  "id": "rosewood",
+  "name": "Rosewood",
+  "variant": "light",
+  "colors": {
+    "bg": "#fbf3f2",
+    "surface": "#efe6e6",
+    "surface_alt": "#e6dcdc",
+    "overlay": "#d4c9c9",
+    "text": "#3a2226",
+    "text_muted": "#746163",
+    "accent": "#a23b4b",
+    "accent_text": "#fbf3f2",
+    "border": "#c1b4b5",
+    "success": "#4f6b2a",
+    "warning": "#875a14",
+    "error": "#a23b4b"
+  },
+  "ui": {
+    "radius": 10,
+    "gap_in": 5,
+    "gap_out": 12,
+    "border_width": 2
+  },
+  "fonts": {
+    "ui": "Inter",
+    "mono": "JetBrains Mono",
+    "size": 11
+  },
+  "icons": {
+    "theme": "Papirus-Light",
+    "cursor_theme": "Bibata-Modern-Ice",
+    "cursor_size": 24
+  },
+  "terminal": {
+    "ansi": [
+      "#3a2226",
+      "#a23b4b",
+      "#4f6b2a",
+      "#875a14",
+      "#3d5a8a",
+      "#8f3a6a",
+      "#2f6e66",
+      "#fbf3f2",
+      "#d4c9c9",
+      "#7a2c38",
+      "#3b5020",
+      "#65440f",
+      "#2e4468",
+      "#6b2c50",
+      "#23524c",
+      "#3a2226"
+    ]
+  }
+}

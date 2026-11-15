@@ -1,0 +1,55 @@
+{
+  "id": "forest",
+  "name": "Forest",
+  "variant": "light",
+  "colors": {
+    "bg": "#f3f6ee",
+    "surface": "#e6eae2",
+    "surface_alt": "#dce0d7",
+    "overlay": "#c9cec5",
+    "text": "#22301f",
+    "text_muted": "#606a5c",
+    "accent": "#3f6b2e",
+    "accent_text": "#f3f6ee",
+    "border": "#b4bbb0",
+    "success": "#3f6b2e",
+    "warning": "#80621a",
+    "error": "#a3412f"
+  },
+  "ui": {
+    "radius": 10,
+    "gap_in": 5,
+    "gap_out": 12,
+    "border_width": 2
+  },
+  "fonts": {
+    "ui": "Inter",
+    "mono": "JetBrains Mono",
+    "size": 11
+  },
+  "icons": {
+    "theme": "Papirus-Light",
+    "cursor_theme": "Bibata-Modern-Ice",
+    "cursor_size": 24
+  },
+  "terminal": {
+    "ansi": [
+      "#22301f",
+      "#a3412f",
+      "#3f6b2e",
+      "#80621a",
+      "#2f6670",
+      "#7a4a77",
+      "#2e6e58",
+      "#f3f6ee",
+      "#c9cec5",
+      "#7a3123",
+      "#2f5022",
+      "#604a14",
+      "#234c54",
+      "#5c3859",
+      "#225242",
+      "#22301f"
+    ]
+  }
+}
