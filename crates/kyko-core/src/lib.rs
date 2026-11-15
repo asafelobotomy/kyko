@@ -1,6 +1,33 @@
 #![forbid(unsafe_code)]
 
+pub mod config;
 pub mod keys;
+pub mod paths;
+pub mod theme;
+
+/// A problem with one setting or one field, which fell back to its default. The window logs
+/// each distinct warning once and shows it on the settings page.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Warning {
+    /// The dotted key: `window.height_pct`, `colors.bg`.
+    pub key: String,
+    pub message: String,
+}
+
+impl Warning {
+    pub fn new(key: impl Into<String>, message: impl Into<String>) -> Self {
+        Warning {
+            key: key.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for Warning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.key, self.message)
+    }
+}
 
 /// The workspace version, shared by every kyko binary.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
