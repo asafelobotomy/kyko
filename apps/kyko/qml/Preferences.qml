@@ -148,6 +148,7 @@ Window {
                                     case "bool": return boolControl
                                     case "int": case "optint": return intControl
                                     case "choice": return choiceControl
+                                    case "key": return keyControl
                                     default: return textControl
                                     }
                                 }
@@ -218,6 +219,32 @@ Window {
             implicitWidth: 200
             text: item_.current
             onEditingFinished: root.save(item_.key, text)
+        }
+    }
+    // A key: click, then press the sequence. Esc cancels, Backspace clears.
+    Component {
+        id: keyControl
+        Button {
+            id: capture
+            property bool listening: false
+            implicitWidth: 200
+            text: listening ? "Press a key…" : (item_.current === "" ? "none" : item_.current)
+            onClicked: { listening = true; forceActiveFocus() }
+            onActiveFocusChanged: if (!activeFocus) listening = false
+            Keys.onPressed: function (e) {
+                if (!listening) return
+                e.accepted = true
+                if (e.modifiers === Qt.NoModifier && e.key === Qt.Key_Escape) {
+                    listening = false
+                    return
+                }
+                const seq = e.modifiers === Qt.NoModifier && e.key === Qt.Key_Backspace
+                    ? "" : ctl.prefsKey(e.key, e.modifiers, e.text)
+                // Only a modifier so far: keep waiting.
+                if (seq === "" && e.key !== Qt.Key_Backspace) return
+                listening = false
+                root.save(item_.key, seq)
+            }
         }
     }
 }

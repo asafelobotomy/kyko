@@ -62,6 +62,7 @@ pub mod ffi {
         fn kyko_prefs_values() -> String;
         fn kyko_prefs_set(key: &str, json: &str) -> String;
         fn kyko_prefs_reset(page: &str) -> String;
+        fn kyko_prefs_key(key: u32, mods: u32, text: &str) -> String;
         fn kyko_set_visible(visible: bool);
         fn kyko_palette_bg() -> u32;
         fn kyko_palette_fg() -> u32;
@@ -502,6 +503,13 @@ fn kyko_prefs_values() -> String {
 
 fn kyko_prefs_set(key: &str, json: &str) -> String {
     crate::prefs::set(key, json)
+}
+
+/// A key press as the sequence's text, for the capture control; "" while only a modifier is down.
+fn kyko_prefs_key(key: u32, mods: u32, text: &str) -> String {
+    kyko_core::keys::KeySeq::from_qt(key, mods, text)
+        .map(|s| s.to_string())
+        .unwrap_or_default()
 }
 
 fn kyko_prefs_reset(page: &str) -> String {

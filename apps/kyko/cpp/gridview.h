@@ -42,6 +42,7 @@ public:
     Q_INVOKABLE QString prefsValues() const;
     Q_INVOKABLE QString prefsSet(const QString& key, const QString& json) const;
     Q_INVOKABLE QString prefsReset(const QString& page) const;
+    Q_INVOKABLE QString prefsKey(int key, int mods, const QString& text) const;
     // Test aid: where to save the window's screen (KYKO_TEST_SHOT), and after how many ms.
     Q_INVOKABLE QString shot() const;
     Q_INVOKABLE int shotDelay() const;

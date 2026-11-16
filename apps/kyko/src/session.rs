@@ -285,26 +285,7 @@ fn wait_or_end(rx: &Receiver<Cmd>, sizes: &mut HashMap<PaneId, (u16, u16)>, d: D
 }
 
 fn qt_key(key: u32, text: &str) -> Option<Key> {
-    Some(match key {
-        0x0100_0012 => Key::Left,
-        0x0100_0013 => Key::Up,
-        0x0100_0014 => Key::Right,
-        0x0100_0015 => Key::Down,
-        0x0100_0016 => Key::PgUp,
-        0x0100_0017 => Key::PgDn,
-        0x0100_0010 => Key::Home,
-        0x0100_0011 => Key::End,
-        0x0100_0006 => Key::Insert,
-        0x0100_0007 => Key::Delete,
-        0x0100_0001 => Key::Tab,
-        0x0100_0004 | 0x0100_0005 => Key::Enter,
-        0x0100_0000 => Key::Esc,
-        0x0100_0003 => Key::Backspace,
-        0x20 => Key::Space,
-        0x0100_0030..=0x0100_0047 => Key::F((key - 0x0100_0030 + 1) as u8),
-        0x21..=0x7e => Key::Char(char::from_u32(key)?),
-        _ => Key::Char(text.chars().next()?),
-    })
+    kyko_core::keys::key_from_qt(key, text)
 }
 
 /// The action a key press is bound to, when it is one. `mods` as `kyko_term::keys` has them:

@@ -236,6 +236,10 @@ QString Controller::prefsReset(const QString& page) const {
     const std::string p = page.toStdString();
     return str(kyko_prefs_reset(rust::Str(p.data(), p.size())));
 }
+QString Controller::prefsKey(int key, int mods, const QString& text) const {
+    const std::string t = text.toStdString();
+    return str(kyko_prefs_key(quint32(key), quint32(mods), rust::Str(t.data(), t.size())));
+}
 QString Controller::shot() const { return str(kyko_test_shot()); }
 int Controller::shotDelay() const {
     const int ms = qEnvironmentVariableIntValue("KYKO_TEST_MS");
