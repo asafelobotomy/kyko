@@ -33,7 +33,6 @@ pub mod ffi {
         fn kyko_text(pane: u32, text: &str);
         fn kyko_paste(pane: u32, text: &str);
         #[allow(clippy::too_many_arguments)]
-        #[allow(clippy::too_many_arguments)]
         fn kyko_mouse(
             pane: u32,
             kind: u8,
@@ -289,6 +288,7 @@ fn kyko_paste(pane: u32, text: &str) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn kyko_mouse(
     pane: u32,
     kind: u8,
