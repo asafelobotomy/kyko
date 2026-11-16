@@ -24,6 +24,15 @@ if test "$KYKO_PROMPT" = 1; and not set -q STARSHIP_SESSION_KEY; and type -q kyk
     end
 end
 
+# The end of the prompt is where input starts (OSC 133;B), whoever drew the prompt.
+if functions -q fish_prompt
+    functions -c fish_prompt __kyko_inner_prompt
+    function fish_prompt
+        __kyko_inner_prompt
+        printf '\e]133;B\a'
+    end
+end
+
 if test "$KYKO_EXTRAS" = 1
     type -q zoxide; and zoxide init fish | source
     type -q fzf; and fzf --fish 2>/dev/null | source
