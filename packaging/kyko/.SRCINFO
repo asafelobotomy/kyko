@@ -15,6 +15,6 @@ pkgbase = kyko
 	depends = layer-shell-qt
 	options = !lto
 	source = kyko-0.1.0.tar.gz::https://github.com/asafelobotomy/kyko/releases/download/v0.1.0/kyko-0.1.0.tar.gz
-	sha256sums = df1be399ed79aea99f78e5fcca32fb4da315599e128a0a77402d1fe270b41034
+	sha256sums = 07cd5eab9e6cfb660fdf8c264e9619883f0613aff78c56ee32ca03c705783fd6
 
 pkgname = kyko
