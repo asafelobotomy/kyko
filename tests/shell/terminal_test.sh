@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Terminal basics in the windowed kyko, with real input on a virtual X display: a double click
 # selects a word and Ctrl+Shift+C copies it, Ctrl+Shift+V pastes the clipboard into the shell, and
-# the wheel scrolls the history, and closing a busy pane asks first. Skipped (exit 0) where xvfb-run, xdotool, xclip or the built
+# the find bar and tab rename give the keyboard back, the wheel scrolls the history, and closing a busy pane asks first. Skipped (exit 0) where xvfb-run, xdotool, xclip or the built
 # binary is missing.
 set -u
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -35,11 +35,20 @@ printf 'echo pasted-\$((1+1)) > \$T/pasted' | xclip -selection clipboard -i
 sleep 0.3
 xdotool key ctrl+shift+v; sleep 0.5
 xdotool key Return; sleep 0.8
-# 3. The wheel scrolls the history: print more lines than the screen holds, then scroll up.
+# 3. The find bar opens on Ctrl+Shift+F and gives the keyboard back to the pane on Escape; a
+#    tab renames on a double click, and Return gives the keyboard back too.
+xdotool key ctrl+shift+f; sleep 0.5
+xdotool type --delay 30 'pasted'; xdotool key Return; sleep 0.3
+xdotool key Escape; sleep 0.5
+type_line 'echo after-find > \$T/af'
+xdotool mousemove 40 24 click --repeat 2 --delay 80 1; sleep 0.5
+xdotool type --delay 30 'my name'; xdotool key Return; sleep 0.5
+type_line 'echo after-rename > \$T/ar'
+# 4. The wheel scrolls the history: print more lines than the screen holds, then scroll up.
 type_line 'for i in \$(seq 1 80); do echo line-\$i; done'
 xdotool mousemove 200 200 click --repeat 5 4
 sleep 0.5
-# 4. Closing a pane that runs a program asks first: still there after Ctrl+Shift+W, closed by Return.
+# 5. Closing a pane that runs a program asks first: still there after Ctrl+Shift+W, closed by Return.
 type_line 'sleep 60'
 sleep 1.5
 xdotool key ctrl+shift+w; sleep 1
@@ -52,6 +61,8 @@ chmod +x "$tmp/drive.sh"
 xvfb-run -a -s '-screen 0 1280x800x24' "$tmp/drive.sh" >/dev/null 2>&1
 
 [ "$(cat "$tmp/copied" 2>/dev/null)" = "SELECTME" ] || bad "copy did not put the selected word on the clipboard ($(cat "$tmp/copied" 2>/dev/null))"
+[ "$(cat "$tmp/af" 2>/dev/null)" = "after-find" ] || bad "the pane did not get the keyboard back after the find bar"
+[ "$(cat "$tmp/ar" 2>/dev/null)" = "after-rename" ] || bad "the pane did not get the keyboard back after renaming a tab"
 [ -e "$tmp/asked" ] || bad "closing a busy pane closed it without asking"
 [ "$(cat "$tmp/pasted" 2>/dev/null)" = "pasted-2" ] || bad "paste did not reach the shell ($(cat "$tmp/pasted" 2>/dev/null))"
 

@@ -222,6 +222,10 @@ QString str(const rust::String& s) { return QString::fromUtf8(s.data(), int(s.si
 
 QString Controller::layout() const { return str(kyko_layout()); }
 void Controller::confirm(bool yes) const { kyko_confirm(yes); }
+void Controller::search(int op, const QString& text) const {
+    const std::string t = text.toStdString();
+    kyko_search(quint8(op), rust::Str(t.data(), t.size()));
+}
 QString Controller::shot() const { return str(kyko_test_shot()); }
 int Controller::shotDelay() const {
     const int ms = qEnvironmentVariableIntValue("KYKO_TEST_MS");

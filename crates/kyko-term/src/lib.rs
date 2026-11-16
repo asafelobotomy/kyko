@@ -158,6 +158,9 @@ pub struct Emulator {
     size: Size,
     scrollback: usize,
     kitty_keyboard: bool,
+    /// Where the last search found its query: line, first column, last column.
+    matches: Vec<(i32, usize, usize)>,
+    current: usize,
 }
 
 impl Emulator {
@@ -173,6 +176,8 @@ impl Emulator {
             size,
             scrollback,
             kitty_keyboard: false,
+            matches: Vec::new(),
+            current: 0,
         }
     }
 
@@ -412,6 +417,108 @@ impl Emulator {
     /// The selected text, `None` when nothing (or only an empty range) is selected.
     pub fn selection_text(&self) -> Option<String> {
         self.term.selection_to_string().filter(|t| !t.is_empty())
+    }
+
+    /// Finds `query` in the history and the screen, one line at a time (a match does not cross a
+    /// wrapped line). Smart case: a query with a capital letter is case-sensitive. Selects the
+    /// match nearest the live screen and brings it into view; returns how many there are.
+    pub fn search_find(&mut self, query: &str) -> usize {
+        self.matches.clear();
+        self.current = 0;
+        if query.is_empty() {
+            self.select_clear();
+            return 0;
+        }
+        let sensitive = query.chars().any(char::is_uppercase);
+        let fold = |c: char| {
+            if sensitive {
+                c
+            } else {
+                c.to_lowercase().next().unwrap_or(c)
+            }
+        };
+        let needle: Vec<char> = query.chars().map(fold).collect();
+        let grid = self.term.grid();
+        let (cols, top, bottom) = (
+            self.term.columns(),
+            grid.topmost_line(),
+            grid.bottommost_line(),
+        );
+        let mut line = top;
+        while line <= bottom {
+            let row = &grid[line];
+            let mut text = Vec::new();
+            let mut at = Vec::new();
+            for c in 0..cols {
+                let cell = &row[Column(c)];
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                text.push(fold(if cell.c == '\0' { ' ' } else { cell.c }));
+                at.push(c);
+            }
+            let mut i = 0;
+            while i + needle.len() <= text.len() {
+                if text[i..i + needle.len()] == needle[..] {
+                    self.matches.push((line.0, at[i], at[i + needle.len() - 1]));
+                    i += needle.len();
+                } else {
+                    i += 1;
+                }
+            }
+            line += 1;
+        }
+        self.current = self.matches.len().saturating_sub(1);
+        self.show_match();
+        self.matches.len()
+    }
+
+    /// Moves to the next (or previous) match, wrapping round; `(position, total)`, from 0.
+    pub fn search_step(&mut self, forward: bool) -> Option<(usize, usize)> {
+        let n = self.matches.len();
+        if n == 0 {
+            return None;
+        }
+        self.current = if forward {
+            (self.current + 1) % n
+        } else {
+            (self.current + n - 1) % n
+        };
+        self.show_match();
+        Some((self.current, n))
+    }
+
+    /// Where the search stands: `(position, total)`, from 0.
+    pub fn search_state(&self) -> Option<(usize, usize)> {
+        (!self.matches.is_empty()).then_some((self.current, self.matches.len()))
+    }
+
+    /// Ends the search; the match is no longer selected.
+    pub fn search_clear(&mut self) {
+        self.matches.clear();
+        self.current = 0;
+        self.select_clear();
+    }
+
+    /// Selects the current match and scrolls so that it is in view.
+    fn show_match(&mut self) {
+        let Some(&(line, from, to)) = self.matches.get(self.current) else {
+            return;
+        };
+        let rows = self.term.screen_lines() as i32;
+        let offset = self.display_offset() as i32;
+        // The lines in view are `-offset .. rows - offset`.
+        if line < -offset || line >= rows - offset {
+            let want = (rows / 2 - line).clamp(0, self.history_len() as i32);
+            self.term.scroll_display(Scroll::Delta(want - offset));
+        }
+        let mut sel = Selection::new(
+            SelectionType::Simple,
+            Point::new(Line(line), Column(from)),
+            Side::Left,
+        );
+        sel.update(Point::new(Line(line), Column(to)), Side::Right);
+        self.term.selection = Some(sel);
     }
 
     /// Scrollback lines held.
