@@ -9,12 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `kyko-prompt`, the prompt kyko draws the same in every shell: `kyko-prompt render --shell
-  bash|zsh|fish|plain` prints a two-line prompt with the folder, git branch and state, ssh, root
-  and virtualenv chips, and at the right edge the exit status, the time a long command took, jobs
-  and the clock. Colours come from `KYKO_PALETTE`, icons are Nerd Font, Unicode or ASCII
-  (`KYKO_PROMPT_ICONS`), `NO_COLOR` turns colour off, and it answers in a few milliseconds (git
-  is given 150 ms). The shell hooks that call it come with shell integration.
 - Preferences: `kyko preferences`, or the ring button on the tab bar, opens a window with the
   Window, Terminal, Appearance, Keys and Advanced pages. A change is written to `config.toml` at once (the
   drop-down follows it), a value the config would refuse is shown with its reason instead of
