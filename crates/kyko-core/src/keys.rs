@@ -251,6 +251,53 @@ impl KeySeq {
     }
 }
 
+/// Qt's modifier flags, as `QKeyEvent::modifiers()` reports them.
+const QT_SHIFT: u32 = 0x0200_0000;
+const QT_CTRL: u32 = 0x0400_0000;
+const QT_ALT: u32 = 0x0800_0000;
+const QT_META: u32 = 0x1000_0000;
+
+/// A Qt key code (`Qt::Key`) and its text as a [`Key`]; `None` for a key kyko has no name for.
+pub fn key_from_qt(key: u32, text: &str) -> Option<Key> {
+    Some(match key {
+        0x0100_0012 => Key::Left,
+        0x0100_0013 => Key::Up,
+        0x0100_0014 => Key::Right,
+        0x0100_0015 => Key::Down,
+        0x0100_0016 => Key::PgUp,
+        0x0100_0017 => Key::PgDn,
+        0x0100_0010 => Key::Home,
+        0x0100_0011 => Key::End,
+        0x0100_0006 => Key::Insert,
+        0x0100_0007 => Key::Delete,
+        0x0100_0001 => Key::Tab,
+        0x0100_0004 | 0x0100_0005 => Key::Enter,
+        0x0100_0000 => Key::Esc,
+        0x0100_0003 => Key::Backspace,
+        0x20 => Key::Space,
+        0x0100_0030..=0x0100_0047 => Key::F((key - 0x0100_0030 + 1) as u8),
+        0x21..=0x7e => Key::Char(char::from_u32(key)?),
+        // Shift, Ctrl, Alt, Meta and the lock keys alone are no key.
+        0x0100_0020..=0x0100_0026 => return None,
+        _ => Key::Char(text.chars().next()?),
+    })
+}
+
+impl KeySeq {
+    /// A key press as Qt reports it (`key`, `modifiers`, `text`), for Preferences to capture a
+    /// sequence with; `None` while only a modifier is down.
+    pub fn from_qt(key: u32, qt_mods: u32, text: &str) -> Option<KeySeq> {
+        let key = key_from_qt(key, text)?;
+        let mods = Mods {
+            ctrl: qt_mods & QT_CTRL != 0,
+            alt: qt_mods & QT_ALT != 0,
+            shift: qt_mods & QT_SHIFT != 0,
+            super_: qt_mods & QT_META != 0,
+        };
+        Some(KeySeq { mods, key })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,5 +446,28 @@ mod tests {
         assert!(p("Ctrl++").clashes(&p("Ctrl+Shift++")));
         assert!(p("Ctrl+Shift++").clashes(&p("Ctrl++")));
         assert!(!p("Ctrl+T").clashes(&p("Ctrl+Shift+T")));
+    }
+
+    #[test]
+    fn a_qt_key_press_becomes_a_sequence() {
+        // Ctrl+Shift+T: Qt reports Key_T (0x54) with Ctrl and Shift.
+        let seq = KeySeq::from_qt(0x54, 0x0400_0000 | 0x0200_0000, "\u{14}").unwrap();
+        assert_eq!(seq.to_string(), "Ctrl+Shift+T");
+        assert_eq!(seq, "ctrl+shift+t".parse().unwrap());
+        let seq = KeySeq::from_qt(0x0100_003b, 0x1000_0000, "").unwrap();
+        assert_eq!(seq.to_string(), "Super+F12");
+        assert_eq!(
+            KeySeq::from_qt(0x0100_0016, 0x0400_0000, "")
+                .unwrap()
+                .to_string(),
+            "Ctrl+PgUp"
+        );
+    }
+
+    #[test]
+    fn a_modifier_alone_is_no_sequence() {
+        for k in [0x0100_0020, 0x0100_0021, 0x0100_0022, 0x0100_0023] {
+            assert_eq!(KeySeq::from_qt(k, 0x0400_0000, ""), None);
+        }
     }
 }

@@ -10,10 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Preferences: `kyko preferences`, or the ring button on the tab bar, opens a window with the
-  Window, Terminal and Advanced pages. A change is written to `config.toml` at once (the
+  Window, Terminal, Appearance, Keys and Advanced pages. A change is written to `config.toml` at once (the
   drop-down follows it), a value the config would refuse is shown with its reason instead of
   written, comments and other keys in a hand-edited file are kept, and "Reset this page" takes
-  the page's keys out. Appearance, Keys and Sessions come next.
+  the page's keys out. Keys are set by clicking one and pressing the sequence (Esc cancels,
+  Backspace clears); a sequence another action holds is refused. Sessions comes next.
 - uQ's Spotlight lists kyko's open tabs: kyko serves `org.uq.Launcher1.Provider` at
   `/org/uq/Launcher1` and installs `/usr/share/uq/launcher/kyko.provider`. `Search` matches tab
   names and programs (at most 20); `Activate` only focuses a tab kyko returned and never runs a

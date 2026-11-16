@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The Preferences window under Xvfb: a click on a switch is written to config.toml, a hand-made
-# comment survives it, and "Reset this page" takes the page's keys out again. The positions are
+# comment survives it, "Reset this page" takes the page's keys out again, and a key is captured
+# from the keyboard (a clash is refused). The positions are
 # those of the 760x520 window with no window manager.
 # Skipped (exit 0) where Xvfb or xdotool is missing or the binary is not built.
 set -u
@@ -49,6 +50,19 @@ wait_for 'grep -q "copy_on_select = true" "$cfg"' || bad "copy_on_select was not
 click 688 480
 wait_for '! grep -q "copy_on_select" "$cfg"' || bad "reset did not remove copy_on_select"
 grep -q "animations = false" "$cfg" || bad "reset touched another page"
+
+# 4. Keys: click a key, press the new sequence; a sequence another action holds is refused.
+click 60 132
+sleep 0.5
+click 650 96
+sleep 0.3
+xdotool key ctrl+alt+n
+wait_for 'grep -q "new_tab = \"Ctrl+Alt+N\"" "$cfg"' || bad "the key was not written ($(cat "$cfg"))"
+click 650 152
+sleep 0.3
+xdotool key ctrl+alt+n
+sleep 0.7
+grep -q "close_pane" "$cfg" && bad "a clashing key was written ($(cat "$cfg"))"
 
 # The window's own shot, for reports.
 if [ -n "${KYKO_SHOT:-}" ]; then
