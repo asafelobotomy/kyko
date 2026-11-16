@@ -13,6 +13,7 @@ cxx = "1.0"
 cxx-qt = "0.10"
 cxx-qt-lib = { version = "0.10", features = ["qt_gui", "qt_qml"] }
 kyko-core.workspace = true
+kyko-hotkey = { path = "../../crates/kyko-hotkey" }
 kyko-link = { path = "../../crates/kyko-link" }
 kyko-proto = { path = "../../crates/kyko-proto" }
 kyko-term = { path = "../../crates/kyko-term" }

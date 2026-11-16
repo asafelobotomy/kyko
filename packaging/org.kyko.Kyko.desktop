@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=kyko
+GenericName=Terminal
+Comment=Terminal emulator with a drop-down mode
+Exec=kyko
+Icon=org.kyko.Kyko
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;console;command;prompt;
+StartupWMClass=org.kyko.Kyko
+StartupNotify=true
+Actions=new-window;dropdown;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=kyko
+
+[Desktop Action dropdown]
+Name=Drop-down Terminal
+Exec=kyko dropdown --show

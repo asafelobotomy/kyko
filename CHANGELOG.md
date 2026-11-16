@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The drop-down's toggle hotkey (`hotkey.toggle`, F12 by default): on Hyprland kyko binds it
+  through the control socket, moves it when the config changes and binds it again after a
+  Hyprland config reload; elsewhere it prints the line to bind by hand (`kyko toggle`).
+- A desktop entry (`org.kyko.Kyko.desktop`, a terminal emulator that runs `kyko -e`) and an icon.
 - Search in the scrollback (`search` key, Ctrl+Shift+F): a find bar over the focused pane with
   smart-case matching, a match count, Return / Shift+Return (or the arrow keys) for next and
   previous, and Escape to close; the current match is selected and scrolled into view. A match
