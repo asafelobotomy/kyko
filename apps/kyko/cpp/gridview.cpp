@@ -226,6 +226,16 @@ void Controller::search(int op, const QString& text) const {
     const std::string t = text.toStdString();
     kyko_search(quint8(op), rust::Str(t.data(), t.size()));
 }
+QString Controller::prefsPages() const { return str(kyko_prefs_pages()); }
+QString Controller::prefsValues() const { return str(kyko_prefs_values()); }
+QString Controller::prefsSet(const QString& key, const QString& json) const {
+    const std::string k = key.toStdString(), j = json.toStdString();
+    return str(kyko_prefs_set(rust::Str(k.data(), k.size()), rust::Str(j.data(), j.size())));
+}
+QString Controller::prefsReset(const QString& page) const {
+    const std::string p = page.toStdString();
+    return str(kyko_prefs_reset(rust::Str(p.data(), p.size())));
+}
 QString Controller::shot() const { return str(kyko_test_shot()); }
 int Controller::shotDelay() const {
     const int ms = qEnvironmentVariableIntValue("KYKO_TEST_MS");

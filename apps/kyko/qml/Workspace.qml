@@ -183,7 +183,8 @@ Item {
                 model: [
                     { kind: "plus", act: "new_tab" },
                     { kind: "side", act: "split_side" },
-                    { kind: "stacked", act: "split_stacked" }
+                    { kind: "stacked", act: "split_stacked" },
+                    { kind: "gear", act: "preferences" }
                 ]
                 delegate: Rectangle {
                     id: btn
@@ -195,7 +196,7 @@ Item {
                     HoverHandler { id: bh }
                     // Drawn, not typeset: no font has to carry the icons.
                     Rectangle {
-                        visible: btn.modelData.kind !== "plus"
+                        visible: btn.modelData.kind === "side" || btn.modelData.kind === "stacked"
                         anchors.centerIn: parent
                         width: 14
                         height: 12
@@ -209,6 +210,24 @@ Item {
                             y: btn.modelData.kind === "side" ? 0 : 5
                             width: btn.modelData.kind === "side" ? 1 : parent.width - 2
                             height: btn.modelData.kind === "side" ? parent.height - 2 : 1
+                        }
+                    }
+                    // The settings button: a ring with a hub.
+                    Rectangle {
+                        visible: btn.modelData.kind === "gear"
+                        anchors.centerIn: parent
+                        width: 14
+                        height: 14
+                        radius: 7
+                        color: "transparent"
+                        border.width: 2
+                        border.color: ws.fg
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: 4
+                            height: 4
+                            radius: 2
+                            color: ws.fg
                         }
                     }
                     Text {

@@ -73,6 +73,7 @@ fn main() {
         QmlFile::from("qml/Main.qml"),
         QmlFile::from("qml/DropDown.qml"),
         QmlFile::from("qml/Workspace.qml"),
+        QmlFile::from("qml/Preferences.qml"),
     ]))
     .qt_module("Gui")
     .qt_module("Quick")
