@@ -625,7 +625,7 @@ pub fn layout_json(
                            "ratio": d.ratio})
                 })
                 .collect();
-            json!({"id": t.id, "name": t.name, "active": t.active, "panes": panes,
+            json!({"id": t.id, "name": t.name, "program": t.program, "active": t.active, "panes": panes,
                    "dividers": dividers})
         })
         .collect();
