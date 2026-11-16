@@ -1,0 +1,59 @@
+# kyko's prompt, the same in every shell. Colours are the terminal's own palette, so it follows
+# the kyko / uQ theme. Icons need a Nerd Font.
+add_newline = true
+command_timeout = 500
+format = """
+$directory$git_branch$git_status$python$rust$nodejs$golang$cmd_duration
+$status$character"""
+
+[character]
+success_symbol = "[❯](bold green)"
+error_symbol = "[❯](bold red)"
+vimcmd_symbol = "[❮](bold blue)"
+
+[directory]
+style = "bold blue"
+read_only = " 󰌾"
+truncation_length = 4
+truncation_symbol = "…/"
+format = "[ $path]($style)[$read_only]($style) "
+
+[git_branch]
+symbol = " "
+style = "bold purple"
+format = "[$symbol$branch]($style) "
+
+[git_status]
+style = "yellow"
+format = '([\[$all_status$ahead_behind\]]($style) )'
+
+[status]
+disabled = false
+symbol = "✘ "
+format = "[$symbol$status]($style) "
+style = "bold red"
+
+[cmd_duration]
+min_time = 3000
+format = "[ $duration]($style) "
+style = "yellow"
+
+[python]
+symbol = " "
+format = '[$symbol$version( \($virtualenv\))]($style) '
+style = "cyan"
+
+[rust]
+symbol = " "
+format = "[$symbol$version]($style) "
+style = "red"
+
+[nodejs]
+symbol = " "
+format = "[$symbol$version]($style) "
+style = "green"
+
+[golang]
+symbol = " "
+format = "[$symbol$version]($style) "
+style = "cyan"
