@@ -110,6 +110,11 @@ pub enum Act {
     Dismiss(PaneId),
     /// The answer to a close that asked first.
     Confirm(bool),
+    /// A new tab that runs a command (held open after it ends), or a plain one.
+    Run {
+        command: Option<String>,
+        cwd: Option<String>,
+    },
 }
 
 pub struct Workspace {
@@ -501,6 +506,14 @@ fn handle(act: Act, s: &mut Session, look: &Look, login: &str) -> Vec<Effect> {
         }
         Act::Dismiss(p) => s.dismiss(p, login),
         Act::Confirm(_) => Vec::new(),
+        Act::Run { command, cwd } => {
+            let (args, hold) = match command {
+                Some(c) => (kyko_core::runq::shell_args(&c), true),
+                None => (Vec::new(), false),
+            };
+            s.new_tab(SpawnRequest { cwd, args, hold }, login)
+                .unwrap_or_default()
+        }
     }
 }
 
