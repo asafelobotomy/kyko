@@ -3,18 +3,17 @@
 //! The scripts in `shell/` are compiled in and written under a folder of kyko's own. For an
 //! interactive bash, zsh or fish, [`plan`] adds the arguments or variables that make the shell
 //! load them after the user's own startup files. They emit OSC 7 (folder) and OSC 133 (prompt,
-//! command and exit status marks), and start `starship` with kyko's prompt when the user has no
-//! prompt or starship config of their own. Any other shell, and any shell started with a command,
+//! command and exit status marks) and draw kyko's prompt (`kyko-prompt render`, if installed) when
+//! the user's startup files set none of their own. Any other shell, and any shell started with a command,
 //! is left alone.
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const BASH: &str = include_str!("../shell/bash.sh");
 const ZSHENV: &str = include_str!("../shell/zsh/.zshenv");
 const ZSHRC: &str = include_str!("../shell/zsh/.zshrc");
 const FISH: &str = include_str!("../shell/fish.fish");
-const STARSHIP: &str = include_str!("../shell/starship.toml");
 
 /// What to add to a shell's start: arguments, then variables.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -25,21 +24,12 @@ pub struct Plan {
 
 /// The environment `plan` reads, so tests need not touch the process's own.
 pub struct Host {
-    pub starship_config_env: bool,
-    pub starship_config_file: bool,
     pub zdotdir: Option<String>,
 }
 
 impl Host {
     pub fn current() -> Host {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let xdg = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|d| !d.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| home.map(|h| h.join(".config")));
         Host {
-            starship_config_env: std::env::var_os("STARSHIP_CONFIG").is_some_and(|v| !v.is_empty()),
-            starship_config_file: xdg.is_some_and(|d| d.join("starship.toml").is_file()),
             zdotdir: std::env::var("ZDOTDIR").ok().filter(|d| !d.is_empty()),
         }
     }
@@ -51,7 +41,6 @@ pub fn install(dir: &Path) -> io::Result<()> {
     for (name, text) in [
         ("bash.sh", BASH),
         ("fish.fish", FISH),
-        ("starship.toml", STARSHIP),
         ("zsh/.zshenv", ZSHENV),
         ("zsh/.zshrc", ZSHRC),
     ] {
@@ -98,10 +87,6 @@ pub fn plan(shell: &str, args: &[String], dir: &Path, host: &Host) -> Plan {
     p.env.push(("TERM_PROGRAM".into(), "kyko".into()));
     p.env
         .push(("TERM_PROGRAM_VERSION".into(), crate::VERSION.into()));
-    if !host.starship_config_env && !host.starship_config_file {
-        p.env
-            .push(("STARSHIP_CONFIG".into(), format!("{d}/starship.toml")));
-    }
     p
 }
 
@@ -110,11 +95,7 @@ mod tests {
     use super::*;
 
     fn host() -> Host {
-        Host {
-            starship_config_env: false,
-            starship_config_file: false,
-            zdotdir: None,
-        }
+        Host { zdotdir: None }
     }
 
     fn get<'a>(p: &'a Plan, k: &str) -> Option<&'a str> {
@@ -125,14 +106,13 @@ mod tests {
     fn bash_gets_an_rcfile() {
         let p = plan("/usr/bin/bash", &[], Path::new("/r"), &host());
         assert_eq!(p.args, ["--rcfile", "/r/bash.sh"]);
-        assert_eq!(get(&p, "STARSHIP_CONFIG"), Some("/r/starship.toml"));
+        assert_eq!(get(&p, "KYKO_PROMPT"), Some("1"));
     }
 
     #[test]
     fn zsh_keeps_the_users_zdotdir() {
         let h = Host {
             zdotdir: Some("/home/u/.zsh".into()),
-            ..host()
         };
         let p = plan("/bin/zsh", &[], Path::new("/r"), &h);
         assert!(p.args.is_empty());
@@ -147,17 +127,6 @@ mod tests {
     }
 
     #[test]
-    fn users_starship_config_is_kept() {
-        let h = Host {
-            starship_config_file: true,
-            ..host()
-        };
-        let p = plan("bash", &[], Path::new("/r"), &h);
-        assert_eq!(get(&p, "STARSHIP_CONFIG"), None);
-        assert_eq!(get(&p, "KYKO_PROMPT"), Some("1"));
-    }
-
-    #[test]
     fn commands_and_other_shells_are_left_alone() {
         let c = vec!["-c".to_string(), "ls".to_string()];
         assert_eq!(plan("bash", &c, Path::new("/r"), &host()), Plan::default());
@@ -169,13 +138,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         install(t.path()).unwrap();
         install(t.path()).unwrap();
-        for f in [
-            "bash.sh",
-            "fish.fish",
-            "starship.toml",
-            "zsh/.zshenv",
-            "zsh/.zshrc",
-        ] {
+        for f in ["bash.sh", "fish.fish", "zsh/.zshenv", "zsh/.zshrc"] {
             assert!(t.path().join(f).is_file(), "{f}");
         }
     }

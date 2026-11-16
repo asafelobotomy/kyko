@@ -11,11 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Shell integration, the same in bash, zsh and fish (`terminal.shell_integration`, on by default,
   in Preferences > Terminal): every new tab's shell reports its folder (OSC 7) and marks each
-  prompt, command and exit status (OSC 133), and starts `starship` with kyko's own prompt (colours
-  from the terminal palette, Nerd Font icons) when it is installed and you have no prompt or
-  starship config of your own; your rc files run first and are never replaced. Also loads zoxide,
-  fzf and, when you have not set the alias yourself, eza and bat; zsh gets autosuggestions and
-  syntax highlighting if the Arch packages are installed. Other shells start unchanged.
+  prompt, command and exit status (OSC 133), and draws kyko's own prompt, rendered by the new
+  `kyko-prompt` program (folder, git branch and state, virtualenv, slow-command time, exit
+  status; terminal-palette colours, Nerd Font icons), unless your startup files set a prompt of
+  your own or you use starship. Your rc files run first and are never replaced. Also loads
+  zoxide, fzf and, when you have not set the alias yourself, eza and bat; zsh gets
+  autosuggestions and syntax highlighting if the Arch packages are installed. Other shells start
+  unchanged.
 - `kyko run` with a command that begins `#!/bin/bash` (or zsh, fish, sh, dash, ksh, also via
   `env`) runs it in that shell instead of your login shell.
 - Preferences: `kyko preferences`, or the ring button on the tab bar, opens a window with the

@@ -125,7 +125,7 @@ pub const PAGES: &[Page] = &[
             Item {
                 key: "terminal.shell_integration",
                 label: "Shell integration",
-                help: "The same prompt marks, folder tracking and (with starship installed) prompt in bash, zsh and fish. Your own prompt is kept. Applies to new tabs.",
+                help: "The same prompt marks, folder tracking and prompt in bash, zsh and fish. Your own prompt is kept. Applies to new tabs.",
                 kind: Kind::Bool,
             },
         ],

@@ -4,6 +4,7 @@ set -gx KYKO_SHELL_INTEGRATION_LOADED 1
 
 function __kyko_prompt --on-event fish_prompt
     set -l s $status
+    set -g __kyko_status $s
     set -q __kyko_ran; and printf '\e]133;D;%s\a' $s
     set -e __kyko_ran
     printf '\e]7;file://%s%s\a' (hostname) $PWD
@@ -14,9 +15,13 @@ function __kyko_preexec --on-event fish_preexec
     printf '\e]133;C\a'
 end
 
-# The prompt of the user's own wins: kyko only adds the marks above.
-if test "$KYKO_PROMPT" = 1; and not set -q STARSHIP_SESSION_KEY; and type -q starship
-    starship init fish | source
+# kyko draws the prompt only when the user has no fish_prompt of their own.
+if test "$KYKO_PROMPT" = 1; and not set -q STARSHIP_SESSION_KEY; and type -q kyko-prompt
+    if string match -rq '^(/usr(/local)?/share/fish|-$|stdin$)' -- (functions --details fish_prompt)
+        function fish_prompt
+            kyko-prompt render --shell fish --status $__kyko_status --duration $CMD_DURATION
+        end
+    end
 end
 
 if test "$KYKO_EXTRAS" = 1
