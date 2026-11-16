@@ -68,7 +68,7 @@ Confirmed by the user on 2026-11-13 (until then listed as assumptions):
   from source; a Flatpak suits a terminal poorly because of its sandbox.
 - Session restore across logout or reboot, ligatures, inline images (sixel, kitty graphics),
   remote control of pane contents, scripting, and plugins.
-- Being a general windowed terminal. `shell.terminal` in uQ stays kitty, foot or alacritty.
+- Kitty graphics protocol, sixel and kitty's kittens: not needed to replace kitty as the default (decided 2026-11-16).
 
 ## 2. Architecture
 
@@ -447,6 +447,23 @@ Qt 6, `layer-shell-qt` and a D-Bus session. uQ features switch on when uQ is det
 
 - Wayland-native, fractional scaling, the protocol support in §2.4, live theming, and
   configuration that applies without a restart.
+
+### 2.12 Windowed mode and the default terminal (added 2026-11-16)
+
+The owner decided on 2026-11-16 that kyko also replaces kitty as uQ's default terminal, so it is
+a drop-down **and** a general terminal. This reverses the earlier "not a general windowed
+terminal" exclusion.
+
+- `kyko -e CMD [ARGS]`, `--class`, `--title` and `--working-directory` open a normal, decorated
+  window (not the layer-shell drop-down), with its own session in `kykod`. It is what SUPER+Return,
+  `Terminal=true` launches and `xdg-terminal-exec` run.
+- `org.kyko.Kyko.desktop` carries `Categories=System;TerminalEmulator;` and an `Exec` that takes `-e`.
+- Both modes share one `kykod`, one config, one theme source and one tab/split model. The
+  drop-down remains one key away; a windowed kyko never hides on focus loss.
+- uQ keeps `shell.terminal` as the choice; the default flips to kyko only after v1.0.0 is stable
+  and pinned in Bindle, with kitty as the fallback when kyko is missing. See
+  `/docs/notes/2026-11-16-default-terminal-plan.md`.
+- Milestone 3 gains the windowed mode; the checklist tracks it.
 
 ## 3. Integration with uQ
 
