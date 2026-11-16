@@ -130,6 +130,9 @@ milestone ends in a version bump through `docs/releasing.md`.
 
 ## Milestone 3: identity, hotkeys, Preferences
 
+- [ ] Windowed mode (spec 2.12): `kyko -e`, `--class`, `--title`, `--working-directory`, decorated
+      window with its own session, `TerminalEmulator` desktop entry, `xdg-terminal-exec` works.
+
 - [ ] Open risk 7 first: which unit name or Registry call makes the portal see `org.kyko.Kyko`; a
       test asserts the bind lands there.
 - [ ] Hotkey trait with backends `kde`, `portal`, `hyprland`, `manual` (`uq` waits for milestone 4);
