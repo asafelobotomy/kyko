@@ -5,7 +5,8 @@ terminal down from the top of the screen, and the same key hides it again with i
 running. It has its own tabs and split panes, follows uQ's theme live, and can be sent commands
 from uQ's Spotlight search.
 
-Nothing is usable yet. Version 0.0.2 added `kykod`, the session holder that owns the shells and
+Windowed mode works from the build tree (`kyko`, `kyko -e CMD`); the drop-down, tabs and splits,
+and the hotkey do not exist yet. Version 0.0.2 added `kykod`, the session holder that owns the shells and
 keeps them running while no window is open, with a systemd user unit (installed, not enabled).
 Version 0.0.3 has `kykod` restore a pane's terminal modes when a window reattaches after the
 pane's output has outrun what `kykod` keeps.
