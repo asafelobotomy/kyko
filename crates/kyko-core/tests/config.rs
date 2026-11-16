@@ -51,6 +51,7 @@ cursor_blink = true
 new_tab_dir = "home"
 bell = "sound"
 copy_on_select = true
+shell_integration = false
 confirm_multiline_paste = false
 scrollback = 50000
 shell = "/usr/bin/fish"
@@ -110,6 +111,7 @@ fn default_is_the_table_in_the_spec() {
     assert_eq!(t.new_tab_dir, NewTabDir::Current);
     assert_eq!(t.bell, Bell::Visual);
     assert!(!t.copy_on_select);
+    assert!(t.shell_integration);
     assert!(t.confirm_multiline_paste);
     assert_eq!(t.scrollback, 10_000);
     assert_eq!(t.shell, None);
@@ -203,6 +205,7 @@ fn every_key_set() {
             new_tab_dir: NewTabDir::Home,
             bell: Bell::Sound,
             copy_on_select: true,
+            shell_integration: false,
             confirm_multiline_paste: false,
             scrollback: 50_000,
             shell: Some("/usr/bin/fish".into()),

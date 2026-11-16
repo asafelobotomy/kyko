@@ -76,6 +76,8 @@ pub struct TerminalConfig {
     pub new_tab_dir: NewTabDir,
     pub bell: Bell,
     pub copy_on_select: bool,
+    /// Marks, folder reports and kyko's prompt in bash, zsh and fish.
+    pub shell_integration: bool,
     pub confirm_multiline_paste: bool,
     pub scrollback: u32,
     /// Unset: `$SHELL`. An absolute path.
@@ -282,6 +284,7 @@ impl Default for Config {
                 new_tab_dir: NewTabDir::Current,
                 bell: Bell::Visual,
                 copy_on_select: false,
+                shell_integration: true,
                 confirm_multiline_paste: true,
                 scrollback: 10_000,
                 shell: None,
@@ -722,6 +725,7 @@ impl Reader {
                 "new_tab_dir",
                 "bell",
                 "copy_on_select",
+                "shell_integration",
                 "confirm_multiline_paste",
                 "scrollback",
                 "shell",
@@ -779,6 +783,7 @@ impl Reader {
                 dt.bell,
             ),
             copy_on_select: self.bool(&s, "copy_on_select", dt.copy_on_select),
+            shell_integration: self.bool(&s, "shell_integration", dt.shell_integration),
             confirm_multiline_paste: self.bool(
                 &s,
                 "confirm_multiline_paste",

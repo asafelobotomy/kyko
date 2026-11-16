@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod configedit;
+pub mod integration;
 pub mod keys;
 pub mod layout;
 pub mod paths;

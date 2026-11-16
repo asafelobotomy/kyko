@@ -503,6 +503,27 @@ fn focus(s: &mut Session, dir: Dir) -> Vec<Effect> {
     Vec::new()
 }
 
+/// Where the shell integration scripts live, written on first use; `None` (logged once) when
+/// they cannot be written, and the shell then starts without them.
+fn integration_dir() -> Option<PathBuf> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let base = std::env::var_os("XDG_RUNTIME_DIR")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let dir = base.join("kyko").join("shell");
+        match kyko_core::integration::install(&dir) {
+            Ok(()) => Some(dir),
+            Err(e) => {
+                eprintln!("kyko: shell integration is off: {}: {e}", dir.display());
+                None
+            }
+        }
+    })
+    .clone()
+}
+
 /// Carries out what the session asked for. True when it asked to hide the window.
 fn apply(
     effects: Vec<Effect>,
@@ -523,21 +544,37 @@ fn apply(
                         cwd.unwrap_or_else(|| ctx.launch.cwd.clone()),
                     )
                 } else {
+                    let (shell, args) = kyko_core::runq::resolve(&ctx.launch.login_shell, args);
                     (
-                        ctx.launch.login_shell.clone(),
+                        shell,
                         args,
                         cwd.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into())),
                     )
                 };
+                let mut env = vec![
+                    ("TERM".to_string(), "xterm-256color".to_string()),
+                    ("COLORTERM".to_string(), "truecolor".to_string()),
+                ];
+                let mut args = args;
+                if ctx.look.lock().unwrap().shell_integration
+                    && let Some(dir) = integration_dir()
+                {
+                    let plan = kyko_core::integration::plan(
+                        &shell,
+                        &args,
+                        &dir,
+                        &kyko_core::integration::Host::current(),
+                    );
+                    // The flags go first: `bash --rcfile f`, `fish --init-command c`.
+                    args.splice(0..0, plan.args);
+                    env.extend(plan.env);
+                }
                 link.spawn(SpawnSpec {
                     pane,
                     shell,
                     args,
                     cwd,
-                    env: vec![
-                        ("TERM".into(), "xterm-256color".into()),
-                        ("COLORTERM".into(), "truecolor".into()),
-                    ],
+                    env,
                     cols: size.0,
                     rows: size.1,
                     ring_bytes: 0,

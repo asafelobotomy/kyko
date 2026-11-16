@@ -38,6 +38,33 @@ pub fn shell_args(command: &str) -> Vec<String> {
     vec!["-c".to_string(), command.to_string()]
 }
 
+/// The shells a `#!` line may pick, by name.
+const SHELLS: [&str; 6] = ["bash", "zsh", "fish", "sh", "dash", "ksh"];
+
+/// The shell and arguments for a command: the user's `login_shell` with `-c`, unless the
+/// command starts with a `#!` line naming another shell (`#!/usr/bin/env zsh`, `#!/bin/bash`),
+/// which then runs the rest. Arguments that are not `-c <command>` are returned as they are.
+pub fn resolve(login_shell: &str, args: Vec<String>) -> (String, Vec<String>) {
+    let [flag, command] = args.as_slice() else {
+        return (login_shell.to_string(), args);
+    };
+    let (first, rest) = command.split_once('\n').unwrap_or((command, ""));
+    let Some(line) = first.strip_prefix("#!") else {
+        return (login_shell.to_string(), args);
+    };
+    let mut words = line.split_whitespace();
+    let mut name = words.next().and_then(|w| w.rsplit('/').next());
+    if name == Some("env") {
+        name = words.find(|w| !w.starts_with('-'));
+    }
+    match name {
+        Some(n) if SHELLS.contains(&n) && flag == "-c" => {
+            (n.to_string(), shell_args(rest.trim_start_matches('\n')))
+        }
+        _ => (login_shell.to_string(), args),
+    }
+}
+
 /// A working directory a caller sent: `None` for the empty string, else the path as given.
 pub fn cwd(cwd: &str) -> Option<String> {
     (!cwd.is_empty()).then(|| cwd.to_string())
@@ -46,6 +73,28 @@ pub fn cwd(cwd: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shebang_picks_the_shell() {
+        let go = |c: &str| resolve("/bin/fish", shell_args(c));
+        assert_eq!(go("ls"), ("/bin/fish".into(), shell_args("ls")));
+        assert_eq!(
+            go("#!/bin/bash\necho hi"),
+            ("bash".into(), shell_args("echo hi"))
+        );
+        assert_eq!(
+            go("#!/usr/bin/env zsh\nls"),
+            ("zsh".into(), shell_args("ls"))
+        );
+        assert_eq!(
+            go("#!/usr/bin/python\nx"),
+            ("/bin/fish".into(), shell_args("#!/usr/bin/python\nx"))
+        );
+        assert_eq!(
+            resolve("/bin/fish", Vec::new()),
+            ("/bin/fish".into(), Vec::new())
+        );
+    }
 
     #[test]
     fn accepts_ordinary_commands() {
