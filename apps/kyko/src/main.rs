@@ -9,6 +9,7 @@ mod appearance;
 mod bridge;
 mod control;
 mod hotkey;
+mod prefs;
 mod session;
 mod watch;
 
@@ -55,6 +56,8 @@ enum Sub {
         #[arg(long, short = 'd', value_name = "DIR")]
         working_directory: Option<PathBuf>,
     },
+    /// Open the Preferences window
+    Preferences,
     /// Open a new tab in the drop-down
     NewTab {
         /// Start in this folder
@@ -105,6 +108,27 @@ fn control(command: control::Command) -> ExitCode {
     }
 }
 
+/// The Preferences window: no sessions, no `kykod`; it only edits `config.toml`.
+fn preferences_window() -> ExitCode {
+    let launch = session::Launch {
+        shell: login_shell(),
+        args: Vec::new(),
+        cwd: String::new(),
+        login_shell: login_shell(),
+        persistent: false,
+    };
+    bridge::configure(PathBuf::new(), launch, appearance::load(), String::new());
+    let mut app = QGuiApplication::new();
+    bridge::app_set_id("org.kyko.Kyko.Preferences");
+    bridge::grid_register();
+    let mut engine = QQmlApplicationEngine::new();
+    if let Some(e) = engine.as_mut() {
+        e.load(&QUrl::from("qrc:/qt/qml/org/kyko/app/qml/Preferences.qml"));
+    }
+    let code = app.as_mut().map_or(1, |a| a.exec());
+    ExitCode::from(u8::try_from(code & 0xff).unwrap_or(1))
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
@@ -131,6 +155,9 @@ fn main() -> ExitCode {
             });
         }
         _ => {}
+    }
+    if matches!(cli.command, Some(Sub::Preferences)) {
+        return preferences_window();
     }
     let dropdown = match cli.command {
         Some(Sub::Dropdown { show }) => Some(show),

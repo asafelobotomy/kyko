@@ -58,6 +58,10 @@ pub mod ffi {
         fn kyko_set_ratio(tab: u32, path: &str, ratio: f64);
         fn kyko_rename_tab(tab: u32, name: &str);
         fn kyko_setting(name: &str) -> i32;
+        fn kyko_prefs_pages() -> String;
+        fn kyko_prefs_values() -> String;
+        fn kyko_prefs_set(key: &str, json: &str) -> String;
+        fn kyko_prefs_reset(page: &str) -> String;
         fn kyko_set_visible(visible: bool);
         fn kyko_palette_bg() -> u32;
         fn kyko_palette_fg() -> u32;
@@ -440,6 +444,10 @@ fn act(a: Act) {
 
 /// The tab bar's buttons, by the action's name in `[keys]`.
 fn kyko_action(name: &str) {
+    if name == "preferences" {
+        crate::prefs::open();
+        return;
+    }
     let action = match name {
         "new_tab" => Action::NewTab,
         "split_side" => Action::SplitSide,
@@ -484,6 +492,22 @@ fn kyko_rename_tab(tab: u32, name: &str) {
 }
 
 /// The status the window quits with, or -1 while it has panes to show.
+fn kyko_prefs_pages() -> String {
+    kyko_core::prefs::pages_json().to_string()
+}
+
+fn kyko_prefs_values() -> String {
+    crate::prefs::values()
+}
+
+fn kyko_prefs_set(key: &str, json: &str) -> String {
+    crate::prefs::set(key, json)
+}
+
+fn kyko_prefs_reset(page: &str) -> String {
+    crate::prefs::reset(page)
+}
+
 fn kyko_exit_status() -> i32 {
     exit_status().unwrap_or(-1)
 }

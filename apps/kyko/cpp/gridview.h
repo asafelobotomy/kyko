@@ -36,6 +36,12 @@ public:
     Q_INVOKABLE void confirm(bool yes) const;
     // The find bar: 0 look for text, 1 next, 2 previous, 3 close.
     Q_INVOKABLE void search(int op, const QString& text) const;
+    // Preferences (spec 2.6): the pages and values as JSON; a change or reset returns "" when it
+    // was written, else why not.
+    Q_INVOKABLE QString prefsPages() const;
+    Q_INVOKABLE QString prefsValues() const;
+    Q_INVOKABLE QString prefsSet(const QString& key, const QString& json) const;
+    Q_INVOKABLE QString prefsReset(const QString& page) const;
     // Test aid: where to save the window's screen (KYKO_TEST_SHOT), and after how many ms.
     Q_INVOKABLE QString shot() const;
     Q_INVOKABLE int shotDelay() const;

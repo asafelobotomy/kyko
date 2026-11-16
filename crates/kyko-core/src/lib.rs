@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod configedit;
 pub mod keys;
 pub mod layout;
 pub mod paths;
+pub mod prefs;
 pub mod runq;
 pub mod session;
 pub mod tabsearch;
