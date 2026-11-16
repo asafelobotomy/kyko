@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-16
+
+The first usable kyko: a windowed terminal and a drop-down, with tabs and splits. Not yet the
+default in uQ; Preferences and the Run provider come in 0.2.0.
+
 ### Added
 
 - The drop-down's toggle hotkey (`hotkey.toggle`, F12 by default): on Hyprland kyko binds it

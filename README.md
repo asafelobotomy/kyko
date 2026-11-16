@@ -5,14 +5,13 @@ terminal down from the top of the screen, and the same key hides it again with i
 running. It has its own tabs and split panes, follows uQ's theme live, and can be sent commands
 from uQ's Spotlight search.
 
-Windowed mode works from the build tree (`kyko`, `kyko -e CMD`); the drop-down, tabs and splits,
-and the hotkey do not exist yet. Version 0.0.2 added `kykod`, the session holder that owns the shells and
-keeps them running while no window is open, with a systemd user unit (installed, not enabled).
-Version 0.0.3 has `kykod` restore a pane's terminal modes when a window reattaches after the
-pane's output has outrun what `kykod` keeps.
-Version 0.0.4 adds the logic the window will use, in `kyko-core`: settings, themes, tabs and
-splits, and the saved layout.
-The window, `kyko`, still prints its version and nothing else.
+kyko runs as a window (`kyko`, `kyko -e CMD`) or as the drop-down (`kyko dropdown`, toggled with
+`kyko toggle`). Both have tabs, split panes, selection and the clipboard, scrollback with search, and
+mouse reporting. Shells live in `kykod`, so the drop-down keeps them while hidden. On Hyprland the
+toggle key (`hotkey.toggle`, F12 by default) is bound for you; elsewhere bind `kyko toggle` by hand.
+The package installs a desktop entry and icon, so kyko shows up as a terminal emulator.
+
+kyko is pre-1.0: Preferences, the Run provider and more hotkey backends are still to come.
 
 ## Building
 
