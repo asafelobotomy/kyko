@@ -253,3 +253,32 @@ fn a_drag_selects_text_and_a_double_click_selects_a_word() {
     e.select_start(2, 0, kyko_term::SelectKind::Line, false);
     assert!(e.selection_text().unwrap().starts_with("hello brave world"));
 }
+
+#[test]
+fn search_finds_matches_in_the_history_and_steps_through_them() {
+    let mut e = Emulator::new(30, 3, 100);
+    for n in 0..12 {
+        e.feed(format!("row {n} needle\r\n").as_bytes());
+    }
+    e.feed(b"the Needle again");
+    // Smart case: all lower case finds every spelling, a capital only exact ones.
+    assert_eq!(e.search_find("needle"), 13);
+    assert_eq!(e.search_find("Needle"), 1);
+    assert_eq!(e.search_find("needle"), 13);
+    // The nearest match to the live screen comes first and is selected.
+    assert_eq!(e.selection_text().as_deref(), Some("Needle"));
+    assert_eq!(e.search_state(), Some((12, 13)));
+    // Stepping back reaches an old match, which scrolls the view into the history.
+    for _ in 0..12 {
+        e.search_step(false);
+    }
+    assert_eq!(e.search_state(), Some((0, 13)));
+    assert!(e.display_offset() > 0);
+    assert_eq!(e.selection_text().as_deref(), Some("needle"));
+    // Past the first it wraps to the last.
+    assert_eq!(e.search_step(false), Some((12, 13)));
+    assert_eq!(e.search_find("absent"), 0);
+    assert_eq!(e.search_step(true), None);
+    e.search_clear();
+    assert_eq!(e.selection_text(), None);
+}

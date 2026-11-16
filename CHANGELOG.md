@@ -9,13 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Search in the scrollback (`search` key, Ctrl+Shift+F): a find bar over the focused pane with
+  smart-case matching, a match count, Return / Shift+Return (or the arrow keys) for next and
+  previous, and Escape to close; the current match is selected and scrolled into view. A match
+  does not cross a wrapped line. Tabs rename on a double click; Return keeps the name, an empty
+  name brings the automatic one back.
 - Selection and the clipboard: drag, double click (word) and triple click (line) select, and
   `copy` / `paste` keys use the clipboard (bracketed paste when the program asked, escape
   characters stripped). The wheel scrolls the history, or sends arrow keys to a full-screen
   program, and programs that ask for mouse reports (click, drag, motion; SGR or legacy
   encoding) get them. `font_bigger`, `font_smaller` and `font_reset` change the size live.
-  Closing a pane or tab that runs a program asks first. Search and the multi-line paste prompt
-  come later.
+  Closing a pane or tab that runs a program asks first. The multi-line paste prompt comes later.
 - Tabs and splits in both the window and the drop-down: a tab bar (numbered pills, a close button
   on hover and on the active tab, middle-click to close, new-tab and split buttons, at the top
   or bottom per `window.tabs`), side-by-side and stacked splits with draggable dividers, and the

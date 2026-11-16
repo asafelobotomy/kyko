@@ -7,7 +7,7 @@ use kyko_term::{Colors, keys};
 use crate::appearance::Look;
 use kyko_core::config::Action;
 
-use crate::session::{Act, Launch, MouseEv, MouseKind, Workspace};
+use crate::session::{Act, Launch, MouseEv, MouseKind, SearchOp, Workspace};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 #[cxx::bridge]
@@ -44,6 +44,7 @@ pub mod ffi {
             clicks: u8,
         );
         fn kyko_confirm(yes: bool);
+        fn kyko_search(op: u8, text: &str);
         fn kyko_fixed_title() -> String;
         fn kyko_exit_status() -> i32;
         fn kyko_test_shot() -> String;
@@ -318,6 +319,19 @@ fn kyko_mouse(
                 clicks,
             },
         );
+    }
+}
+
+/// The find bar: 0 look for `text`, 1 next, 2 previous, 3 close.
+fn kyko_search(op: u8, text: &str) {
+    let op = match op {
+        0 => SearchOp::Find(text.to_string()),
+        1 => SearchOp::Next,
+        2 => SearchOp::Prev,
+        _ => SearchOp::Close,
+    };
+    if let Some(w) = WORKSPACE.get() {
+        w.search(op);
     }
 }
 

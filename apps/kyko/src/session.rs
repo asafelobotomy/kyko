@@ -44,6 +44,23 @@ pub struct Shared {
     pub notice: Option<String>,
 }
 
+/// What the find bar asks of the focused pane's scrollback.
+#[derive(Clone, Debug)]
+pub enum SearchOp {
+    Find(String),
+    Next,
+    Prev,
+    Close,
+}
+
+/// The find bar as the QML shows it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Find {
+    pub open: bool,
+    pub pos: usize,
+    pub total: usize,
+}
+
 /// What a mouse did over a pane's grid, in cells.
 #[derive(Clone, Copy, Debug)]
 pub enum MouseKind {
@@ -73,6 +90,7 @@ enum Cmd {
     Mouse(PaneId, MouseEv),
     Copy(PaneId),
     Paste(PaneId, String),
+    Search(SearchOp),
     Resize(PaneId, u16, u16),
     Redraw,
     Act(Act),
@@ -171,6 +189,10 @@ impl Workspace {
 
     pub fn input(&self, pane: PaneId, bytes: Vec<u8>) {
         let _ = self.tx.send(Cmd::Input(pane, bytes));
+    }
+
+    pub fn search(&self, op: SearchOp) {
+        let _ = self.tx.send(Cmd::Search(op));
     }
 
     pub fn mouse(&self, pane: PaneId, ev: MouseEv) {
@@ -554,6 +576,7 @@ pub fn layout_json(
     s: &Session,
     notice: Option<&str>,
     confirm: Option<&(Pending, Vec<String>)>,
+    find: Find,
 ) -> String {
     use serde_json::json;
     let mut title = String::new();
@@ -599,6 +622,7 @@ pub fn layout_json(
         "{}",
         json!({"active": s.active_tab(), "focused": s.focused_pane(), "title": title,
                "notice": notice.unwrap_or(""), "tabs": tabs,
+               "find": {"open": find.open, "pos": find.pos + 1, "total": find.total},
                "confirm": confirm.map(|(what, programs)| json!({
                    "what": match what { Pending::Pane(_) => "pane", Pending::Tab(_) => "tab" },
                    "programs": programs.join(", ")}))})
@@ -660,6 +684,7 @@ fn run(
     ctx.shared.lock().unwrap().notice = None;
     let mut last_status = 0;
     let mut pending: Option<(Pending, Vec<String>)> = None;
+    let mut find = Find::default();
     let mut dirty: HashSet<PaneId> = session.pane_ids().into_iter().collect();
     let mut layout_changed = true;
     'main: loop {
@@ -689,6 +714,29 @@ fn run(
                         (ctx.on_copy)(t);
                     }
                 }
+                Cmd::Search(op) => {
+                    let pane = session.focused_pane();
+                    if let Some(pn) = link.pane_mut(pane) {
+                        let e = pn.emulator_mut();
+                        match op {
+                            SearchOp::Find(q) => {
+                                find.total = e.search_find(&q);
+                                find.pos = e.search_state().map_or(0, |(p, _)| p);
+                            }
+                            SearchOp::Next | SearchOp::Prev => {
+                                if let Some((p, t)) = e.search_step(matches!(op, SearchOp::Next)) {
+                                    (find.pos, find.total) = (p, t);
+                                }
+                            }
+                            SearchOp::Close => {
+                                e.search_clear();
+                                find = Find::default();
+                            }
+                        }
+                        dirty.insert(pane);
+                    }
+                    layout_changed = true;
+                }
                 Cmd::Paste(p, text) => {
                     let bracketed = link
                         .pane(p)
@@ -705,6 +753,11 @@ fn run(
                 Cmd::Redraw => dirty.extend(session.pane_ids()),
                 Cmd::Act(act) => {
                     layout_changed = true;
+                    if matches!(act, Act::Key(Action::Search)) {
+                        // The key opens the find bar; the bar's own Escape closes it.
+                        find.open = true;
+                        continue;
+                    }
                     // Closing something that runs a program asks first.
                     let target = match &act {
                         Act::Key(Action::ClosePane) => Some(Pending::Pane(session.focused_pane())),
@@ -784,7 +837,7 @@ fn run(
                 let mut sh = ctx.shared.lock().unwrap();
                 sh.frames.retain(|id, _| ids.contains(id));
                 sh.focused = session.focused_pane();
-                layout_json(session, sh.notice.as_deref(), pending.as_ref())
+                layout_json(session, sh.notice.as_deref(), pending.as_ref(), find)
             };
             ctx.shared.lock().unwrap().layout = json;
             dirty.extend(ids);

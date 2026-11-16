@@ -108,9 +108,38 @@ Item {
                     radius: 8
                     color: active ? ws.accent : (hover.hovered ? Qt.rgba(ws.fg.r, ws.fg.g, ws.fg.b, 0.2) : ws.dim)
 
+                    property bool editing: false
+                    function edit() {
+                        editing = true
+                        field.text = tab ? tab.name : ""
+                        field.forceActiveFocus()
+                        field.selectAll()
+                    }
                     HoverHandler { id: hover }
+                    // A rename sticks until it is cleared: an empty name takes the automatic one back.
+                    TextInput {
+                        id: field
+                        visible: pill.editing
+                        anchors.left: parent.left
+                        anchors.leftMargin: 10
+                        anchors.right: close.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: pill.active ? ws.bg : ws.fg
+                        selectionColor: ws.bg
+                        selectedTextColor: ws.fg
+                        font.pixelSize: 13
+                        clip: true
+                        onAccepted: {
+                            ws.ctl.renameTab(pill.modelData, text)
+                            pill.editing = false
+                            ws.focusPane()
+                        }
+                        Keys.onEscapePressed: { pill.editing = false; ws.focusPane() }
+                        onActiveFocusChanged: if (!activeFocus && pill.editing) pill.editing = false
+                    }
                     Text {
                         id: label
+                        visible: !pill.editing
                         anchors.left: parent.left
                         anchors.leftMargin: 10
                         anchors.right: close.left
@@ -126,6 +155,9 @@ Item {
                         onClicked: function (m) {
                             if (m.button === Qt.MiddleButton) ws.ctl.closeTab(pill.modelData)
                             else ws.ctl.focusTab(pill.modelData)
+                        }
+                        onDoubleClicked: function (m) {
+                            if (m.button === Qt.LeftButton) pill.edit()
                         }
                     }
                     // The only close control: shown on hover and on the active tab.
@@ -298,6 +330,58 @@ Item {
                     }
                 }
             }
+        }
+    }
+
+    // Search in the focused pane's scrollback: the match is selected and brought into view.
+    Rectangle {
+        id: findBar
+        readonly property bool open: ws.layout.find !== undefined && ws.layout.find.open
+        visible: open
+        z: 9
+        anchors.right: area.right
+        anchors.top: area.top
+        anchors.rightMargin: 12
+        anchors.topMargin: 8
+        width: 300
+        height: 32
+        radius: 8
+        color: ws.bg
+        border.width: 1
+        border.color: ws.accent
+        onOpenChanged: {
+            if (open) { findField.forceActiveFocus(); findField.selectAll() }
+            else ws.focusPane()
+        }
+        MouseArea { anchors.fill: parent }
+        TextInput {
+            id: findField
+            anchors.left: parent.left
+            anchors.leftMargin: 10
+            anchors.right: count.left
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            color: ws.fg
+            font.pixelSize: 13
+            clip: true
+            onTextEdited: ws.ctl.search(0, text)
+            Keys.onReturnPressed: function (e) { ws.ctl.search((e.modifiers & Qt.ShiftModifier) ? 2 : 1, "") }
+            Keys.onEnterPressed: function (e) { ws.ctl.search((e.modifiers & Qt.ShiftModifier) ? 2 : 1, "") }
+            Keys.onEscapePressed: ws.ctl.search(3, "")
+            Keys.onUpPressed: ws.ctl.search(2, "")
+            Keys.onDownPressed: ws.ctl.search(1, "")
+        }
+        Text {
+            id: count
+            anchors.right: parent.right
+            anchors.rightMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+            color: ws.fg
+            opacity: 0.7
+            font.pixelSize: 12
+            text: !findBar.open ? "" : findField.text.length === 0 ? ""
+                  : ws.layout.find.total === 0 ? "No matches"
+                  : ws.layout.find.pos + " / " + ws.layout.find.total
         }
     }
 
