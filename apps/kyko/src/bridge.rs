@@ -138,9 +138,36 @@ pub fn set_look(look: Look) {
 
 /// Serves `org.kyko.Terminal1` and routes its commands to the window.
 pub fn serve_bus() -> Result<(), String> {
-    let service =
-        crate::control::serve(|c| ffi::controller_send(c.code())).map_err(|e| e.to_string())?;
+    let service = crate::control::serve(|c| ffi::controller_send(c.code()), handle_request)
+        .map_err(|e| e.to_string())?;
     let _ = SERVICE.set(service);
+    Ok(())
+}
+
+/// `Run` and `NewTab` from the bus: a new tab in the window, then the window shown.
+fn handle_request(req: crate::control::Request) -> Result<(), String> {
+    use crate::control::Request;
+    let Some(w) = WORKSPACE.get() else {
+        return Err("kyko is still starting".into());
+    };
+    let act = match req {
+        Request::Run { command, cwd } => {
+            if !look().allow_run {
+                return Err("kyko has `advanced.allow_run` turned off".into());
+            }
+            kyko_core::runq::validate(&command).map_err(|e| e.to_string())?;
+            Act::Run {
+                command: Some(command),
+                cwd: kyko_core::runq::cwd(&cwd),
+            }
+        }
+        Request::NewTab { cwd } => Act::Run {
+            command: None,
+            cwd: kyko_core::runq::cwd(&cwd),
+        },
+    };
+    w.act(act);
+    ffi::controller_send(crate::control::Command::Show.code());
     Ok(())
 }
 

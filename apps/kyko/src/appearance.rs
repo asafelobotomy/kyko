@@ -28,6 +28,7 @@ pub struct Look {
     pub copy_on_select: bool,
     pub keys: Keys,
     pub hotkey: Option<KeySeq>,
+    pub allow_run: bool,
 }
 
 /// Where the config and uQ's tokens are, to watch them for changes.
@@ -87,5 +88,6 @@ pub fn load() -> Look {
         copy_on_select: config.terminal.copy_on_select,
         keys: config.keys.clone(),
         hotkey: config.hotkey,
+        allow_run: config.advanced.allow_run,
     }
 }

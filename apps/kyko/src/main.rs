@@ -46,6 +46,21 @@ enum Sub {
     Show,
     /// Hide the drop-down
     Hide,
+    /// Run a command in a new tab of the drop-down; the tab stays open after it ends
+    Run {
+        /// The command, as the shell would read it
+        #[arg(num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true, value_name = "COMMAND")]
+        command: Vec<String>,
+        /// Start in this folder
+        #[arg(long, short = 'd', value_name = "DIR")]
+        working_directory: Option<PathBuf>,
+    },
+    /// Open a new tab in the drop-down
+    NewTab {
+        /// Start in this folder
+        #[arg(long, short = 'd', value_name = "DIR")]
+        working_directory: Option<PathBuf>,
+    },
 }
 
 /// The shell, as the user chose it.
@@ -61,6 +76,23 @@ fn runtime_dir() -> PathBuf {
         .filter(|d| !d.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
+}
+
+/// The folder to send: the one given, else this process's own, else none.
+fn dir_arg(dir: Option<PathBuf>) -> String {
+    dir.or_else(|| std::env::current_dir().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn tab_request(request: control::Request) -> ExitCode {
+    match control::request(&request) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("kyko: {e}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 fn control(command: control::Command) -> ExitCode {
@@ -79,6 +111,25 @@ fn main() -> ExitCode {
         Some(Sub::Toggle) => return control(control::Command::Toggle),
         Some(Sub::Show) => return control(control::Command::Show),
         Some(Sub::Hide) => return control(control::Command::Hide),
+        Some(Sub::Run {
+            command,
+            working_directory,
+        }) => {
+            let command = command.join(" ");
+            if let Err(e) = kyko_core::runq::validate(&command) {
+                eprintln!("kyko: {e}");
+                return ExitCode::from(2);
+            }
+            return tab_request(control::Request::Run {
+                command,
+                cwd: dir_arg(working_directory),
+            });
+        }
+        Some(Sub::NewTab { working_directory }) => {
+            return tab_request(control::Request::NewTab {
+                cwd: dir_arg(working_directory),
+            });
+        }
         _ => {}
     }
     let dropdown = match cli.command {

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Run` and `NewTab` on `org.kyko.Terminal1`, and `kyko run [-d DIR] COMMAND` and
+  `kyko new-tab [-d DIR]`: a new tab in the drop-down that runs the command through the user's
+  shell (1 to 4096 bytes, no NUL) and stays open after it ends, showing its exit status; the
+  drop-down is shown. `advanced.allow_run = false` refuses `Run`.
+
 ## [0.1.0] - 2026-11-16
 
 The first usable kyko: a windowed terminal and a drop-down, with tabs and splits. Not yet the
