@@ -32,15 +32,20 @@ def rd(t):
     while time.time() < end:
         r, _, _ = select.select([fd], [], [], 0.2)
         if r:
-            try: buf += os.read(fd, 65536)
+            try: data = os.read(fd, 65536)
             except OSError: return
-rd(3)
+            buf += data
+            # fish 4 asks the terminal who it is (primary device attributes) and waits.
+            if b"\x1b[c" in data or b"\x1b[0c" in data:
+                os.write(fd, b"\x1b[?62;c")
+rd(4)
 for c in (b"true\r", b"false\r", b"exit\r"):
     os.write(fd, c); rd(1.5)
 missing = [n for n, m in [("prompt start", b"\x1b]133;A\x07"), ("input start", b"\x1b]133;B\x07"),
            ("command start", b"\x1b]133;C\x07"), ("status 0", b"\x1b]133;D;0\x07"),
            ("status 1", b"\x1b]133;D;1\x07"), ("folder", b"\x1b]7;file://")] if m not in buf]
 print(",".join(missing))
+if missing: print("output: " + repr(buf[-600:]), file=sys.stderr)
 PY
 )
     if [ -n "$out" ]; then echo "FAIL: $sh is missing marks: $out"; fail=1; else echo "$sh marks ok"; fi
