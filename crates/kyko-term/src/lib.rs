@@ -8,7 +8,9 @@ pub mod keys;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
@@ -40,6 +42,17 @@ pub struct Snapshot {
     pub cells: Vec<Cell>,
     /// Column and row, or `None` when the program hid the cursor.
     pub cursor: Option<(u16, u16)>,
+}
+
+/// What a mouse press starts selecting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectKind {
+    /// Cells between the press and the drag.
+    Simple,
+    /// A word: a double click.
+    Word,
+    /// Whole lines: a triple click.
+    Line,
 }
 
 /// A cursor shape, as a program set it.
@@ -284,6 +297,7 @@ impl Emulator {
         let mut cells = vec![blank; cols * rows];
         let content = term.renderable_content();
         let offset = content.display_offset as i32;
+        let selection = content.selection;
         for item in content.display_iter {
             let row = item.point.line.0 + offset;
             if row < 0 || row as usize >= rows || item.point.column.0 >= cols {
@@ -306,7 +320,9 @@ impl Emulator {
             }
             let mut fg = resolve(item.cell.fg, content.colors, colors);
             let mut bg = resolve(item.cell.bg, content.colors, colors);
-            if flags & INVERSE != 0 {
+            // A selected cell is drawn the other way round, an inverse cell back again.
+            let selected = selection.is_some_and(|r| r.contains(item.point));
+            if (flags & INVERSE != 0) != selected {
                 std::mem::swap(&mut fg, &mut bg);
             }
             let ch = if f.contains(Flags::HIDDEN) || item.cell.c == '\t' {
@@ -346,6 +362,56 @@ impl Emulator {
         if latest != self.title {
             self.title = latest;
         }
+    }
+
+    /// Moves the view `lines` up into the history (down when negative).
+    pub fn scroll(&mut self, lines: i32) {
+        self.term.scroll_display(Scroll::Delta(lines));
+    }
+
+    /// Back to the live screen.
+    pub fn scroll_to_bottom(&mut self) {
+        self.term.scroll_display(Scroll::Bottom);
+    }
+
+    /// How many lines the view is above the live screen.
+    pub fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
+    }
+
+    fn point(&self, col: u16, row: u16) -> Point {
+        let col = usize::from(col).min(self.term.columns().saturating_sub(1));
+        let row = i32::from(row).min(self.term.screen_lines() as i32 - 1);
+        Point::new(Line(row - self.display_offset() as i32), Column(col))
+    }
+
+    /// Starts a selection at a cell of the view; `right` is the cell's right half.
+    pub fn select_start(&mut self, col: u16, row: u16, kind: SelectKind, right: bool) {
+        let ty = match kind {
+            SelectKind::Simple => SelectionType::Simple,
+            SelectKind::Word => SelectionType::Semantic,
+            SelectKind::Line => SelectionType::Lines,
+        };
+        let side = if right { Side::Right } else { Side::Left };
+        self.term.selection = Some(Selection::new(ty, self.point(col, row), side));
+    }
+
+    /// Extends the selection to a cell of the view.
+    pub fn select_update(&mut self, col: u16, row: u16, right: bool) {
+        let side = if right { Side::Right } else { Side::Left };
+        let point = self.point(col, row);
+        if let Some(sel) = self.term.selection.as_mut() {
+            sel.update(point, side);
+        }
+    }
+
+    pub fn select_clear(&mut self) {
+        self.term.selection = None;
+    }
+
+    /// The selected text, `None` when nothing (or only an empty range) is selected.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term.selection_to_string().filter(|t| !t.is_empty())
     }
 
     /// Scrollback lines held.

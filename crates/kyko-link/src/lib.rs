@@ -94,6 +94,12 @@ impl Pane {
     pub fn emulator(&self) -> &Emulator {
         &self.emulator
     }
+
+    /// For the view's own state: scrolling and selecting. What a program printed is only ever
+    /// changed by [`Link::pump`].
+    pub fn emulator_mut(&mut self) -> &mut Emulator {
+        &mut self.emulator
+    }
 }
 
 pub struct Link {
@@ -189,6 +195,10 @@ impl Link {
 
     pub fn pane(&self, id: PaneId) -> Option<&Pane> {
         self.panes.get(&id)
+    }
+
+    pub fn pane_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
+        self.panes.get_mut(&id)
     }
 
     pub fn pane_ids(&self) -> Vec<PaneId> {

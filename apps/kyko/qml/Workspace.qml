@@ -241,16 +241,6 @@ Item {
                     onActiveFocusChanged: if (activeFocus && !cell.isFocused) ws.ctl.focusPane(cell.modelData)
                     Component.onCompleted: if (cell.isFocused) forceActiveFocus()
                 }
-                // A click focuses the pane; the grid still gets it.
-                MouseArea {
-                    anchors.fill: parent
-                    acceptedButtons: Qt.LeftButton
-                    onPressed: function (m) {
-                        ws.ctl.focusPane(cell.modelData)
-                        grid.forceActiveFocus()
-                        m.accepted = false
-                    }
-                }
                 // A pane that ended while held open, or never started.
                 Rectangle {
                     visible: cell.info !== null && cell.info.state !== "running"
@@ -305,6 +295,63 @@ Item {
                         var d = div.info
                         var r = div.side ? (p.x / area.width - d.x) / d.w : (p.y / area.height - d.y) / d.h
                         ws.ctl.setRatio(d.tab, d.path, r)
+                    }
+                }
+            }
+        }
+    }
+
+    // Closing something that is still running asks first.
+    Rectangle {
+        id: confirm
+        readonly property bool asking: ws.layout.confirm !== null && ws.layout.confirm !== undefined
+        visible: asking
+        z: 10
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 32, 420)
+        height: ask.implicitHeight + 32
+        radius: 10
+        color: ws.bg
+        border.width: 1
+        border.color: ws.accent
+        focus: asking
+        onAskingChanged: if (asking) forceActiveFocus(); else ws.focusPane()
+        Keys.onReturnPressed: ws.ctl.confirm(true)
+        Keys.onEnterPressed: ws.ctl.confirm(true)
+        Keys.onEscapePressed: ws.ctl.confirm(false)
+        // Swallows clicks meant for the panes behind.
+        MouseArea { anchors.fill: parent }
+        Column {
+            id: ask
+            anchors.centerIn: parent
+            width: parent.width - 32
+            spacing: 12
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                color: ws.fg
+                font.pixelSize: 14
+                text: !confirm.asking ? "" : "Close this " + ws.layout.confirm.what + "? "
+                      + ws.layout.confirm.programs + " is still running in it."
+            }
+            Row {
+                spacing: 8
+                anchors.right: parent.right
+                Repeater {
+                    model: [{ label: "Keep it", yes: false }, { label: "Close", yes: true }]
+                    delegate: Rectangle {
+                        required property var modelData
+                        width: 90
+                        height: 28
+                        radius: 8
+                        color: modelData.yes ? ws.accent : ws.dim
+                        Text {
+                            anchors.centerIn: parent
+                            color: parent.modelData.yes ? ws.bg : ws.fg
+                            font.pixelSize: 13
+                            text: parent.modelData.label
+                        }
+                        MouseArea { anchors.fill: parent; onClicked: ws.ctl.confirm(parent.modelData.yes) }
                     }
                 }
             }

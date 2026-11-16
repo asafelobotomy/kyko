@@ -214,3 +214,42 @@ fn queries_after_a_replay_are_still_answered() {
     e.feed(b"\x1b[6n");
     assert!(!e.take_replies().is_empty());
 }
+
+#[test]
+fn scrolling_moves_the_view_into_the_history_and_back() {
+    let mut e = Emulator::new(20, 3, 100);
+    for n in 0..10 {
+        e.feed(format!("line {n}\r\n").as_bytes());
+    }
+    assert_eq!(e.display_offset(), 0);
+    e.scroll(2);
+    assert_eq!(e.display_offset(), 2);
+    let top = e.snapshot(&GRUVBOX).cells[..6]
+        .iter()
+        .map(|c| c.ch)
+        .collect::<String>();
+    assert!(top.starts_with("line"), "{top:?}");
+    e.scroll(1000);
+    assert_eq!(e.display_offset(), e.history_len());
+    e.scroll_to_bottom();
+    assert_eq!(e.display_offset(), 0);
+}
+
+#[test]
+fn a_drag_selects_text_and_a_double_click_selects_a_word() {
+    let mut e = Emulator::new(30, 3, 100);
+    e.feed(b"hello brave world");
+    e.select_start(6, 0, kyko_term::SelectKind::Simple, false);
+    e.select_update(10, 0, true);
+    assert_eq!(e.selection_text().as_deref(), Some("brave"));
+    // The selected cells are drawn the other way round.
+    let snap = e.snapshot(&GRUVBOX);
+    assert_eq!(snap.cells[6].bg, GRUVBOX.fg);
+    assert_eq!(snap.cells[0].bg, GRUVBOX.bg);
+    e.select_clear();
+    assert_eq!(e.selection_text(), None);
+    e.select_start(13, 0, kyko_term::SelectKind::Word, false);
+    assert_eq!(e.selection_text().as_deref(), Some("world"));
+    e.select_start(2, 0, kyko_term::SelectKind::Line, false);
+    assert!(e.selection_text().unwrap().starts_with("hello brave world"));
+}

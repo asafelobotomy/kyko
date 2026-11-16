@@ -3,6 +3,7 @@
 #include <QtCore/QPointer>
 #include <QtGui/QFontMetricsF>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QClipboard>
 #include <QtGui/QInputMethodEvent>
 #include <QtGui/QKeyEvent>
 #include <QtGui/QPainter>
@@ -13,6 +14,7 @@
 #include <QtQuick/QSGMaterialShader>
 #include <QtQuick/QSGTexture>
 #include <QtQuick/QSGVertexColorMaterial>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -156,6 +158,22 @@ void grid_request_repaint() {
             QMetaObject::invokeMethod(v, [v] { v->update(); }, Qt::QueuedConnection);
 }
 
+void controller_copy(rust::Str text) {
+    const QString s = QString::fromUtf8(text.data(), int(text.size()));
+    QMetaObject::invokeMethod(qApp, [s] { QGuiApplication::clipboard()->setText(s); }, Qt::QueuedConnection);
+}
+
+void controller_paste(quint32 pane) {
+    QMetaObject::invokeMethod(
+        qApp,
+        [pane] {
+            const std::string s = QGuiApplication::clipboard()->text().toStdString();
+            if (!s.empty())
+                kyko_paste(pane, rust::Str(s.data(), s.size()));
+        },
+        Qt::QueuedConnection);
+}
+
 void controller_layout_changed() {
     if (Controller* c = g_ctl)
         QMetaObject::invokeMethod(c, [c] { Q_EMIT c->layoutChanged(); }, Qt::QueuedConnection);
@@ -203,6 +221,7 @@ QString str(const rust::String& s) { return QString::fromUtf8(s.data(), int(s.si
 }  // namespace
 
 QString Controller::layout() const { return str(kyko_layout()); }
+void Controller::confirm(bool yes) const { kyko_confirm(yes); }
 QString Controller::shot() const { return str(kyko_test_shot()); }
 int Controller::shotDelay() const {
     const int ms = qEnvironmentVariableIntValue("KYKO_TEST_MS");
@@ -232,6 +251,8 @@ GridView::GridView(QQuickItem* parent) : QQuickItem(parent) {
     setFlag(ItemHasContents, true);
     setFlag(ItemAcceptsInputMethod, true);
     setActiveFocusOnTab(true);
+    setAcceptedMouseButtons(Qt::LeftButton | Qt::MiddleButton | Qt::RightButton);
+    setAcceptHoverEvents(true);
     g_views.append(this);
     applyFont();
     m_atlas = QImage(ATLAS, ATLAS, QImage::Format_ARGB32_Premultiplied);
@@ -403,6 +424,67 @@ QSGNode* GridView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     }
     gn->markDirty(QSGNode::DirtyGeometry);
     return root;
+}
+
+void GridView::sendMouse(quint8 kind, quint8 button, const QPointF& pos, Qt::KeyboardModifiers mods, quint8 clicks) {
+    if (m_pane <= 0 || m_cols == 0 || m_rows == 0)
+        return;
+    const int col = std::clamp(int(pos.x() / m_cellW), 0, m_cols - 1);
+    const int row = std::clamp(int(pos.y() / m_cellH), 0, m_rows - 1);
+    const bool right = (pos.x() - col * m_cellW) * 2 >= m_cellW;
+    quint8 m = 0;
+    if (mods & Qt::ShiftModifier) m |= 1;
+    if (mods & Qt::AltModifier) m |= 2;
+    if (mods & Qt::ControlModifier) m |= 4;
+    kyko_mouse(quint32(m_pane), kind, button, quint16(col), quint16(row), right, m, clicks);
+}
+
+static quint8 buttonCode(Qt::MouseButton b) {
+    return b == Qt::LeftButton ? 0 : b == Qt::MiddleButton ? 1 : b == Qt::RightButton ? 2 : 3;
+}
+
+void GridView::mousePressEvent(QMouseEvent* e) {
+    forceActiveFocus();
+    const QPoint cell(int(e->position().x() / m_cellW), int(e->position().y() / m_cellH));
+    const qint64 now = e->timestamp();
+    m_clicks = (now - m_lastPress < 400 && cell == m_lastCell && m_clicks < 3) ? m_clicks + 1 : 1;
+    m_lastPress = now;
+    m_lastCell = cell;
+    m_down |= e->button();
+    sendMouse(0, buttonCode(e->button()), e->position(), e->modifiers(), quint8(m_clicks));
+    e->accept();
+}
+
+void GridView::mouseMoveEvent(QMouseEvent* e) {
+    const Qt::MouseButton b = (m_down & Qt::LeftButton) ? Qt::LeftButton : (m_down & Qt::MiddleButton) ? Qt::MiddleButton : Qt::RightButton;
+    sendMouse(1, buttonCode(b), e->position(), e->modifiers(), 0);
+    e->accept();
+}
+
+void GridView::mouseReleaseEvent(QMouseEvent* e) {
+    m_down &= ~Qt::MouseButtons(e->button());
+    sendMouse(2, buttonCode(e->button()), e->position(), e->modifiers(), 0);
+    e->accept();
+}
+
+void GridView::hoverMoveEvent(QHoverEvent* e) {
+    // Only programs asking for all motion hear this; Rust drops it for the rest.
+    if (m_down == Qt::NoButton)
+        sendMouse(1, 3, e->position(), e->modifiers(), 0);
+}
+
+void GridView::wheelEvent(QWheelEvent* e) {
+    // Whole notches: a touchpad's small steps add up until they make one.
+    m_wheel += e->angleDelta().y();
+    while (m_wheel >= 120) {
+        sendMouse(3, 0, e->position(), e->modifiers(), 0);
+        m_wheel -= 120;
+    }
+    while (m_wheel <= -120) {
+        sendMouse(3, 1, e->position(), e->modifiers(), 0);
+        m_wheel += 120;
+    }
+    e->accept();
 }
 
 void GridView::focusInEvent(QFocusEvent* e) {

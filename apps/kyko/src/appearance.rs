@@ -24,6 +24,7 @@ pub struct Look {
     pub tabs_bottom: bool,
     pub new_tab_dir: NewTabDir,
     pub scrollback: usize,
+    pub copy_on_select: bool,
     pub keys: Keys,
 }
 
@@ -81,6 +82,7 @@ pub fn load() -> Look {
         tabs_bottom: w.tabs == TabsAt::Bottom,
         new_tab_dir: config.terminal.new_tab_dir,
         scrollback: config.terminal.scrollback as usize,
+        copy_on_select: config.terminal.copy_on_select,
         keys: config.keys.clone(),
     }
 }
