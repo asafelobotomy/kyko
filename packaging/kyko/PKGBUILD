@@ -11,8 +11,8 @@ pkgdesc="Drop-down terminal for uQ and other Wayland desktops"
 arch=(x86_64)
 url="https://github.com/asafelobotomy/kyko"
 license=(MIT)
-depends=(gcc-libs)
-makedepends=(cargo)
+depends=(gcc-libs qt6-base qt6-declarative)
+makedepends=(cargo qt6-shadertools)
 # The end-to-end tests run less as their full-screen program.
 checkdepends=(less)
 options=(!lto)

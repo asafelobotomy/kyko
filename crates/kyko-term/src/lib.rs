@@ -3,6 +3,7 @@
 //! (`feed`), a grid snapshot comes out (`snapshot`), and what the terminal must answer to the
 //! shell (cursor position reports and the like) is collected by `take_replies`.
 mod colors;
+pub mod keys;
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
