@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- uQ's Spotlight lists kyko's open tabs: kyko serves `org.uq.Launcher1.Provider` at
+  `/org/uq/Launcher1` and installs `/usr/share/uq/launcher/kyko.provider`. `Search` matches tab
+  names and programs (at most 20); `Activate` only focuses a tab kyko returned and never runs a
+  command. `ListTabs` and `FocusTab` are on `org.kyko.Terminal1` too.
 - `Run` and `NewTab` on `org.kyko.Terminal1`, and `kyko run [-d DIR] COMMAND` and
   `kyko new-tab [-d DIR]`: a new tab in the drop-down that runs the command through the user's
   shell (1 to 4096 bytes, no NUL) and stays open after it ends, showing its exit status; the

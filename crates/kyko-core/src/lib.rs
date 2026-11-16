@@ -6,6 +6,7 @@ pub mod layout;
 pub mod paths;
 pub mod runq;
 pub mod session;
+pub mod tabsearch;
 pub mod theme;
 
 /// A problem with one setting or one field, which fell back to its default. The window logs

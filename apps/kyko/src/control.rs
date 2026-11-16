@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use kyko_core::tabsearch::{self, TabInfo};
 use zbus::object_server::SignalEmitter;
 use zbus::{
     Connection, connection,
@@ -11,6 +12,7 @@ use zbus::{
 
 pub const NAME: &str = "org.kyko.Terminal1";
 pub const PATH: &str = "/org/kyko/Terminal1";
+pub const LAUNCHER_PATH: &str = "/org/uq/Launcher1";
 
 /// What the bus asks of the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,37 +50,104 @@ pub enum Request {
     NewTab { cwd: String },
 }
 
+/// What the window answers the bus with.
+pub trait Host: Send + Sync + 'static {
+    fn command(&self, command: Command);
+    fn request(&self, request: Request) -> Result<(), String>;
+    /// The open tabs.
+    fn tabs(&self) -> Vec<TabInfo>;
+    /// Focuses and shows a tab; false when there is no such tab.
+    fn focus_tab(&self, id: u32) -> bool;
+}
+
 struct Terminal {
     visible: Arc<AtomicBool>,
-    send: Box<dyn Fn(Command) + Send + Sync>,
-    request: Box<dyn Fn(Request) -> Result<(), String> + Send + Sync>,
+    host: Arc<dyn Host>,
 }
 
 #[zbus::interface(name = "org.kyko.Terminal1")]
 impl Terminal {
     fn toggle(&self) {
-        (self.send)(Command::Toggle);
+        self.host.command(Command::Toggle);
     }
 
     fn show(&self) {
-        (self.send)(Command::Show);
+        self.host.command(Command::Show);
     }
 
     fn hide(&self) {
-        (self.send)(Command::Hide);
+        self.host.command(Command::Hide);
     }
 
     fn run(&self, command: String, cwd: String) -> zbus::fdo::Result<()> {
-        (self.request)(Request::Run { command, cwd }).map_err(zbus::fdo::Error::InvalidArgs)
+        self.host
+            .request(Request::Run { command, cwd })
+            .map_err(zbus::fdo::Error::InvalidArgs)
     }
 
     fn new_tab(&self, cwd: String) -> zbus::fdo::Result<()> {
-        (self.request)(Request::NewTab { cwd }).map_err(zbus::fdo::Error::InvalidArgs)
+        self.host
+            .request(Request::NewTab { cwd })
+            .map_err(zbus::fdo::Error::InvalidArgs)
+    }
+
+    /// `a(uss)`: id, name, the foreground program.
+    fn list_tabs(&self) -> Vec<(u32, String, String)> {
+        self.host
+            .tabs()
+            .into_iter()
+            .map(|t| (t.id, t.name, t.program))
+            .collect()
+    }
+
+    fn focus_tab(&self, id: u32) -> zbus::fdo::Result<()> {
+        if self.host.focus_tab(id) {
+            Ok(())
+        } else {
+            Err(zbus::fdo::Error::InvalidArgs(format!("no tab {id}")))
+        }
     }
 
     #[zbus(property)]
     fn visible(&self) -> bool {
         self.visible.load(Ordering::SeqCst)
+    }
+}
+
+/// kyko as a uQ launcher provider: Spotlight lists the open tabs (this never runs a command).
+struct Provider {
+    host: Arc<dyn Host>,
+}
+
+#[zbus::interface(name = "org.uq.Launcher1.Provider")]
+impl Provider {
+    /// `a(sssssd)`: id, title, subtitle, icon, actions (JSON list), score.
+    fn search(&self, query: String) -> Vec<(String, String, String, String, String, f64)> {
+        tabsearch::search(&self.host.tabs(), &query)
+            .into_iter()
+            .map(|h| {
+                (
+                    h.id.to_string(),
+                    h.title,
+                    h.subtitle,
+                    "utilities-terminal".to_string(),
+                    "[]".to_string(),
+                    h.score,
+                )
+            })
+            .collect()
+    }
+
+    /// Only an id that `search` returned for a tab that still exists; it only focuses the tab.
+    fn activate(&self, id: String, _action: String) -> zbus::fdo::Result<()> {
+        let id: u32 = id
+            .parse()
+            .map_err(|_| zbus::fdo::Error::InvalidArgs("not a tab id".into()))?;
+        if self.host.focus_tab(id) {
+            Ok(())
+        } else {
+            Err(zbus::fdo::Error::InvalidArgs(format!("no tab {id}")))
+        }
     }
 }
 
@@ -89,19 +158,17 @@ pub struct Service {
 }
 
 /// Takes the name and serves the object, or says why not (another kyko already owns it).
-pub fn serve(
-    send: impl Fn(Command) + Send + Sync + 'static,
-    request: impl Fn(Request) -> Result<(), String> + Send + Sync + 'static,
-) -> zbus::Result<Service> {
+pub fn serve(host: Arc<dyn Host>) -> zbus::Result<Service> {
     let visible = Arc::new(AtomicBool::new(false));
     let iface = Terminal {
         visible: visible.clone(),
-        send: Box::new(send),
-        request: Box::new(request),
+        host: host.clone(),
     };
+    let provider = Provider { host };
     let connection = zbus::block_on(async {
         connection::Builder::session()
             .serve_at(PATH, iface)
+            .serve_at(LAUNCHER_PATH, provider)
             .build()
             .await
     })?;
