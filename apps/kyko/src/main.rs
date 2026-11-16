@@ -121,6 +121,7 @@ fn main() -> ExitCode {
         shell,
         args,
         cwd,
+        login_shell: login_shell(),
         persistent: dropdown.is_some(),
     };
     bridge::configure(
@@ -138,6 +139,7 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(1);
     }
+    bridge::start();
     watch::spawn(appearance::watched_files(), || {
         bridge::set_look(appearance::load())
     });

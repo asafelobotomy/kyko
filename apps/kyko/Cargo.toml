@@ -16,6 +16,7 @@ kyko-core.workspace = true
 kyko-link = { path = "../../crates/kyko-link" }
 kyko-proto = { path = "../../crates/kyko-proto" }
 kyko-term = { path = "../../crates/kyko-term" }
+serde_json = "1"
 
 [build-dependencies]
 cxx-qt-build = "0.10"

@@ -602,6 +602,7 @@ dependencies = [
  "kyko-link",
  "kyko-proto",
  "kyko-term",
+ "serde_json",
  "tempfile",
  "zbus",
 ]

@@ -72,6 +72,7 @@ fn main() {
     let builder = CxxQtBuilder::new_qml_module(QmlModule::new("org.kyko.app").qml_files([
         QmlFile::from("qml/Main.qml"),
         QmlFile::from("qml/DropDown.qml"),
+        QmlFile::from("qml/Workspace.qml"),
     ]))
     .qt_module("Gui")
     .qt_module("Quick")

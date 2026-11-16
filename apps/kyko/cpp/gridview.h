@@ -20,11 +20,29 @@ public:
     Q_INVOKABLE int setting(const QString& name) const;
     // The window's visibility, for the bus's Visible property.
     Q_INVOKABLE void setVisible(bool visible) const;
+    // The tabs as JSON: {active, focused, title, notice, tabs: [{id, name, active, panes, dividers}]}.
+    Q_INVOKABLE QString layout() const;
+    // The tab bar's buttons and mouse: by the action's name in [keys], and by tab, pane and divider.
+    Q_INVOKABLE void action(const QString& name) const;
+    Q_INVOKABLE void focusPane(int pane) const;
+    Q_INVOKABLE void focusTab(int tab) const;
+    Q_INVOKABLE void closeTab(int tab) const;
+    Q_INVOKABLE void closePane(int pane) const;
+    Q_INVOKABLE void dismiss(int pane) const;
+    Q_INVOKABLE void setRatio(int tab, const QString& path, double ratio) const;
+    Q_INVOKABLE void renameTab(int tab, const QString& name) const;
+    Q_INVOKABLE QString fixedTitle() const;
+    // Test aid: where to save the window's screen (KYKO_TEST_SHOT), and after how many ms.
+    Q_INVOKABLE QString shot() const;
+    Q_INVOKABLE int shotDelay() const;
 
 Q_SIGNALS:
-    // 0 toggle, 1 show, 2 hide: from `kyko toggle`, `show` and `hide` over D-Bus.
+    // 0 toggle, 1 show, 2 hide: from `kyko toggle`, `show` and `hide` over D-Bus; 3 quit: a
+    // windowed kyko has nothing left to show.
     void command(int code);
     void lookChanged();
+    // The tabs, panes or their names changed: read layout() again.
+    void layoutChanged();
 };
 
 // One pane's grid, drawn with scene-graph nodes and a glyph atlas (spec 2.4), and the keyboard
@@ -33,33 +51,27 @@ class GridView : public QQuickItem {
     Q_OBJECT
     Q_PROPERTY(int cols READ cols NOTIFY gridChanged)
     Q_PROPERTY(int rows READ rows NOTIFY gridChanged)
-    // The foreground program, and what to say when something went wrong; empty when nothing.
-    Q_PROPERTY(QString title READ title NOTIFY statusChanged)
-    Q_PROPERTY(QString notice READ notice NOTIFY statusChanged)
-    // The shell's exit status, or -1 while it runs.
+    // Which pane of the session this item shows; set once by QML.
+    Q_PROPERTY(int pane READ pane WRITE setPane NOTIFY paneChanged)
     Q_PROPERTY(QString shot READ shot CONSTANT)
     Q_PROPERTY(int shotDelay READ shotDelay CONSTANT)
-    Q_PROPERTY(int exitStatus READ exitStatus NOTIFY statusChanged)
 
 public:
     explicit GridView(QQuickItem* parent = nullptr);
     ~GridView() override;
     int cols() const { return m_cols; }
     int rows() const { return m_rows; }
-    QString title() const { return m_title; }
-    QString notice() const { return m_notice; }
-    int exitStatus() const { return m_exit; }
+    int pane() const { return m_pane; }
+    void setPane(int pane);
     QString shot() const;
     int shotDelay() const { return qEnvironmentVariableIntValue("KYKO_TEST_MS") > 0 ? qEnvironmentVariableIntValue("KYKO_TEST_MS") : 1500; }
-    // Reads the title, notice and exit status from Rust; emits statusChanged when one changed.
-    void refreshStatus();
     // The cell size in pixels, for sizing a window to a number of columns and rows.
     Q_INVOKABLE qreal cellWidth() const { return m_cellW; }
     Q_INVOKABLE qreal cellHeight() const { return m_cellH; }
 
 Q_SIGNALS:
     void gridChanged();
-    void statusChanged();
+    void paneChanged();
 
 protected:
     QSGNode* updatePaintNode(QSGNode* old, UpdatePaintNodeData*) override;
@@ -75,6 +87,8 @@ public:
 
 private:
     void applyFont();
+    // Tells Rust how many columns and rows fit, when that changed.
+    void fit();
 
 private:
     struct Slot {
@@ -87,8 +101,7 @@ private:
     qreal m_cellW = 8, m_cellH = 16, m_ascent = 12;
     int m_cols = 0, m_rows = 0;
     int m_curX = -1, m_curY = -1;
-    QString m_title, m_notice;
-    int m_exit = -1;
+    int m_pane = 0;
 
     QImage m_atlas;
     QHash<quint64, Slot> m_slots;
@@ -103,6 +116,8 @@ void grid_request_repaint();
 void app_set_id(rust::Str id);
 // Delivers a bus command to the controller, on the GUI thread, from any thread.
 void controller_send(int code);
+// The layout changed: tells the controller, on the GUI thread, from any thread.
+void controller_layout_changed();
 // The look changed: asks the item and the controller to reload, on the GUI thread.
 void grid_reload_look();
 // Registers GridView with QML as org.kyko.app.GridView.

@@ -1,123 +1,152 @@
-//! One pane's life, with no Qt: a thread owns the link to `kykod`, takes input and resizes
-//! from the window over a channel, and publishes the screen as a [`Frame`] the window draws.
+//! The window's side of the sessions, with no Qt: one thread owns the link to `kykod` and the
+//! [`kyko_core::session::Session`] (tabs, split trees, focus), takes input, resizes and actions
+//! from the window over a channel, and publishes each pane's screen as a [`Frame`] and the tab
+//! layout as JSON the QML draws.
+use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use kyko_core::config::Action;
+use kyko_core::keys::{Key, Mods};
+use kyko_core::session::{Dir, Effect, PaneState, Session, SpawnRequest, SplitAxis};
 use kyko_link::{Event, Link, LinkError};
-use kyko_proto::SpawnSpec;
+use kyko_proto::{PaneId, PaneInfo, SpawnSpec};
 use kyko_term::{Colors, Snapshot};
+
+use crate::appearance::Look;
 
 /// The colours the next snapshot is resolved with; the window swaps them on a theme change.
 pub type SharedColors = Arc<Mutex<Colors>>;
+/// What the window's look says about tabs and keys, read when it is needed.
+pub type SharedLook = Arc<Mutex<Look>>;
 
-/// What the window draws.
+/// What the window draws for one pane.
 #[derive(Clone)]
 pub struct Frame {
     pub snapshot: Option<Snapshot>,
     pub app_cursor: bool,
-    pub bracketed_paste: bool,
-    /// The program in the foreground, for the window title.
-    pub program: String,
-    pub exited: Option<i32>,
+}
+
+/// What the window reads: the panes' frames and the tab layout.
+#[derive(Default)]
+pub struct Shared {
+    pub frames: HashMap<PaneId, Frame>,
+    /// The tabs as JSON, see [`layout_json`].
+    pub layout: String,
+    pub focused: PaneId,
+    /// The status of the last pane to end, once the window has nothing left to show.
+    pub exit: Option<i32>,
     /// Set when `kykod` cannot be reached or went away; the window says so.
     pub notice: Option<String>,
 }
 
-impl Frame {
-    fn new() -> Frame {
-        Frame {
-            snapshot: None,
-            app_cursor: false,
-            bracketed_paste: false,
-            program: String::new(),
-            exited: None,
-            notice: None,
-        }
-    }
-}
-
 enum Cmd {
-    Input(Vec<u8>),
-    Resize(u16, u16),
+    Input(PaneId, Vec<u8>),
+    Resize(PaneId, u16, u16),
     Redraw,
+    Act(Act),
     End,
 }
 
-pub struct Session {
+/// What the window asks of the tabs.
+#[derive(Clone, Debug)]
+pub enum Act {
+    Key(Action),
+    FocusPane(PaneId),
+    FocusTab(u32),
+    CloseTab(u32),
+    ClosePane(PaneId),
+    Ratio(u32, Vec<bool>, f64),
+    Rename(u32, Option<String>),
+    Dismiss(PaneId),
+}
+
+pub struct Workspace {
     tx: Sender<Cmd>,
     colors: SharedColors,
-    pub frame: Arc<Mutex<Frame>>,
+    pub shared: Arc<Mutex<Shared>>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
-/// What to run in the pane.
+/// What to run in the first pane.
 pub struct Launch {
     pub shell: String,
     pub args: Vec<String>,
     pub cwd: String,
-    /// The holder outlives this window (the drop-down's): the pane is attached again when it is
-    /// still there, a lost connection is retried, and closing the window ends nothing.
+    /// The shell for the panes the user opens later (`$SHELL`).
+    pub login_shell: String,
+    /// The holder outlives this window (the drop-down's): the tabs are restored from it, a lost
+    /// connection is retried, and closing the window ends nothing.
     pub persistent: bool,
 }
 
-impl Session {
-    /// Starts the pane's thread. `on_change` is called from it whenever the frame changed.
+/// The window's links to the thread that do not need `Look` locked on the thread.
+struct Ctx {
+    socket: PathBuf,
+    launch: Launch,
+    colors: SharedColors,
+    look: SharedLook,
+    shared: Arc<Mutex<Shared>>,
+    on_frames: Box<dyn Fn() + Send>,
+    on_layout: Box<dyn Fn() + Send>,
+    on_hide: Box<dyn Fn() + Send>,
+    on_quit: Box<dyn Fn() + Send>,
+}
+
+impl Workspace {
+    /// Starts the thread. The callbacks run on it: `on_frames` when a pane's screen changed,
+    /// `on_layout` when the tabs did, `on_hide` when the drop-down should hide (its last tab
+    /// closed), `on_quit` when a windowed kyko has nothing left to show.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         socket: PathBuf,
         launch: Launch,
-        cols: u16,
-        rows: u16,
-        colors: Colors,
-        on_change: Box<dyn Fn() + Send>,
-    ) -> Session {
+        look: SharedLook,
+        on_frames: Box<dyn Fn() + Send>,
+        on_layout: Box<dyn Fn() + Send>,
+        on_hide: Box<dyn Fn() + Send>,
+        on_quit: Box<dyn Fn() + Send>,
+    ) -> Workspace {
         let (tx, rx) = channel();
-        let frame = Arc::new(Mutex::new(Frame::new()));
-        let shared = frame.clone();
-        let colors = Arc::new(Mutex::new(colors));
-        let thread_colors = colors.clone();
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let colors: SharedColors = Arc::new(Mutex::new(look.lock().unwrap().colors.clone()));
+        let ctx = Ctx {
+            socket,
+            launch,
+            colors: colors.clone(),
+            look,
+            shared: shared.clone(),
+            on_frames,
+            on_layout,
+            on_hide,
+            on_quit,
+        };
         let thread = std::thread::Builder::new()
             .name("kyko-link".into())
-            .spawn(move || {
-                let persistent = launch.persistent;
-                let mut size = (cols, rows);
-                loop {
-                    let outcome = run(
-                        &socket,
-                        &launch,
-                        &mut size,
-                        &thread_colors,
-                        &rx,
-                        &shared,
-                        &*on_change,
-                    );
-                    match outcome {
-                        Err(Stop::Link(e)) => {
-                            shared.lock().unwrap().notice =
-                                Some(format!("Sessions aren't available: {e}"));
-                            on_change();
-                            // The shared holder may come back (it restarts on failure): try again.
-                            if !persistent || wait_or_end(&rx, &mut size, Duration::from_secs(2)) {
-                                break;
-                            }
-                        }
-                        Err(Stop::Window) | Ok(()) => break,
-                    }
-                }
-            })
+            .spawn(move || thread_main(ctx, rx))
             .expect("thread starts");
-        Session {
+        Workspace {
             tx,
             colors,
-            frame,
+            shared,
             thread: Mutex::new(Some(thread)),
         }
     }
 
-    pub fn input(&self, bytes: Vec<u8>) {
-        let _ = self.tx.send(Cmd::Input(bytes));
+    pub fn input(&self, pane: PaneId, bytes: Vec<u8>) {
+        let _ = self.tx.send(Cmd::Input(pane, bytes));
+    }
+
+    pub fn resize(&self, pane: PaneId, cols: u16, rows: u16) {
+        let _ = self.tx.send(Cmd::Resize(pane, cols, rows));
+    }
+
+    pub fn act(&self, act: Act) {
+        let _ = self.tx.send(Cmd::Act(act));
     }
 
     /// Draws with these colours from the next change on, and asks for one.
@@ -126,16 +155,12 @@ impl Session {
         let _ = self.tx.send(Cmd::Redraw);
     }
 
-    pub fn resize(&self, cols: u16, rows: u16) {
-        let _ = self.tx.send(Cmd::Resize(cols, rows));
-    }
-
-    /// Tells the thread to end the pane's shell and `kykod` with it.
+    /// Tells the thread to end the sessions (a windowed kyko) and stop.
     pub fn request_end(&self) {
         let _ = self.tx.send(Cmd::End);
     }
 
-    /// Waits for the thread to finish, after [`Session::request_end`].
+    /// Waits for the thread to finish, after [`Workspace::request_end`].
     pub fn wait(&self) {
         if let Some(t) = self.thread.lock().unwrap().take() {
             let _ = t.join();
@@ -145,7 +170,7 @@ impl Session {
 
 /// Why [`run`] stopped.
 enum Stop {
-    /// The window is closing.
+    /// The window is closing, or has nothing left to show.
     Window,
     Link(LinkError),
 }
@@ -156,14 +181,30 @@ impl From<LinkError> for Stop {
     }
 }
 
-/// Waits `d` for commands while there is no link, keeping the latest size; true when the window
+fn thread_main(ctx: Ctx, rx: Receiver<Cmd>) {
+    let mut sizes: HashMap<PaneId, (u16, u16)> = HashMap::new();
+    let mut session: Option<Session> = None;
+    // Only a lost link brings another try; anything else ends the thread.
+    while let Err(Stop::Link(e)) = run(&ctx, &rx, &mut sizes, &mut session) {
+        ctx.shared.lock().unwrap().notice = Some(format!("Sessions aren't available: {e}"));
+        (ctx.on_layout)();
+        // The shared holder may come back (it restarts on failure): try again.
+        if !ctx.launch.persistent || wait_or_end(&rx, &mut sizes, Duration::from_secs(2)) {
+            break;
+        }
+    }
+}
+
+/// Waits `d` for commands while there is no link, keeping the latest sizes; true when the window
 /// asked to end.
-fn wait_or_end(rx: &Receiver<Cmd>, size: &mut (u16, u16), d: Duration) -> bool {
+fn wait_or_end(rx: &Receiver<Cmd>, sizes: &mut HashMap<PaneId, (u16, u16)>, d: Duration) -> bool {
     let end = Instant::now() + d;
     while let Some(left) = end.checked_duration_since(Instant::now()) {
         match rx.recv_timeout(left) {
             Ok(Cmd::End) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return true,
-            Ok(Cmd::Resize(c, r)) => *size = (c, r),
+            Ok(Cmd::Resize(p, c, r)) => {
+                sizes.insert(p, (c, r));
+            }
             Ok(_) => {}
             Err(_) => break,
         }
@@ -171,112 +212,358 @@ fn wait_or_end(rx: &Receiver<Cmd>, size: &mut (u16, u16), d: Duration) -> bool {
     false
 }
 
-fn publish(link: &Link, pane: u32, colors: &Mutex<Colors>, frame: &Mutex<Frame>) {
-    if let Some(p) = link.pane(pane) {
-        let modes = p.emulator().modes();
-        let snapshot = p.emulator().snapshot(&colors.lock().unwrap());
-        let mut f = frame.lock().unwrap();
-        f.snapshot = Some(snapshot);
-        f.app_cursor = modes.app_cursor;
-        f.bracketed_paste = modes.bracketed_paste;
-        f.program.clone_from(&p.program);
-        f.exited = p.exited;
-        f.notice = None;
+fn qt_key(key: u32, text: &str) -> Option<Key> {
+    Some(match key {
+        0x0100_0012 => Key::Left,
+        0x0100_0013 => Key::Up,
+        0x0100_0014 => Key::Right,
+        0x0100_0015 => Key::Down,
+        0x0100_0016 => Key::PgUp,
+        0x0100_0017 => Key::PgDn,
+        0x0100_0010 => Key::Home,
+        0x0100_0011 => Key::End,
+        0x0100_0006 => Key::Insert,
+        0x0100_0007 => Key::Delete,
+        0x0100_0001 => Key::Tab,
+        0x0100_0004 | 0x0100_0005 => Key::Enter,
+        0x0100_0000 => Key::Esc,
+        0x0100_0003 => Key::Backspace,
+        0x20 => Key::Space,
+        0x0100_0030..=0x0100_0047 => Key::F((key - 0x0100_0030 + 1) as u8),
+        0x21..=0x7e => Key::Char(char::from_u32(key)?),
+        _ => Key::Char(text.chars().next()?),
+    })
+}
+
+/// The action a key press is bound to, when it is one. `mods` as `kyko_term::keys` has them:
+/// Shift 1, Alt 2, Ctrl 4.
+pub fn action_for(look: &Look, key: u32, mods: u8, text: &str) -> Option<Action> {
+    let key = qt_key(key, text)?;
+    let mods = Mods {
+        shift: mods & 1 != 0,
+        alt: mods & 2 != 0,
+        ctrl: mods & 4 != 0,
+        super_: false,
+    };
+    look.keys.action_for(mods, key)
+}
+
+fn handle(act: Act, s: &mut Session, look: &Look, login: &str) -> Vec<Effect> {
+    match act {
+        Act::Key(Action::NewTab) => {
+            let cwd = s.new_tab_dir(look.new_tab_dir);
+            s.new_tab(
+                SpawnRequest {
+                    cwd,
+                    ..SpawnRequest::default()
+                },
+                login,
+            )
+            .unwrap_or_default()
+        }
+        Act::Key(Action::ClosePane) => {
+            let pane = s.focused_pane();
+            s.close_pane(pane, login)
+        }
+        Act::Key(Action::PrevTab) => {
+            s.prev_tab();
+            Vec::new()
+        }
+        Act::Key(Action::NextTab) => {
+            s.next_tab();
+            Vec::new()
+        }
+        Act::Key(Action::Tab(n)) => {
+            s.focus_tab_index(usize::from(n).saturating_sub(1));
+            Vec::new()
+        }
+        Act::Key(Action::SplitSide) => s.split(SplitAxis::Side, login).unwrap_or_default(),
+        Act::Key(Action::SplitStacked) => s.split(SplitAxis::Stacked, login).unwrap_or_default(),
+        Act::Key(Action::FocusLeft) => focus(s, Dir::Left),
+        Act::Key(Action::FocusRight) => focus(s, Dir::Right),
+        Act::Key(Action::FocusUp) => focus(s, Dir::Up),
+        Act::Key(Action::FocusDown) => focus(s, Dir::Down),
+        // Copy, paste, search and the font size are the pane's own; they come with the
+        // selection and search slices.
+        Act::Key(_) => Vec::new(),
+        Act::FocusPane(p) => {
+            s.focus_pane(p);
+            Vec::new()
+        }
+        Act::FocusTab(t) => {
+            s.focus_tab(t);
+            Vec::new()
+        }
+        Act::CloseTab(t) => s.close_tab(t, login),
+        Act::ClosePane(p) => s.close_pane(p, login),
+        Act::Ratio(t, path, r) => {
+            s.set_ratio(t, &path, r);
+            Vec::new()
+        }
+        Act::Rename(t, name) => {
+            s.rename(t, name.as_deref());
+            Vec::new()
+        }
+        Act::Dismiss(p) => s.dismiss(p, login),
     }
 }
 
+fn focus(s: &mut Session, dir: Dir) -> Vec<Effect> {
+    s.focus_dir(dir);
+    Vec::new()
+}
+
+/// Carries out what the session asked for. True when it asked to hide the window.
+fn apply(
+    effects: Vec<Effect>,
+    link: &mut Link,
+    ctx: &Ctx,
+    sizes: &HashMap<PaneId, (u16, u16)>,
+    use_launch: &mut bool,
+) -> Result<bool, LinkError> {
+    let mut hide = false;
+    for effect in effects {
+        match effect {
+            Effect::Spawn { pane, cwd, args } => {
+                let size = sizes.get(&pane).copied().unwrap_or((80, 24));
+                let (shell, args, cwd) = if std::mem::take(use_launch) {
+                    (
+                        ctx.launch.shell.clone(),
+                        ctx.launch.args.clone(),
+                        cwd.unwrap_or_else(|| ctx.launch.cwd.clone()),
+                    )
+                } else {
+                    (
+                        ctx.launch.login_shell.clone(),
+                        args,
+                        cwd.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into())),
+                    )
+                };
+                link.spawn(SpawnSpec {
+                    pane,
+                    shell,
+                    args,
+                    cwd,
+                    env: vec![
+                        ("TERM".into(), "xterm-256color".into()),
+                        ("COLORTERM".into(), "truecolor".into()),
+                    ],
+                    cols: size.0,
+                    rows: size.1,
+                    ring_bytes: 0,
+                })?;
+                link.attach(pane)?;
+            }
+            Effect::Close { pane } => link.close(pane)?,
+            Effect::Hide => hide = true,
+        }
+    }
+    Ok(hide)
+}
+
+fn publish(link: &Link, pane: PaneId, colors: &Mutex<Colors>, shared: &Mutex<Shared>) {
+    if let Some(p) = link.pane(pane) {
+        let modes = p.emulator().modes();
+        let snapshot = p.emulator().snapshot(&colors.lock().unwrap());
+        let frame = Frame {
+            snapshot: Some(snapshot),
+            app_cursor: modes.app_cursor,
+        };
+        shared.lock().unwrap().frames.insert(pane, frame);
+    }
+}
+
+/// The tabs for the QML: `{active, focused, title, notice, tabs: [{id, name, active, panes:
+/// [{id, x, y, w, h, focused, state, status, message}], dividers: [{tab, path, axis, x, y, w, h,
+/// ratio}]}]}`, rectangles in each tab's unit square.
+pub fn layout_json(s: &Session, notice: Option<&str>) -> String {
+    use serde_json::json;
+    let mut title = String::new();
+    let tabs: Vec<_> = s
+        .tabs()
+        .map(|t| {
+            if t.active {
+                title = t.program.to_string();
+            }
+            let panes: Vec<_> = t
+                .panes
+                .iter()
+                .map(|p| {
+                    let (state, status, message) = match p.state {
+                        PaneState::Running => ("running", 0, String::new()),
+                        PaneState::Exited(n) => ("exited", *n, String::new()),
+                        PaneState::Failed(m) => ("failed", 0, m.clone()),
+                        PaneState::Ended => ("ended", 0, String::new()),
+                    };
+                    json!({"id": p.id, "x": p.rect.x, "y": p.rect.y, "w": p.rect.w, "h": p.rect.h,
+                           "focused": p.focused, "busy": p.busy, "state": state,
+                           "status": status, "message": message})
+                })
+                .collect();
+            let dividers: Vec<_> = t
+                .dividers
+                .iter()
+                .map(|d| {
+                    let path: String = d.path.iter().map(|b| if *b { '1' } else { '0' }).collect();
+                    json!({"tab": t.id, "path": path,
+                           "axis": if d.axis == SplitAxis::Side { "side" } else { "stacked" },
+                           "x": d.rect.x, "y": d.rect.y, "w": d.rect.w, "h": d.rect.h,
+                           "ratio": d.ratio})
+                })
+                .collect();
+            json!({"id": t.id, "name": t.name, "active": t.active, "panes": panes,
+                   "dividers": dividers})
+        })
+        .collect();
+    let mut out = String::new();
+    let _ = write!(
+        out,
+        "{}",
+        json!({"active": s.active_tab(), "focused": s.focused_pane(), "title": title,
+               "notice": notice.unwrap_or(""), "tabs": tabs})
+    );
+    out
+}
+
 fn run(
-    socket: &Path,
-    launch: &Launch,
-    size: &mut (u16, u16),
-    colors: &Mutex<Colors>,
+    ctx: &Ctx,
     rx: &Receiver<Cmd>,
-    frame: &Mutex<Frame>,
-    on_change: &dyn Fn(),
+    sizes: &mut HashMap<PaneId, (u16, u16)>,
+    slot: &mut Option<Session>,
 ) -> Result<(), Stop> {
-    let mut link = Link::connect(socket, 10_000)?;
-    // A shared holder may already hold a pane from an earlier window: attach to it.
-    let existing = link
+    let look = || ctx.look.lock().unwrap().clone();
+    let mut link = Link::connect(&ctx.socket, look().scrollback)?;
+    let home = std::env::var("HOME").unwrap_or_default();
+    let infos: Vec<PaneInfo> = link
         .pane_ids()
         .into_iter()
-        .find(|id| link.pane(*id).is_some_and(|p| p.exited.is_none()));
-    let mut pane = existing.unwrap_or_else(|| link.pane_ids().last().map_or(1, |id| id + 1));
-    if existing.is_none() {
-        start_shell(&mut link, pane, launch, *size)?;
+        .filter_map(|id| {
+            link.pane(id).map(|p| PaneInfo {
+                pane: id,
+                program: p.program.clone(),
+                cwd: p.cwd.clone(),
+                cols: 80,
+                rows: 24,
+                exited: p.exited,
+            })
+        })
+        .collect();
+    let mut use_launch = infos.is_empty() && slot.is_none();
+    let base = match slot.take() {
+        Some(s) => kyko_core::layout::Base::Current(s),
+        None => kyko_core::layout::Base::Blob(&link.layout),
+    };
+    let (fresh, effects, _warnings) = Session::reconcile(base, &infos, &home, &ctx.launch.shell);
+    // Kept across a lost connection: the next link reconciles it with what `kykod` still holds.
+    let session = slot.insert(fresh);
+    let login = ctx.launch.login_shell.clone();
+    let mut quit = false;
+    let spawned: HashSet<PaneId> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Spawn { pane, .. } => Some(*pane),
+            _ => None,
+        })
+        .collect();
+    if apply(effects, &mut link, ctx, sizes, &mut use_launch)? && !ctx.launch.persistent {
+        quit = true;
     }
-    link.attach(pane)?;
-    if existing.is_some() {
-        link.resize(pane, size.0, size.1)?;
+    for id in session.pane_ids() {
+        if link.pane(id).is_some() && !spawned.contains(&id) {
+            link.attach(id)?;
+            if let Some(&(c, r)) = sizes.get(&id) {
+                link.resize(id, c, r)?;
+            }
+        }
     }
-    loop {
-        let mut redraw = false;
+    ctx.shared.lock().unwrap().notice = None;
+    let mut last_status = 0;
+    let mut dirty: HashSet<PaneId> = session.pane_ids().into_iter().collect();
+    let mut layout_changed = true;
+    'main: loop {
+        let mut effects = Vec::new();
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
-                Cmd::Input(bytes) => link.input(pane, &bytes)?,
-                Cmd::Resize(c, r) => {
-                    *size = (c, r);
-                    link.resize(pane, c, r)?;
+                Cmd::Input(p, bytes) => link.input(p, &bytes)?,
+                Cmd::Resize(p, c, r) => {
+                    sizes.insert(p, (c, r));
+                    if link.pane(p).is_some() {
+                        link.resize(p, c, r)?;
+                        dirty.insert(p);
+                    }
                 }
-                Cmd::Redraw => redraw = true,
+                Cmd::Redraw => dirty.extend(session.pane_ids()),
+                Cmd::Act(act) => {
+                    effects.extend(handle(act, session, &look(), &login));
+                    layout_changed = true;
+                }
                 Cmd::End => {
-                    if !launch.persistent {
-                        // The window is closing and its shell goes with it.
+                    if !ctx.launch.persistent {
+                        // The window is closing and its shells go with it.
                         let _ = link.end_sessions(true);
                     }
-                    return Err(Stop::Window);
+                    break 'main;
                 }
             }
         }
         let events = link.pump(Duration::from_millis(4))?;
-        let mut changed = redraw;
-        let mut respawn = false;
         for event in events {
             match event {
-                Event::Changed(_) | Event::Info { .. } => changed = true,
-                // The drop-down always has a shell: a new one takes the place of the one that ended.
-                Event::Exited { .. } if launch.persistent => respawn = true,
-                Event::Exited { .. } => changed = true,
-                Event::SpawnFailed { message, .. } => {
-                    frame.lock().unwrap().notice =
-                        Some(format!("Could not start the shell: {message}"));
-                    changed = true;
+                Event::Changed(p) => {
+                    dirty.insert(p);
+                }
+                Event::Info { pane, program, cwd } => {
+                    layout_changed |= session.apply_info(pane, &program, &cwd);
+                    dirty.insert(pane);
+                }
+                Event::Exited { pane, status } => {
+                    last_status = status;
+                    effects.extend(session.pane_exited(pane, status, &login));
+                    layout_changed = true;
+                    dirty.insert(pane);
+                }
+                Event::SpawnFailed { pane, message } => {
+                    session.spawn_failed(pane, &message);
+                    layout_changed = true;
                 }
                 Event::Busy(_) => {}
             }
         }
-        if respawn {
-            link.close(pane)?;
-            pane = link.pane_ids().last().map_or(1, |id| id + 1).max(pane + 1);
-            start_shell(&mut link, pane, launch, *size)?;
-            link.attach(pane)?;
-            changed = true;
+        if !effects.is_empty() {
+            let hide = apply(effects, &mut link, ctx, sizes, &mut use_launch)?;
+            layout_changed = true;
+            if hide {
+                if ctx.launch.persistent {
+                    (ctx.on_hide)();
+                } else if !quit {
+                    quit = true;
+                    ctx.shared.lock().unwrap().exit = Some(last_status);
+                    (ctx.on_quit)();
+                }
+            }
         }
-        if changed {
-            publish(&link, pane, colors, frame);
-            on_change();
+        if layout_changed {
+            layout_changed = false;
+            link.save_layout(session.to_blob())?;
+            let ids: HashSet<PaneId> = session.pane_ids().into_iter().collect();
+            let json = {
+                let mut sh = ctx.shared.lock().unwrap();
+                sh.frames.retain(|id, _| ids.contains(id));
+                sh.focused = session.focused_pane();
+                layout_json(session, sh.notice.as_deref())
+            };
+            ctx.shared.lock().unwrap().layout = json;
+            dirty.extend(ids);
+            (ctx.on_layout)();
+        }
+        if !dirty.is_empty() {
+            for p in dirty.drain() {
+                publish(&link, p, &ctx.colors, &ctx.shared);
+            }
+            (ctx.on_frames)();
         }
     }
-}
-
-fn start_shell(
-    link: &mut Link,
-    pane: u32,
-    launch: &Launch,
-    size: (u16, u16),
-) -> Result<(), LinkError> {
-    link.spawn(SpawnSpec {
-        pane,
-        shell: launch.shell.clone(),
-        args: launch.args.clone(),
-        cwd: launch.cwd.clone(),
-        env: vec![
-            ("TERM".into(), "xterm-256color".into()),
-            ("COLORTERM".into(), "truecolor".into()),
-        ],
-        cols: size.0,
-        rows: size.1,
-        ring_bytes: 0,
-    })
+    Err(Stop::Window)
 }
 
 /// Finds `kykod`: next to this executable, else on `PATH`.

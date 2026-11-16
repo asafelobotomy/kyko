@@ -5,7 +5,9 @@ use std::sync::{Mutex, OnceLock};
 use kyko_term::{Colors, keys};
 
 use crate::appearance::Look;
-use crate::session::{Frame, Launch, Session};
+use kyko_core::config::Action;
+
+use crate::session::{Act, Launch, Workspace};
 
 #[cxx::bridge]
 pub mod ffi {
@@ -17,22 +19,29 @@ pub mod ffi {
     }
 
     extern "Rust" {
-        fn kyko_start(cols: u16, rows: u16);
-        fn kyko_resize(cols: u16, rows: u16);
+        fn kyko_resize(pane: u32, cols: u16, rows: u16);
         fn kyko_snapshot(
+            pane: u32,
             out: &mut Vec<FfiCell>,
             cols: &mut u16,
             rows: &mut u16,
             cur_x: &mut i32,
             cur_y: &mut i32,
         ) -> u64;
-        fn kyko_key(key: u32, mods: u8, text: &str) -> bool;
-        fn kyko_text(text: &str);
-        fn kyko_title() -> String;
+        fn kyko_key(pane: u32, key: u32, mods: u8, text: &str) -> bool;
+        fn kyko_text(pane: u32, text: &str);
         fn kyko_fixed_title() -> String;
-        fn kyko_test_shot() -> String;
-        fn kyko_notice() -> String;
         fn kyko_exit_status() -> i32;
+        fn kyko_test_shot() -> String;
+        fn kyko_layout() -> String;
+        fn kyko_action(name: &str);
+        fn kyko_focus_pane(pane: u32);
+        fn kyko_focus_tab(tab: u32);
+        fn kyko_close_tab(tab: u32);
+        fn kyko_close_pane(pane: u32);
+        fn kyko_dismiss(pane: u32);
+        fn kyko_set_ratio(tab: u32, path: &str, ratio: f64);
+        fn kyko_rename_tab(tab: u32, name: &str);
         fn kyko_setting(name: &str) -> i32;
         fn kyko_set_visible(visible: bool);
         fn kyko_palette_bg() -> u32;
@@ -48,6 +57,7 @@ pub mod ffi {
         fn grid_request_repaint();
         fn grid_reload_look();
         fn controller_send(code: i32);
+        fn controller_layout_changed();
         fn app_set_id(id: &str);
     }
 }
@@ -61,8 +71,8 @@ struct Setup {
 }
 
 static SETUP: OnceLock<Setup> = OnceLock::new();
-static SESSION: OnceLock<Session> = OnceLock::new();
-static LOOK: OnceLock<Mutex<Look>> = OnceLock::new();
+static WORKSPACE: OnceLock<Workspace> = OnceLock::new();
+static LOOK: OnceLock<crate::session::SharedLook> = OnceLock::new();
 static SERVICE: OnceLock<crate::control::Service> = OnceLock::new();
 
 /// Called once by `main` before the window exists.
@@ -72,7 +82,25 @@ pub fn configure(socket: PathBuf, launch: Launch, look: Look, title: String) {
         socket,
         launch: Mutex::new(Some(launch)),
     });
-    let _ = LOOK.set(Mutex::new(look));
+    let _ = LOOK.set(std::sync::Arc::new(Mutex::new(look)));
+}
+
+/// Starts the sessions; the window's items report their sizes as they appear.
+pub fn start() {
+    let s = setup();
+    let Some(launch) = s.launch.lock().unwrap().take() else {
+        return;
+    };
+    let ws = Workspace::start(
+        s.socket.clone(),
+        launch,
+        LOOK.get().expect("configure ran first").clone(),
+        Box::new(ffi::grid_request_repaint),
+        Box::new(ffi::controller_layout_changed),
+        Box::new(|| ffi::controller_send(crate::control::Command::Hide.code())),
+        Box::new(|| ffi::controller_send(3)),
+    );
+    let _ = WORKSPACE.set(ws);
 }
 
 /// Shows the drop-down once the window exists (`kyko dropdown --show`).
@@ -84,8 +112,8 @@ pub fn show_at_start() {
 pub fn set_look(look: Look) {
     let colors = look.colors.clone();
     *LOOK.get().expect("configure ran first").lock().unwrap() = look;
-    if let Some(s) = SESSION.get() {
-        s.set_colors(colors);
+    if let Some(w) = WORKSPACE.get() {
+        w.set_colors(colors);
     }
     ffi::grid_reload_look();
 }
@@ -111,6 +139,7 @@ fn kyko_setting(name: &str) -> i32 {
     match name {
         "accent" => n(l.accent),
         "background" => n(l.colors.bg),
+        "foreground" => n(l.colors.fg),
         "radius" => n(l.radius),
         "gap_out" => n(l.gap_out),
         "border_width" => n(l.border_width),
@@ -120,6 +149,7 @@ fn kyko_setting(name: &str) -> i32 {
         "above_fullscreen" => b(l.above_fullscreen),
         "hide_on_focus_loss" => b(l.hide_on_focus_loss),
         "animations" => b(l.animations),
+        "tabs_bottom" => b(l.tabs_bottom),
         _ => 0,
     }
 }
@@ -140,49 +170,27 @@ fn colors() -> Colors {
     look().colors
 }
 
-/// The window's exit code: the shell's status, once it has ended.
+/// The window's exit code: the last shell's status, once the window has nothing left to show.
 pub fn exit_status() -> Option<i32> {
-    SESSION.get().and_then(|s| s.frame.lock().unwrap().exited)
+    WORKSPACE.get().and_then(|w| w.shared.lock().unwrap().exit)
 }
 
-/// Ends the pane and `kykod` with it. Called after the Qt event loop returns.
+/// Ends the sessions of a windowed kyko. Called after the Qt event loop returns.
 pub fn shutdown() {
-    if let Some(s) = SESSION.get() {
-        s.request_end();
-        s.wait();
+    if let Some(w) = WORKSPACE.get() {
+        w.request_end();
+        w.wait();
     }
 }
 
-fn frame() -> Option<Frame> {
-    SESSION.get().map(|s| s.frame.lock().unwrap().clone())
-}
-
-fn kyko_start(cols: u16, rows: u16) {
-    if SESSION.get().is_some() {
-        return kyko_resize(cols, rows);
-    }
-    let s = setup();
-    let Some(launch) = s.launch.lock().unwrap().take() else {
-        return;
-    };
-    let session = Session::start(
-        s.socket.clone(),
-        launch,
-        cols,
-        rows,
-        colors(),
-        Box::new(ffi::grid_request_repaint),
-    );
-    let _ = SESSION.set(session);
-}
-
-fn kyko_resize(cols: u16, rows: u16) {
-    if let Some(s) = SESSION.get() {
-        s.resize(cols, rows);
+fn kyko_resize(pane: u32, cols: u16, rows: u16) {
+    if let Some(w) = WORKSPACE.get() {
+        w.resize(pane, cols, rows);
     }
 }
 
 fn kyko_snapshot(
+    pane: u32,
     out: &mut Vec<ffi::FfiCell>,
     cols: &mut u16,
     rows: &mut u16,
@@ -192,7 +200,9 @@ fn kyko_snapshot(
     out.clear();
     *cols = 0;
     *rows = 0;
-    let Some(snap) = frame().and_then(|f| f.snapshot) else {
+    let Some(w) = WORKSPACE.get() else { return 0 };
+    let shared = w.shared.lock().unwrap();
+    let Some(snap) = shared.frames.get(&pane).and_then(|f| f.snapshot.as_ref()) else {
         return 0;
     };
     *cols = snap.cols;
@@ -209,37 +219,102 @@ fn kyko_snapshot(
     1
 }
 
-fn kyko_key(key: u32, mods: u8, text: &str) -> bool {
-    let Some(s) = SESSION.get() else { return false };
-    let app_cursor = s.frame.lock().unwrap().app_cursor;
+/// A key press in `pane`: one of the window's actions, or bytes for the pane's program. True
+/// when kyko took it.
+fn kyko_key(pane: u32, key: u32, mods: u8, text: &str) -> bool {
+    let Some(w) = WORKSPACE.get() else {
+        return false;
+    };
+    if let Some(action) = crate::session::action_for(&look(), key, mods, text) {
+        w.act(Act::Key(action));
+        return true;
+    }
+    let app_cursor = w
+        .shared
+        .lock()
+        .unwrap()
+        .frames
+        .get(&pane)
+        .is_some_and(|f| f.app_cursor);
     let bytes = keys::encode(key, mods, text, app_cursor);
     if bytes.is_empty() {
         return false;
     }
-    s.input(bytes);
+    w.input(pane, bytes);
     true
 }
 
-fn kyko_text(text: &str) {
-    if let Some(s) = SESSION.get() {
-        s.input(text.as_bytes().to_vec());
+fn kyko_text(pane: u32, text: &str) {
+    if let Some(w) = WORKSPACE.get() {
+        w.input(pane, text.as_bytes().to_vec());
     }
 }
 
-fn kyko_title() -> String {
-    frame().map(|f| f.program).unwrap_or_default()
+fn kyko_layout() -> String {
+    WORKSPACE
+        .get()
+        .map(|w| w.shared.lock().unwrap().layout.clone())
+        .unwrap_or_default()
+}
+
+fn act(a: Act) {
+    if let Some(w) = WORKSPACE.get() {
+        w.act(a);
+    }
+}
+
+/// The tab bar's buttons, by the action's name in `[keys]`.
+fn kyko_action(name: &str) {
+    let action = match name {
+        "new_tab" => Action::NewTab,
+        "split_side" => Action::SplitSide,
+        "split_stacked" => Action::SplitStacked,
+        "close_pane" => Action::ClosePane,
+        _ => return,
+    };
+    act(Act::Key(action));
+}
+
+fn kyko_focus_pane(pane: u32) {
+    act(Act::FocusPane(pane));
+}
+
+fn kyko_focus_tab(tab: u32) {
+    act(Act::FocusTab(tab));
+}
+
+fn kyko_close_tab(tab: u32) {
+    act(Act::CloseTab(tab));
+}
+
+fn kyko_close_pane(pane: u32) {
+    act(Act::ClosePane(pane));
+}
+
+fn kyko_dismiss(pane: u32) {
+    act(Act::Dismiss(pane));
+}
+
+/// `path` is the divider's place in the split tree, as the layout gives it: `0` and `1`.
+fn kyko_set_ratio(tab: u32, path: &str, ratio: f64) {
+    let path = path.chars().map(|c| c == '1').collect();
+    act(Act::Ratio(tab, path, ratio));
+}
+
+fn kyko_rename_tab(tab: u32, name: &str) {
+    act(Act::Rename(
+        tab,
+        (!name.is_empty()).then(|| name.to_string()),
+    ));
+}
+
+/// The status the window quits with, or -1 while it has panes to show.
+fn kyko_exit_status() -> i32 {
+    exit_status().unwrap_or(-1)
 }
 
 fn kyko_fixed_title() -> String {
     setup().title.clone()
-}
-
-fn kyko_notice() -> String {
-    frame().and_then(|f| f.notice).unwrap_or_default()
-}
-
-fn kyko_exit_status() -> i32 {
-    exit_status().unwrap_or(-1)
 }
 
 fn kyko_palette_bg() -> u32 {

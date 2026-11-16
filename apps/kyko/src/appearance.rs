@@ -1,7 +1,7 @@
 //! The colours and font the window draws with, from `config.toml` and uQ's theme.
 use std::ffi::OsString;
 
-use kyko_core::config::{Config, Shape};
+use kyko_core::config::{Config, Keys, NewTabDir, Shape, TabsAt};
 use kyko_core::paths;
 use kyko_core::theme::{self, Theme};
 use kyko_term::Colors;
@@ -21,6 +21,10 @@ pub struct Look {
     pub above_fullscreen: bool,
     pub hide_on_focus_loss: bool,
     pub animations: bool,
+    pub tabs_bottom: bool,
+    pub new_tab_dir: NewTabDir,
+    pub scrollback: usize,
+    pub keys: Keys,
 }
 
 /// Where the config and uQ's tokens are, to watch them for changes.
@@ -74,5 +78,9 @@ pub fn load() -> Look {
         above_fullscreen: w.above_fullscreen,
         hide_on_focus_loss: w.hide_on_focus_loss,
         animations: w.animations,
+        tabs_bottom: w.tabs == TabsAt::Bottom,
+        new_tab_dir: config.terminal.new_tab_dir,
+        scrollback: config.terminal.scrollback as usize,
+        keys: config.keys.clone(),
     }
 }

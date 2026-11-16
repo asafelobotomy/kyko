@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Tabs and splits in both the window and the drop-down: a tab bar (numbered pills, a close button
+  on hover and on the active tab, middle-click to close, new-tab and split buttons, at the top
+  or bottom per `window.tabs`), side-by-side and stacked splits with draggable dividers, and the
+  `[keys]` actions (new tab, close pane, previous and next tab, Alt+1..9, split, focus by
+  direction). The tabs, splits and focus are restored from `kykod` when the drop-down's window
+  is started again. Closing the last pane of the last tab ends a windowed kyko, or hides the
+  drop-down. Copy, paste, search and font-size keys come with later slices; closing a busy pane
+  does not yet ask.
 - The drop-down: `kyko dropdown` runs a layer-shell surface on the top edge (island or sheet,
   overlay or top layer, from `config.toml`) that slides in and out; `kyko toggle`, `show` and
   `hide` drive it over D-Bus (`org.kyko.Terminal1`, with a `Visible` property). Its shell lives in
