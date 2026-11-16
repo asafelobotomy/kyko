@@ -1,0 +1,12 @@
+[package]
+name = "kyko-prompt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The prompt kyko draws in bash, zsh and fish"
+
+[dependencies]
+
+[dev-dependencies]
+tempfile = "3.27.0"

@@ -638,6 +638,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kyko-prompt"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "kyko-proto"
 version = "0.1.0"
 

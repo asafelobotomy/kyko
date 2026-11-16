@@ -33,7 +33,7 @@ build() {
   cd "$srcdir/$pkgname-$_tag"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
-  cargo build --frozen --release -p kyko -p kykod
+  cargo build --frozen --release -p kyko -p kykod -p kyko-prompt
 }
 
 check() {
@@ -47,6 +47,7 @@ package() {
   cd "$srcdir/$pkgname-$_tag"
   install -Dm755 target/release/kyko "$pkgdir/usr/bin/kyko"
   install -Dm755 target/release/kykod "$pkgdir/usr/bin/kykod"
+  install -Dm755 target/release/kyko-prompt "$pkgdir/usr/bin/kyko-prompt"
   # A user unit, installed but not enabled.
   install -Dm644 packaging/kykod.service "$pkgdir/usr/lib/systemd/user/kykod.service"
   install -Dm644 packaging/kyko.service "$pkgdir/usr/lib/systemd/user/kyko.service"
