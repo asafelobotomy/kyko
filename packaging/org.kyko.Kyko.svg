@@ -5,6 +5,11 @@
   <circle cx="26" cy="25" r="4" fill="#fb4934"/>
   <circle cx="40" cy="25" r="4" fill="#fabd2f"/>
   <circle cx="54" cy="25" r="4" fill="#b8bb26"/>
-  <path d="M30 56 L52 72 L30 88" fill="none" stroke="#83a598" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="62" y="84" width="34" height="9" rx="3" fill="#ebdbb2"/>
+  <!-- キコ (ki ko), drawn as strokes so the icon needs no font -->
+  <g fill="none" stroke="#83a598" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M27 62 L52 56"/>
+    <path d="M23 78 L57 72"/>
+    <path d="M44 47 L35 104"/>
+    <path d="M72 58 H102 V99 H70"/>
+  </g>
 </svg>
