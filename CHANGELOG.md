@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `kyko-link`: the window's side of the `kykod` socket without Qt. It connects and exchanges
+  Hellos (a version mismatch is an error), spawns and attaches panes, keeps one emulator per pane
+  fed from the holder's output, rebuilds it from a replay, and answers the terminal's own replies.
+  Tested against a real `kykod`, including a second window finding the first one's pane and screen.
+
 ## [0.0.4] - 2026-11-15
 
 Nothing is usable yet: this is the logic the window will use, with no window around it.

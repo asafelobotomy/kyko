@@ -299,6 +299,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kyko-link"
+version = "0.0.4"
+dependencies = [
+ "kyko-proto",
+ "kyko-term",
+ "tempfile",
+]
+
+[[package]]
 name = "kyko-proto"
 version = "0.0.4"
 
