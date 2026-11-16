@@ -599,6 +599,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "kyko-core",
+ "kyko-hotkey",
  "kyko-link",
  "kyko-proto",
  "kyko-term",
@@ -615,6 +616,14 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "kyko-hotkey"
+version = "0.0.4"
+dependencies = [
+ "kyko-core",
+ "tempfile",
 ]
 
 [[package]]

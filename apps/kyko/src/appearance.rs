@@ -2,6 +2,7 @@
 use std::ffi::OsString;
 
 use kyko_core::config::{Config, Keys, NewTabDir, Shape, TabsAt};
+use kyko_core::keys::KeySeq;
 use kyko_core::paths;
 use kyko_core::theme::{self, Theme};
 use kyko_term::Colors;
@@ -26,6 +27,7 @@ pub struct Look {
     pub scrollback: usize,
     pub copy_on_select: bool,
     pub keys: Keys,
+    pub hotkey: Option<KeySeq>,
 }
 
 /// Where the config and uQ's tokens are, to watch them for changes.
@@ -84,5 +86,6 @@ pub fn load() -> Look {
         scrollback: config.terminal.scrollback as usize,
         copy_on_select: config.terminal.copy_on_select,
         keys: config.keys.clone(),
+        hotkey: config.hotkey,
     }
 }

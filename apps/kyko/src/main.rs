@@ -8,6 +8,7 @@ use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 mod appearance;
 mod bridge;
 mod control;
+mod hotkey;
 mod session;
 mod watch;
 
@@ -140,14 +141,20 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
     bridge::start();
-    watch::spawn(appearance::watched_files(), || {
-        bridge::set_look(appearance::load())
+    if dropdown.is_some() {
+        hotkey::start(appearance::load().hotkey);
+    }
+    watch::spawn(appearance::watched_files(), move || {
+        let look = appearance::load();
+        if dropdown.is_some() {
+            hotkey::apply(look.hotkey);
+        }
+        bridge::set_look(look)
     });
 
     let mut app = QGuiApplication::new();
-    if let Some(class) = &cli.class {
-        bridge::app_set_id(class);
-    }
+    // Matches `org.kyko.Kyko.desktop`, so the compositor shows the desktop entry's icon.
+    bridge::app_set_id(cli.class.as_deref().unwrap_or("org.kyko.Kyko"));
     bridge::grid_register();
     let mut engine = QQmlApplicationEngine::new();
     if let Some(e) = engine.as_mut() {
