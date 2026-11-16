@@ -3,8 +3,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use zbus::blocking::{Connection, connection};
 use zbus::object_server::SignalEmitter;
+use zbus::{
+    Connection, connection,
+    fdo::{RequestNameFlags, RequestNameReply},
+};
 
 pub const NAME: &str = "org.kyko.Terminal1";
 pub const PATH: &str = "/org/kyko/Terminal1";
@@ -74,12 +77,21 @@ pub fn serve(send: impl Fn(Command) + Send + Sync + 'static) -> zbus::Result<Ser
         visible: visible.clone(),
         send: Box::new(send),
     };
-    let connection = connection::Builder::session()?
-        .serve_at(PATH, iface)?
-        .build()?;
+    let connection = zbus::block_on(async {
+        connection::Builder::session()
+            .serve_at(PATH, iface)
+            .build()
+            .await
+    })?;
     // Without queueing: a second drop-down must fail instead of waiting for the first to leave.
-    let name = zbus::names::WellKnownName::try_from(NAME)?;
-    connection.request_name_with_flags(name, zbus::fdo::RequestNameFlags::DoNotQueue.into())?;
+    let reply =
+        zbus::block_on(connection.request_name_with_flags(NAME, RequestNameFlags::DO_NOT_QUEUE))?;
+    if !matches!(
+        reply,
+        RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner
+    ) {
+        return Err(zbus::Error::NameTaken);
+    }
     Ok(Service {
         connection,
         visible,
@@ -92,28 +104,32 @@ impl Service {
         if self.visible.swap(visible, Ordering::SeqCst) == visible {
             return;
         }
-        if let Ok(iface) = self
-            .connection
-            .object_server()
-            .interface::<_, Terminal>(PATH)
-        {
-            let _ = zbus::block_on(async {
-                let emitter: SignalEmitter<'_> = iface.signal_emitter().clone();
-                iface.get().visible_changed(&emitter).await
-            });
-        }
+        let _ = zbus::block_on(async {
+            let iface = self
+                .connection
+                .object_server()
+                .interface::<_, Terminal>(PATH)
+                .await?;
+            let emitter: SignalEmitter<'_> = iface.signal_emitter().clone();
+            iface.get().await.visible_changed(&emitter).await
+        });
     }
 }
 
 /// Asks a running drop-down to do `command`. `Err` carries a message for the user.
 pub fn call(command: Command) -> Result<(), String> {
-    let conn = Connection::session().map_err(|e| format!("no session bus: {e}"))?;
-    conn.call_method(Some(NAME), PATH, Some(NAME), command.method(), &())
-        .map(|_| ())
-        .map_err(|e| match e {
-            zbus::Error::MethodError(..) | zbus::Error::FDO(_) => {
-                "kyko's drop-down is not running (start it with `kyko dropdown`)".to_string()
-            }
-            other => other.to_string(),
-        })
+    zbus::block_on(async {
+        let conn = Connection::session()
+            .await
+            .map_err(|e| format!("no session bus: {e}"))?;
+        conn.call_method(Some(NAME), PATH, Some(NAME), command.method(), &())
+            .await
+            .map(|_| ())
+            .map_err(|e| match e {
+                zbus::Error::MethodError(..) | zbus::Error::FDO(_) => {
+                    "kyko's drop-down is not running (start it with `kyko dropdown`)".to_string()
+                }
+                other => other.to_string(),
+            })
+    })
 }
