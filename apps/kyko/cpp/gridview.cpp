@@ -21,7 +21,7 @@
 namespace {
 const quint8 BOLD = 1, ITALIC = 2, UNDERLINE = 4, WIDE = 16, WIDE_SPACER = 32;
 const int ATLAS = 2048;
-QPointer<GridView> g_view;
+QList<QPointer<GridView>> g_views;
 QPointer<Controller> g_ctl;
 
 // ---- glyph material: alpha from the atlas, colour per vertex ------------------------------------
@@ -151,8 +151,14 @@ void fillBg(QSGGeometryNode* node, const FfiCell* cells, int cols, int rows, qre
 }  // namespace
 
 void grid_request_repaint() {
-    if (GridView* v = g_view)
-        QMetaObject::invokeMethod(v, [v] { v->refreshStatus(); v->update(); }, Qt::QueuedConnection);
+    for (const QPointer<GridView>& p : std::as_const(g_views))
+        if (GridView* v = p)
+            QMetaObject::invokeMethod(v, [v] { v->update(); }, Qt::QueuedConnection);
+}
+
+void controller_layout_changed() {
+    if (Controller* c = g_ctl)
+        QMetaObject::invokeMethod(c, [c] { Q_EMIT c->layoutChanged(); }, Qt::QueuedConnection);
 }
 
 void controller_send(int code) {
@@ -161,8 +167,9 @@ void controller_send(int code) {
 }
 
 void grid_reload_look() {
-    if (GridView* v = g_view)
-        QMetaObject::invokeMethod(v, [v] { v->reloadLook(); }, Qt::QueuedConnection);
+    for (const QPointer<GridView>& p : std::as_const(g_views))
+        if (GridView* v = p)
+            QMetaObject::invokeMethod(v, [v] { v->reloadLook(); }, Qt::QueuedConnection);
     if (Controller* c = g_ctl)
         QMetaObject::invokeMethod(c, [c] { Q_EMIT c->lookChanged(); }, Qt::QueuedConnection);
 }
@@ -172,7 +179,12 @@ void grid_register() {
     qmlRegisterType<Controller>("org.kyko.app", 1, 0, "Controller");
 }
 
-Controller::Controller(QObject* parent) : QObject(parent) { g_ctl = this; }
+Controller::Controller(QObject* parent) : QObject(parent) {
+    g_ctl = this;
+    // The last shell can end before the window exists: the quit it asked for is still owed.
+    if (kyko_exit_status() >= 0)
+        QMetaObject::invokeMethod(this, [this] { Q_EMIT command(3); }, Qt::QueuedConnection);
+}
 
 Controller::~Controller() {
     if (g_ctl == this)
@@ -186,12 +198,41 @@ int Controller::setting(const QString& name) const {
 
 void Controller::setVisible(bool visible) const { kyko_set_visible(visible); }
 
+namespace {
+QString str(const rust::String& s) { return QString::fromUtf8(s.data(), int(s.size())); }
+}  // namespace
+
+QString Controller::layout() const { return str(kyko_layout()); }
+QString Controller::shot() const { return str(kyko_test_shot()); }
+int Controller::shotDelay() const {
+    const int ms = qEnvironmentVariableIntValue("KYKO_TEST_MS");
+    return ms > 0 ? ms : 1500;
+}
+QString Controller::fixedTitle() const { return str(kyko_fixed_title()); }
+void Controller::action(const QString& name) const {
+    const std::string n = name.toStdString();
+    kyko_action(rust::Str(n.data(), n.size()));
+}
+void Controller::focusPane(int pane) const { kyko_focus_pane(quint32(pane)); }
+void Controller::focusTab(int tab) const { kyko_focus_tab(quint32(tab)); }
+void Controller::closeTab(int tab) const { kyko_close_tab(quint32(tab)); }
+void Controller::closePane(int pane) const { kyko_close_pane(quint32(pane)); }
+void Controller::dismiss(int pane) const { kyko_dismiss(quint32(pane)); }
+void Controller::setRatio(int tab, const QString& path, double ratio) const {
+    const std::string p = path.toStdString();
+    kyko_set_ratio(quint32(tab), rust::Str(p.data(), p.size()), ratio);
+}
+void Controller::renameTab(int tab, const QString& name) const {
+    const std::string n = name.toStdString();
+    kyko_rename_tab(quint32(tab), rust::Str(n.data(), n.size()));
+}
+
 // ---- the item -----------------------------------------------------------------------------------
 GridView::GridView(QQuickItem* parent) : QQuickItem(parent) {
     setFlag(ItemHasContents, true);
     setFlag(ItemAcceptsInputMethod, true);
     setActiveFocusOnTab(true);
-    g_view = this;
+    g_views.append(this);
     applyFont();
     m_atlas = QImage(ATLAS, ATLAS, QImage::Format_ARGB32_Premultiplied);
     m_atlas.fill(Qt::transparent);
@@ -218,19 +259,34 @@ void GridView::reloadLook() {
     m_nextSlot = 0;
     m_atlas.fill(Qt::transparent);
     m_atlasDirty = true;
-    const int cols = int(width() / m_cellW), rows = int(height() / m_cellH);
-    if (cols >= 2 && rows >= 1 && (cols != m_cols || rows != m_rows)) {
-        m_cols = cols;
-        m_rows = rows;
-        kyko_resize(quint16(cols), quint16(rows));
-        Q_EMIT gridChanged();
-    }
+    fit();
     update();
 }
 
+void GridView::setPane(int pane) {
+    if (pane == m_pane)
+        return;
+    m_pane = pane;
+    // The size may be known already: this pane has to hear it.
+    m_cols = m_rows = 0;
+    fit();
+    Q_EMIT paneChanged();
+    update();
+}
+
+void GridView::fit() {
+    const int cols = int(width() / m_cellW), rows = int(height() / m_cellH);
+    if (cols < 2 || rows < 1 || (cols == m_cols && rows == m_rows))
+        return;
+    m_cols = cols;
+    m_rows = rows;
+    if (m_pane > 0)
+        kyko_resize(quint32(m_pane), quint16(cols), quint16(rows));
+    Q_EMIT gridChanged();
+}
+
 GridView::~GridView() {
-    if (g_view == this)
-        g_view = nullptr;
+    g_views.removeAll(this);
 }
 
 QString GridView::shot() const {
@@ -238,31 +294,9 @@ QString GridView::shot() const {
     return QString::fromUtf8(s.data(), int(s.size()));
 }
 
-void GridView::refreshStatus() {
-    const QString title = QString::fromUtf8(kyko_title().data(), int(kyko_title().size()));
-    const QString notice = QString::fromUtf8(kyko_notice().data(), int(kyko_notice().size()));
-    const int exit = kyko_exit_status();
-    if (title == m_title && notice == m_notice && exit == m_exit)
-        return;
-    m_title = title;
-    m_notice = notice;
-    m_exit = exit;
-    Q_EMIT statusChanged();
-}
-
 void GridView::geometryChange(const QRectF& n, const QRectF& o) {
     QQuickItem::geometryChange(n, o);
-    const int cols = int(n.width() / m_cellW), rows = int(n.height() / m_cellH);
-    if (cols < 2 || rows < 1 || (cols == m_cols && rows == m_rows))
-        return;
-    const bool first = m_cols == 0;
-    m_cols = cols;
-    m_rows = rows;
-    if (first)
-        kyko_start(quint16(cols), quint16(rows));
-    else
-        kyko_resize(quint16(cols), quint16(rows));
-    Q_EMIT gridChanged();
+    fit();
     update();
 }
 
@@ -304,7 +338,7 @@ QSGNode* GridView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     rust::Vec<FfiCell> cells;
     quint16 cols = 0, rows = 0;
     int cx = -1, cy = -1;
-    kyko_snapshot(cells, cols, rows, cx, cy);
+    kyko_snapshot(quint32(m_pane), cells, cols, rows, cx, cy);
     if (cols == 0 || rows == 0 || cells.size() < size_t(cols) * rows) {
         delete old;
         return nullptr;
@@ -385,7 +419,7 @@ void GridView::keyPressEvent(QKeyEvent* e) {
     if (e->modifiers() & Qt::ControlModifier)
         mods |= 4;
     const std::string text = e->text().toStdString();
-    if (kyko_key(quint32(e->key()), mods, rust::Str(text.data(), text.size())))
+    if (kyko_key(quint32(m_pane), quint32(e->key()), mods, rust::Str(text.data(), text.size())))
         e->accept();
     else
         e->ignore();
@@ -394,7 +428,7 @@ void GridView::keyPressEvent(QKeyEvent* e) {
 void GridView::inputMethodEvent(QInputMethodEvent* e) {
     const std::string text = e->commitString().toStdString();
     if (!text.empty())
-        kyko_text(rust::Str(text.data(), text.size()));
+        kyko_text(quint32(m_pane), rust::Str(text.data(), text.size()));
     e->accept();
 }
 

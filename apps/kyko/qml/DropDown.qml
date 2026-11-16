@@ -52,7 +52,7 @@ Window {
             hadFocus = false
             visible = true
             requestActivate()
-            grid.forceActiveFocus()
+            ws.focusPane()
         }
         slide.to = shown ? gap : -panelH
         if (animated) {
@@ -104,19 +104,11 @@ Window {
         border.width: ctl.setting("border_width")
         border.color: root.accent
 
-        GridView {
-            id: grid
+        Workspace {
+            id: ws
+            ctl: ctl
             anchors.fill: parent
             anchors.margins: 8 + panel.border.width
-            focus: true
-        }
-
-        Text {
-            anchors.centerIn: parent
-            visible: grid.notice.length > 0
-            color: "#fb4934"
-            text: grid.notice
-            font.pixelSize: 16
         }
     }
 }
