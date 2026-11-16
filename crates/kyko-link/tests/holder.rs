@@ -13,21 +13,25 @@ struct Holder {
     _dir: tempfile::TempDir,
 }
 
+/// Builds `kykod` (a no-op when it is current) and returns the path cargo reports for it, so the
+/// test does not guess the target directory.
 fn kykod() -> PathBuf {
-    // Built by `cargo build --workspace`, which the tests run after; `cargo test --workspace`
-    // builds every binary first.
-    let exe = std::env::current_exe().unwrap();
-    let target = exe.parent().unwrap().parent().unwrap();
-    let path = target.join("kykod");
-    if !path.exists() {
-        let ok = Command::new(env!("CARGO"))
-            .args(["build", "-p", "kykod"])
-            .status()
-            .unwrap()
-            .success();
-        assert!(ok, "could not build kykod");
-    }
-    path
+    let out = Command::new(env!("CARGO"))
+        .args(["build", "-p", "kykod", "--message-format=json"])
+        .stderr(Stdio::inherit())
+        .output()
+        .expect("cargo runs");
+    assert!(out.status.success(), "could not build kykod");
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| l.contains("\"executable\":\""))
+        .filter_map(|l| {
+            let rest = l.split("\"executable\":\"").nth(1)?;
+            rest.split('"').next().map(PathBuf::from)
+        })
+        .find(|p| p.file_name().is_some_and(|n| n == "kykod"))
+        .expect("cargo reports the kykod executable")
 }
 
 impl Holder {
