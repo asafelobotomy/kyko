@@ -2,17 +2,21 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
 mod appearance;
 mod bridge;
+mod control;
 mod session;
+mod watch;
 
 /// kyko: a terminal for the uQ desktop.
 #[derive(Parser)]
-#[command(version, about)]
+#[command(version, about, args_conflicts_with_subcommands = true)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Sub>,
     /// Window title, instead of the foreground program's name
     #[arg(long)]
     title: Option<String>,
@@ -27,6 +31,22 @@ struct Cli {
     exec: Vec<String>,
 }
 
+#[derive(Subcommand)]
+enum Sub {
+    /// Run the drop-down: a terminal that slides down from the top edge and keeps its sessions
+    Dropdown {
+        /// Show it at start instead of waiting for `kyko toggle`
+        #[arg(long)]
+        show: bool,
+    },
+    /// Show the drop-down, or hide it when it is shown
+    Toggle,
+    /// Show the drop-down
+    Show,
+    /// Hide the drop-down
+    Hide,
+}
+
 /// The shell, as the user chose it.
 fn login_shell() -> String {
     std::env::var("SHELL")
@@ -35,8 +55,36 @@ fn login_shell() -> String {
         .unwrap_or_else(|| "/bin/sh".into())
 }
 
+fn runtime_dir() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+fn control(command: control::Command) -> ExitCode {
+    match control::call(command) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("kyko: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    match cli.command {
+        Some(Sub::Toggle) => return control(control::Command::Toggle),
+        Some(Sub::Show) => return control(control::Command::Show),
+        Some(Sub::Hide) => return control(control::Command::Hide),
+        _ => {}
+    }
+    let dropdown = match cli.command {
+        Some(Sub::Dropdown { show }) => Some(show),
+        _ => None,
+    };
+
     let (shell, args) = match cli.exec.split_first() {
         Some((program, rest)) => (program.clone(), rest.to_vec()),
         None => (login_shell(), Vec::new()),
@@ -47,28 +95,53 @@ fn main() -> ExitCode {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    // This window's own holder: kykod keeps one window at a time, and a window opened with
-    // `kyko -e` must not take the drop-down's.
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    let socket = runtime
-        .join("kyko")
-        .join(format!("win-{}.sock", std::process::id()));
-    let holder = match session::start_private_holder(&socket) {
-        Ok(h) => h,
-        Err(e) => {
+    // A window opened with `kyko -e` has a `kykod` of its own: `kykod` keeps one window at a
+    // time, and the drop-down owns the shared one.
+    let (socket, holder) = if dropdown.is_some() {
+        let socket = runtime_dir().join("kyko").join("hold.sock");
+        if let Err(e) = session::ensure_shared_holder(&socket) {
             eprintln!("kyko: cannot start kykod: {e}");
             return ExitCode::from(1);
         }
+        (socket, None)
+    } else {
+        let socket = runtime_dir()
+            .join("kyko")
+            .join(format!("win-{}.sock", std::process::id()));
+        match session::start_private_holder(&socket) {
+            Ok(h) => (socket, Some(h)),
+            Err(e) => {
+                eprintln!("kyko: cannot start kykod: {e}");
+                return ExitCode::from(1);
+            }
+        }
     };
 
+    let launch = session::Launch {
+        shell,
+        args,
+        cwd,
+        persistent: dropdown.is_some(),
+    };
     bridge::configure(
         socket,
-        session::Launch { shell, args, cwd },
+        launch,
         appearance::load(),
         cli.title.unwrap_or_default(),
     );
+    if dropdown.is_some()
+        && let Err(e) = bridge::serve_bus()
+    {
+        eprintln!(
+            "kyko: cannot serve {}: {e} (is the drop-down already running?)",
+            control::NAME
+        );
+        return ExitCode::from(1);
+    }
+    watch::spawn(appearance::watched_files(), || {
+        bridge::set_look(appearance::load())
+    });
+
     let mut app = QGuiApplication::new();
     if let Some(class) = &cli.class {
         bridge::app_set_id(class);
@@ -76,11 +149,23 @@ fn main() -> ExitCode {
     bridge::grid_register();
     let mut engine = QQmlApplicationEngine::new();
     if let Some(e) = engine.as_mut() {
-        e.load(&QUrl::from("qrc:/qt/qml/org/kyko/app/qml/Main.qml"));
+        let file = if dropdown.is_some() {
+            "DropDown"
+        } else {
+            "Main"
+        };
+        e.load(&QUrl::from(&format!(
+            "qrc:/qt/qml/org/kyko/app/qml/{file}.qml"
+        )));
+    }
+    if dropdown == Some(true) {
+        bridge::show_at_start();
     }
     let code = app.as_mut().map_or(1, |a| a.exec());
     bridge::shutdown();
-    session::reap(holder);
+    if let Some(holder) = holder {
+        session::reap(holder);
+    }
     // The shell's own status when it ended the window, else Qt's.
     let status = bridge::exit_status().unwrap_or(code);
     ExitCode::from(u8::try_from(status & 0xff).unwrap_or(1))

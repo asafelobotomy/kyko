@@ -33,6 +33,8 @@ pub mod ffi {
         fn kyko_test_shot() -> String;
         fn kyko_notice() -> String;
         fn kyko_exit_status() -> i32;
+        fn kyko_setting(name: &str) -> i32;
+        fn kyko_set_visible(visible: bool);
         fn kyko_palette_bg() -> u32;
         fn kyko_palette_fg() -> u32;
         fn kyko_palette_cursor() -> u32;
@@ -44,6 +46,8 @@ pub mod ffi {
         include!("kyko/cpp/gridview.h");
         fn grid_register();
         fn grid_request_repaint();
+        fn grid_reload_look();
+        fn controller_send(code: i32);
         fn app_set_id(id: &str);
     }
 }
@@ -54,11 +58,12 @@ struct Setup {
     title: String,
     socket: PathBuf,
     launch: Mutex<Option<Launch>>,
-    look: Look,
 }
 
 static SETUP: OnceLock<Setup> = OnceLock::new();
 static SESSION: OnceLock<Session> = OnceLock::new();
+static LOOK: OnceLock<Mutex<Look>> = OnceLock::new();
+static SERVICE: OnceLock<crate::control::Service> = OnceLock::new();
 
 /// Called once by `main` before the window exists.
 pub fn configure(socket: PathBuf, launch: Launch, look: Look, title: String) {
@@ -66,16 +71,73 @@ pub fn configure(socket: PathBuf, launch: Launch, look: Look, title: String) {
         title,
         socket,
         launch: Mutex::new(Some(launch)),
-        look,
     });
+    let _ = LOOK.set(Mutex::new(look));
+}
+
+/// Shows the drop-down once the window exists (`kyko dropdown --show`).
+pub fn show_at_start() {
+    ffi::controller_send(crate::control::Command::Show.code());
+}
+
+/// A new look (the config or theme changed): recolour the panes and have the item reload.
+pub fn set_look(look: Look) {
+    let colors = look.colors.clone();
+    *LOOK.get().expect("configure ran first").lock().unwrap() = look;
+    if let Some(s) = SESSION.get() {
+        s.set_colors(colors);
+    }
+    ffi::grid_reload_look();
+}
+
+/// Serves `org.kyko.Terminal1` and routes its commands to the window.
+pub fn serve_bus() -> Result<(), String> {
+    let service =
+        crate::control::serve(|c| ffi::controller_send(c.code())).map_err(|e| e.to_string())?;
+    let _ = SERVICE.set(service);
+    Ok(())
+}
+
+fn kyko_set_visible(visible: bool) {
+    if let Some(s) = SERVICE.get() {
+        s.set_visible(visible);
+    }
+}
+
+fn kyko_setting(name: &str) -> i32 {
+    let l = look();
+    let b = |v: bool| i32::from(v);
+    let n = |v: u32| i32::try_from(v).unwrap_or(i32::MAX);
+    match name {
+        "accent" => n(l.accent),
+        "background" => n(l.colors.bg),
+        "radius" => n(l.radius),
+        "gap_out" => n(l.gap_out),
+        "border_width" => n(l.border_width),
+        "sheet" => b(l.sheet),
+        "height_pct" => n(l.height_pct),
+        "width_pct" => n(l.width_pct),
+        "above_fullscreen" => b(l.above_fullscreen),
+        "hide_on_focus_loss" => b(l.hide_on_focus_loss),
+        "animations" => b(l.animations),
+        _ => 0,
+    }
 }
 
 fn setup() -> &'static Setup {
     SETUP.get().expect("configure ran first")
 }
 
-fn colors() -> &'static Colors {
-    &setup().look.colors
+fn look() -> Look {
+    LOOK.get()
+        .expect("configure ran first")
+        .lock()
+        .unwrap()
+        .clone()
+}
+
+fn colors() -> Colors {
+    look().colors
 }
 
 /// The window's exit code: the shell's status, once it has ended.
@@ -108,7 +170,7 @@ fn kyko_start(cols: u16, rows: u16) {
         launch,
         cols,
         rows,
-        colors().clone(),
+        colors(),
         Box::new(ffi::grid_request_repaint),
     );
     let _ = SESSION.set(session);
@@ -193,11 +255,11 @@ fn kyko_palette_cursor() -> u32 {
 }
 
 fn kyko_palette_font() -> String {
-    setup().look.font.clone()
+    look().font
 }
 
 fn kyko_palette_font_size() -> u16 {
-    setup().look.font_size
+    look().font_size
 }
 
 /// A test aid: when `KYKO_TEST_SHOT` names a file, the window saves its screen there after a

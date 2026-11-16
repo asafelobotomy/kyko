@@ -1,0 +1,16 @@
+[Unit]
+Description=kyko drop-down terminal
+Wants=kykod.service
+After=kykod.service graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/kyko dropdown
+Restart=on-failure
+# Stopping or restarting the window leaves the holder, and so every shell, alone.
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=graphical-session.target

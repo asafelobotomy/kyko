@@ -11,7 +11,7 @@ pkgdesc="Drop-down terminal for uQ and other Wayland desktops"
 arch=(x86_64)
 url="https://github.com/asafelobotomy/kyko"
 license=(MIT)
-depends=(gcc-libs qt6-base qt6-declarative)
+depends=(gcc-libs qt6-base qt6-declarative qt6-wayland layer-shell-qt)
 makedepends=(cargo qt6-shadertools)
 # The end-to-end tests run less as their full-screen program.
 checkdepends=(less)
@@ -49,6 +49,9 @@ package() {
   install -Dm755 target/release/kykod "$pkgdir/usr/bin/kykod"
   # A user unit, installed but not enabled.
   install -Dm644 packaging/kykod.service "$pkgdir/usr/lib/systemd/user/kykod.service"
+  install -Dm644 packaging/kyko.service "$pkgdir/usr/lib/systemd/user/kyko.service"
+  # `kyko toggle` and the first Run start the drop-down through D-Bus activation.
+  install -Dm644 packaging/org.kyko.Terminal1.service "$pkgdir/usr/share/dbus-1/services/org.kyko.Terminal1.service"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   # The built-in themes are uQ's; their credits and licences.
   install -Dm644 crates/kyko-core/themes/CREDITS.md "$pkgdir/usr/share/licenses/$pkgname/THEMES.md"

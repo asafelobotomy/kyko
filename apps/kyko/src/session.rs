@@ -10,7 +10,8 @@ use kyko_link::{Event, Link, LinkError};
 use kyko_proto::SpawnSpec;
 use kyko_term::{Colors, Snapshot};
 
-pub const PANE: u32 = 1;
+/// The colours the next snapshot is resolved with; the window swaps them on a theme change.
+pub type SharedColors = Arc<Mutex<Colors>>;
 
 /// What the window draws.
 #[derive(Clone)]
@@ -41,11 +42,13 @@ impl Frame {
 enum Cmd {
     Input(Vec<u8>),
     Resize(u16, u16),
+    Redraw,
     End,
 }
 
 pub struct Session {
     tx: Sender<Cmd>,
+    colors: SharedColors,
     pub frame: Arc<Mutex<Frame>>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -55,6 +58,9 @@ pub struct Launch {
     pub shell: String,
     pub args: Vec<String>,
     pub cwd: String,
+    /// The holder outlives this window (the drop-down's): the pane is attached again when it is
+    /// still there, a lost connection is retried, and closing the window ends nothing.
+    pub persistent: bool,
 }
 
 impl Session {
@@ -70,27 +76,41 @@ impl Session {
         let (tx, rx) = channel();
         let frame = Arc::new(Mutex::new(Frame::new()));
         let shared = frame.clone();
+        let colors = Arc::new(Mutex::new(colors));
+        let thread_colors = colors.clone();
         let thread = std::thread::Builder::new()
             .name("kyko-link".into())
             .spawn(move || {
-                let outcome = run(
-                    &socket,
-                    launch,
-                    cols,
-                    rows,
-                    &colors,
-                    &rx,
-                    &shared,
-                    &*on_change,
-                );
-                if let Err(e) = outcome {
-                    shared.lock().unwrap().notice = Some(format!("Sessions aren't available: {e}"));
-                    on_change();
+                let persistent = launch.persistent;
+                let mut size = (cols, rows);
+                loop {
+                    let outcome = run(
+                        &socket,
+                        &launch,
+                        &mut size,
+                        &thread_colors,
+                        &rx,
+                        &shared,
+                        &*on_change,
+                    );
+                    match outcome {
+                        Err(Stop::Link(e)) => {
+                            shared.lock().unwrap().notice =
+                                Some(format!("Sessions aren't available: {e}"));
+                            on_change();
+                            // The shared holder may come back (it restarts on failure): try again.
+                            if !persistent || wait_or_end(&rx, &mut size, Duration::from_secs(2)) {
+                                break;
+                            }
+                        }
+                        Err(Stop::Window) | Ok(()) => break,
+                    }
                 }
             })
             .expect("thread starts");
         Session {
             tx,
+            colors,
             frame,
             thread: Mutex::new(Some(thread)),
         }
@@ -98,6 +118,12 @@ impl Session {
 
     pub fn input(&self, bytes: Vec<u8>) {
         let _ = self.tx.send(Cmd::Input(bytes));
+    }
+
+    /// Draws with these colours from the next change on, and asks for one.
+    pub fn set_colors(&self, colors: Colors) {
+        *self.colors.lock().unwrap() = colors;
+        let _ = self.tx.send(Cmd::Redraw);
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {
@@ -117,51 +143,99 @@ impl Session {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Why [`run`] stopped.
+enum Stop {
+    /// The window is closing.
+    Window,
+    Link(LinkError),
+}
+
+impl From<LinkError> for Stop {
+    fn from(e: LinkError) -> Stop {
+        Stop::Link(e)
+    }
+}
+
+/// Waits `d` for commands while there is no link, keeping the latest size; true when the window
+/// asked to end.
+fn wait_or_end(rx: &Receiver<Cmd>, size: &mut (u16, u16), d: Duration) -> bool {
+    let end = Instant::now() + d;
+    while let Some(left) = end.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(Cmd::End) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return true,
+            Ok(Cmd::Resize(c, r)) => *size = (c, r),
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    false
+}
+
+fn publish(link: &Link, pane: u32, colors: &Mutex<Colors>, frame: &Mutex<Frame>) {
+    if let Some(p) = link.pane(pane) {
+        let modes = p.emulator().modes();
+        let snapshot = p.emulator().snapshot(&colors.lock().unwrap());
+        let mut f = frame.lock().unwrap();
+        f.snapshot = Some(snapshot);
+        f.app_cursor = modes.app_cursor;
+        f.bracketed_paste = modes.bracketed_paste;
+        f.program.clone_from(&p.program);
+        f.exited = p.exited;
+        f.notice = None;
+    }
+}
+
 fn run(
     socket: &Path,
-    launch: Launch,
-    cols: u16,
-    rows: u16,
-    colors: &Colors,
+    launch: &Launch,
+    size: &mut (u16, u16),
+    colors: &Mutex<Colors>,
     rx: &Receiver<Cmd>,
     frame: &Mutex<Frame>,
     on_change: &dyn Fn(),
-) -> Result<(), LinkError> {
+) -> Result<(), Stop> {
     let mut link = Link::connect(socket, 10_000)?;
-    link.spawn(SpawnSpec {
-        pane: PANE,
-        shell: launch.shell,
-        args: launch.args,
-        cwd: launch.cwd,
-        env: vec![
-            ("TERM".into(), "xterm-256color".into()),
-            ("COLORTERM".into(), "truecolor".into()),
-        ],
-        cols,
-        rows,
-        ring_bytes: 0,
-    })?;
-    link.attach(PANE)?;
+    // A shared holder may already hold a pane from an earlier window: attach to it.
+    let existing = link
+        .pane_ids()
+        .into_iter()
+        .find(|id| link.pane(*id).is_some_and(|p| p.exited.is_none()));
+    let mut pane = existing.unwrap_or_else(|| link.pane_ids().last().map_or(1, |id| id + 1));
+    if existing.is_none() {
+        start_shell(&mut link, pane, launch, *size)?;
+    }
+    link.attach(pane)?;
+    if existing.is_some() {
+        link.resize(pane, size.0, size.1)?;
+    }
     loop {
-        let mut end = false;
+        let mut redraw = false;
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
-                Cmd::Input(bytes) => link.input(PANE, &bytes)?,
-                Cmd::Resize(c, r) => link.resize(PANE, c, r)?,
-                Cmd::End => end = true,
+                Cmd::Input(bytes) => link.input(pane, &bytes)?,
+                Cmd::Resize(c, r) => {
+                    *size = (c, r);
+                    link.resize(pane, c, r)?;
+                }
+                Cmd::Redraw => redraw = true,
+                Cmd::End => {
+                    if !launch.persistent {
+                        // The window is closing and its shell goes with it.
+                        let _ = link.end_sessions(true);
+                    }
+                    return Err(Stop::Window);
+                }
             }
         }
-        if end {
-            // Forced: the window is closing, and its shell goes with it.
-            let _ = link.end_sessions(true);
-            return Ok(());
-        }
         let events = link.pump(Duration::from_millis(4))?;
-        let mut changed = false;
+        let mut changed = redraw;
+        let mut respawn = false;
         for event in events {
             match event {
-                Event::Changed(_) | Event::Info { .. } | Event::Exited { .. } => changed = true,
+                Event::Changed(_) | Event::Info { .. } => changed = true,
+                // The drop-down always has a shell: a new one takes the place of the one that ended.
+                Event::Exited { .. } if launch.persistent => respawn = true,
+                Event::Exited { .. } => changed = true,
                 Event::SpawnFailed { message, .. } => {
                     frame.lock().unwrap().notice =
                         Some(format!("Could not start the shell: {message}"));
@@ -170,19 +244,39 @@ fn run(
                 Event::Busy(_) => {}
             }
         }
+        if respawn {
+            link.close(pane)?;
+            pane = link.pane_ids().last().map_or(1, |id| id + 1).max(pane + 1);
+            start_shell(&mut link, pane, launch, *size)?;
+            link.attach(pane)?;
+            changed = true;
+        }
         if changed {
-            if let Some(p) = link.pane(PANE) {
-                let modes = p.emulator().modes();
-                let mut f = frame.lock().unwrap();
-                f.snapshot = Some(p.emulator().snapshot(colors));
-                f.app_cursor = modes.app_cursor;
-                f.bracketed_paste = modes.bracketed_paste;
-                f.program.clone_from(&p.program);
-                f.exited = p.exited;
-            }
+            publish(&link, pane, colors, frame);
             on_change();
         }
     }
+}
+
+fn start_shell(
+    link: &mut Link,
+    pane: u32,
+    launch: &Launch,
+    size: (u16, u16),
+) -> Result<(), LinkError> {
+    link.spawn(SpawnSpec {
+        pane,
+        shell: launch.shell.clone(),
+        args: launch.args.clone(),
+        cwd: launch.cwd.clone(),
+        env: vec![
+            ("TERM".into(), "xterm-256color".into()),
+            ("COLORTERM".into(), "truecolor".into()),
+        ],
+        cols: size.0,
+        rows: size.1,
+        ring_bytes: 0,
+    })
 }
 
 /// Finds `kykod`: next to this executable, else on `PATH`.
@@ -232,4 +326,33 @@ pub fn reap(mut holder: Child) {
     }
     let _ = holder.kill();
     let _ = holder.wait();
+}
+
+/// Makes sure a `kykod` serves `socket`, starting one of its own when none does: the drop-down's
+/// shared holder. With the systemd unit installed `kykod` is already there and this does nothing.
+pub fn ensure_shared_holder(socket: &Path) -> std::io::Result<()> {
+    if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+        return Ok(());
+    }
+    use std::os::unix::process::CommandExt;
+    // Its own process group: the holder must outlive this window and its terminal.
+    let _child = Command::new(kykod_path())
+        .arg("--socket")
+        .arg(socket)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()?;
+    let end = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < end {
+        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "kykod did not start",
+    ))
 }
