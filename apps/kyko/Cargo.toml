@@ -8,6 +8,7 @@ build = "build.rs"
 
 [dependencies]
 clap.workspace = true
+zbus = "6"
 cxx = "1.0"
 cxx-qt = "0.10"
 cxx-qt-lib = { version = "0.10", features = ["qt_gui", "qt_qml"] }

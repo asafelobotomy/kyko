@@ -10,6 +10,23 @@
 
 class QSGTexture;
 
+// What QML needs from Rust besides the grid: the window's settings, bus commands, and a signal
+// when the config or theme changed. One instance, made by the drop-down's QML.
+class Controller : public QObject {
+    Q_OBJECT
+public:
+    explicit Controller(QObject* parent = nullptr);
+    ~Controller() override;
+    Q_INVOKABLE int setting(const QString& name) const;
+    // The window's visibility, for the bus's Visible property.
+    Q_INVOKABLE void setVisible(bool visible) const;
+
+Q_SIGNALS:
+    // 0 toggle, 1 show, 2 hide: from `kyko toggle`, `show` and `hide` over D-Bus.
+    void command(int code);
+    void lookChanged();
+};
+
 // One pane's grid, drawn with scene-graph nodes and a glyph atlas (spec 2.4), and the keyboard
 // and input-method input that goes with it. The screen itself lives in Rust (session.rs).
 class GridView : public QQuickItem {
@@ -52,6 +69,13 @@ protected:
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
     void focusInEvent(QFocusEvent*) override;
 
+public:
+    // The config or theme changed: new font, new glyphs, new cell size.
+    void reloadLook();
+
+private:
+    void applyFont();
+
 private:
     struct Slot {
         float u0, v0, u1, v1;
@@ -77,6 +101,10 @@ private:
 void grid_request_repaint();
 // Names the window's application (Wayland app id, the `--class` option).
 void app_set_id(rust::Str id);
+// Delivers a bus command to the controller, on the GUI thread, from any thread.
+void controller_send(int code);
+// The look changed: asks the item and the controller to reload, on the GUI thread.
+void grid_reload_look();
 // Registers GridView with QML as org.kyko.app.GridView.
 void grid_register();
 

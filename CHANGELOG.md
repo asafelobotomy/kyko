@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The drop-down: `kyko dropdown` runs a layer-shell surface on the top edge (island or sheet,
+  overlay or top layer, from `config.toml`) that slides in and out; `kyko toggle`, `show` and
+  `hide` drive it over D-Bus (`org.kyko.Terminal1`, with a `Visible` property). Its shell lives in
+  the shared `kykod`, so stopping and starting the window keeps it; a lost connection is retried.
+  Focus loss hides it. A second drop-down refuses to start. `Esc` is passed to the program, not
+  taken to hide (a deliberate change from the spec: it would break vim); the toggle key and focus
+  loss hide it.
+- Live reload: `config.toml` and uQ's `tokens.json` are watched, and the font, colours, shape and
+  size follow a change without a restart.
+- `kyko.service`, `kykod.service` and a D-Bus activation file for `org.kyko.Terminal1`.
 - The window, windowed mode first: `kyko` opens a terminal window; `kyko -e CMD ARGS` runs a
   program in it (the window closes with the program's exit status), with `--title`, `--class`
   and `--working-directory`. It draws with a glyph atlas on Qt Quick's scene graph (one textured

@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.kyko.Terminal1
+Exec=/usr/bin/kyko dropdown

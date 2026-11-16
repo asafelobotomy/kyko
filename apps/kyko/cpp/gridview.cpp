@@ -22,6 +22,7 @@ namespace {
 const quint8 BOLD = 1, ITALIC = 2, UNDERLINE = 4, WIDE = 16, WIDE_SPACER = 32;
 const int ATLAS = 2048;
 QPointer<GridView> g_view;
+QPointer<Controller> g_ctl;
 
 // ---- glyph material: alpha from the atlas, colour per vertex ------------------------------------
 struct GlyphVertex {
@@ -154,7 +155,36 @@ void grid_request_repaint() {
         QMetaObject::invokeMethod(v, [v] { v->refreshStatus(); v->update(); }, Qt::QueuedConnection);
 }
 
-void grid_register() { qmlRegisterType<GridView>("org.kyko.app", 1, 0, "GridView"); }
+void controller_send(int code) {
+    if (Controller* c = g_ctl)
+        QMetaObject::invokeMethod(c, [c, code] { Q_EMIT c->command(code); }, Qt::QueuedConnection);
+}
+
+void grid_reload_look() {
+    if (GridView* v = g_view)
+        QMetaObject::invokeMethod(v, [v] { v->reloadLook(); }, Qt::QueuedConnection);
+    if (Controller* c = g_ctl)
+        QMetaObject::invokeMethod(c, [c] { Q_EMIT c->lookChanged(); }, Qt::QueuedConnection);
+}
+
+void grid_register() {
+    qmlRegisterType<GridView>("org.kyko.app", 1, 0, "GridView");
+    qmlRegisterType<Controller>("org.kyko.app", 1, 0, "Controller");
+}
+
+Controller::Controller(QObject* parent) : QObject(parent) { g_ctl = this; }
+
+Controller::~Controller() {
+    if (g_ctl == this)
+        g_ctl = nullptr;
+}
+
+int Controller::setting(const QString& name) const {
+    const std::string n = name.toStdString();
+    return kyko_setting(rust::Str(n.data(), n.size()));
+}
+
+void Controller::setVisible(bool visible) const { kyko_set_visible(visible); }
 
 // ---- the item -----------------------------------------------------------------------------------
 GridView::GridView(QQuickItem* parent) : QQuickItem(parent) {
@@ -162,6 +192,12 @@ GridView::GridView(QQuickItem* parent) : QQuickItem(parent) {
     setFlag(ItemAcceptsInputMethod, true);
     setActiveFocusOnTab(true);
     g_view = this;
+    applyFont();
+    m_atlas = QImage(ATLAS, ATLAS, QImage::Format_ARGB32_Premultiplied);
+    m_atlas.fill(Qt::transparent);
+}
+
+void GridView::applyFont() {
     m_font = QFont(QString::fromStdString(std::string(kyko_palette_font())));
     m_font.setPointSize(kyko_palette_font_size());
     m_font.setStyleHint(QFont::Monospace);
@@ -174,8 +210,22 @@ GridView::GridView(QQuickItem* parent) : QQuickItem(parent) {
     m_font.setLetterSpacing(QFont::AbsoluteSpacing, m_cellW - natural);
     m_cellH = std::ceil(fm.lineSpacing());
     m_ascent = fm.ascent() + (m_cellH - fm.height()) / 2;
-    m_atlas = QImage(ATLAS, ATLAS, QImage::Format_ARGB32_Premultiplied);
+}
+
+void GridView::reloadLook() {
+    applyFont();
+    m_slots.clear();
+    m_nextSlot = 0;
     m_atlas.fill(Qt::transparent);
+    m_atlasDirty = true;
+    const int cols = int(width() / m_cellW), rows = int(height() / m_cellH);
+    if (cols >= 2 && rows >= 1 && (cols != m_cols || rows != m_rows)) {
+        m_cols = cols;
+        m_rows = rows;
+        kyko_resize(quint16(cols), quint16(rows));
+        Q_EMIT gridChanged();
+    }
+    update();
 }
 
 GridView::~GridView() {
