@@ -15,7 +15,7 @@ use kyko_core::keys::{Key, Mods};
 use kyko_core::session::{Dir, Effect, PaneState, Session, SpawnRequest, SplitAxis};
 use kyko_link::{Event, Link, LinkError};
 use kyko_proto::{PaneId, PaneInfo, SpawnSpec};
-use kyko_term::{Colors, Snapshot};
+use kyko_term::{Colors, SelectKind, Snapshot};
 
 use crate::appearance::Look;
 
@@ -44,8 +44,35 @@ pub struct Shared {
     pub notice: Option<String>,
 }
 
+/// What a mouse did over a pane's grid, in cells.
+#[derive(Clone, Copy, Debug)]
+pub enum MouseKind {
+    Press,
+    Move,
+    Release,
+    Wheel,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MouseEv {
+    pub kind: MouseKind,
+    /// 0 left, 1 middle, 2 right, 3 none; for the wheel 0 up and 1 down.
+    pub button: u8,
+    pub col: u16,
+    pub row: u16,
+    /// The pointer is in the right half of its cell.
+    pub right: bool,
+    /// Shift 1, Alt 2, Ctrl 4, as for keys.
+    pub mods: u8,
+    /// 1, 2 or 3 for a single, double or triple click.
+    pub clicks: u8,
+}
+
 enum Cmd {
     Input(PaneId, Vec<u8>),
+    Mouse(PaneId, MouseEv),
+    Copy(PaneId),
+    Paste(PaneId, String),
     Resize(PaneId, u16, u16),
     Redraw,
     Act(Act),
@@ -63,6 +90,8 @@ pub enum Act {
     Ratio(u32, Vec<bool>, f64),
     Rename(u32, Option<String>),
     Dismiss(PaneId),
+    /// The answer to a close that asked first.
+    Confirm(bool),
 }
 
 pub struct Workspace {
@@ -95,6 +124,7 @@ struct Ctx {
     on_layout: Box<dyn Fn() + Send>,
     on_hide: Box<dyn Fn() + Send>,
     on_quit: Box<dyn Fn() + Send>,
+    on_copy: Box<dyn Fn(String) + Send>,
 }
 
 impl Workspace {
@@ -110,6 +140,7 @@ impl Workspace {
         on_layout: Box<dyn Fn() + Send>,
         on_hide: Box<dyn Fn() + Send>,
         on_quit: Box<dyn Fn() + Send>,
+        on_copy: Box<dyn Fn(String) + Send>,
     ) -> Workspace {
         let (tx, rx) = channel();
         let shared = Arc::new(Mutex::new(Shared::default()));
@@ -124,6 +155,7 @@ impl Workspace {
             on_layout,
             on_hide,
             on_quit,
+            on_copy,
         };
         let thread = std::thread::Builder::new()
             .name("kyko-link".into())
@@ -139,6 +171,19 @@ impl Workspace {
 
     pub fn input(&self, pane: PaneId, bytes: Vec<u8>) {
         let _ = self.tx.send(Cmd::Input(pane, bytes));
+    }
+
+    pub fn mouse(&self, pane: PaneId, ev: MouseEv) {
+        let _ = self.tx.send(Cmd::Mouse(pane, ev));
+    }
+
+    /// Puts the pane's selection on the clipboard.
+    pub fn copy(&self, pane: PaneId) {
+        let _ = self.tx.send(Cmd::Copy(pane));
+    }
+
+    pub fn paste(&self, pane: PaneId, text: String) {
+        let _ = self.tx.send(Cmd::Paste(pane, text));
     }
 
     pub fn resize(&self, pane: PaneId, cols: u16, rows: u16) {
@@ -248,6 +293,134 @@ pub fn action_for(look: &Look, key: u32, mods: u8, text: &str) -> Option<Action>
     look.keys.action_for(mods, key)
 }
 
+/// What a close is waiting for the user's word on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pending {
+    Pane(PaneId),
+    Tab(u32),
+}
+
+/// The programs running in what `what` would close, other than the shell.
+fn busy_programs(s: &Session, what: Pending) -> Vec<String> {
+    let mut out = Vec::new();
+    for tab in s.tabs() {
+        for pane in &tab.panes {
+            let hit = match what {
+                Pending::Pane(p) => pane.id == p,
+                Pending::Tab(t) => tab.id == t,
+            };
+            if hit && pane.busy && !out.iter().any(|n| n == pane.program) {
+                out.push(pane.program.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Bytes for a pasted text: bracketed when the program asked, with the escape characters taken
+/// out so the text cannot end the bracket itself; otherwise lines end in a carriage return.
+fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    let clean: String = text.chars().filter(|c| *c != '\x1b').collect();
+    if bracketed {
+        format!("\x1b[200~{clean}\x1b[201~").into_bytes()
+    } else {
+        clean.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+    }
+}
+
+/// A mouse event on a pane: sent to the program when it asked for mouse reports, else it selects
+/// text or scrolls. True when the pane's picture changed.
+fn mouse(
+    link: &mut Link,
+    pane: PaneId,
+    ev: MouseEv,
+    copy_on_select: bool,
+    on_copy: &dyn Fn(String),
+) -> Result<bool, LinkError> {
+    let Some(p) = link.pane(pane) else {
+        return Ok(false);
+    };
+    let modes = p.emulator().modes();
+    let shift = ev.mods & 1 != 0;
+    let tracking = modes.mouse_click || modes.mouse_drag || modes.mouse_motion;
+    if tracking && !shift {
+        let button = match ev.kind {
+            MouseKind::Wheel => 64 + ev.button,
+            _ => ev.button.min(3),
+        };
+        let motion = matches!(ev.kind, MouseKind::Move);
+        if motion && !(modes.mouse_motion || (modes.mouse_drag && ev.button < 3)) {
+            return Ok(false);
+        }
+        let mut cb = u32::from(button)
+            + if ev.mods & 2 != 0 { 8 } else { 0 }
+            + if ev.mods & 4 != 0 { 16 } else { 0 }
+            + if motion { 32 } else { 0 };
+        let (x, y) = (u32::from(ev.col) + 1, u32::from(ev.row) + 1);
+        let release = matches!(ev.kind, MouseKind::Release);
+        let bytes = if modes.sgr_mouse {
+            format!("\x1b[<{cb};{x};{y}{}", if release { 'm' } else { 'M' }).into_bytes()
+        } else {
+            if release {
+                cb = (cb & !3) | 3;
+            }
+            let mut out = b"\x1b[M".to_vec();
+            for v in [cb + 32, x + 32, y + 32] {
+                if modes.utf8_mouse {
+                    out.extend(char::from_u32(v).unwrap_or(' ').to_string().into_bytes());
+                } else {
+                    out.push(u8::try_from(v).unwrap_or(255));
+                }
+            }
+            out
+        };
+        link.input(pane, &bytes)?;
+        return Ok(false);
+    }
+    let Some(p) = link.pane_mut(pane) else {
+        return Ok(false);
+    };
+    match ev.kind {
+        MouseKind::Wheel => {
+            let lines = if ev.button == 0 { 3 } else { -3 };
+            if modes.alt_screen && modes.alternate_scroll {
+                // A full-screen program without mouse reports: the wheel is the arrow keys.
+                let key = match (ev.button == 0, modes.app_cursor) {
+                    (true, true) => "\x1bOA",
+                    (true, false) => "\x1b[A",
+                    (false, true) => "\x1bOB",
+                    (false, false) => "\x1b[B",
+                };
+                link.input(pane, key.repeat(3).as_bytes())?;
+                return Ok(false);
+            }
+            p.emulator_mut().scroll(lines);
+            Ok(true)
+        }
+        MouseKind::Press if ev.button == 0 => {
+            let kind = match ev.clicks {
+                2 => SelectKind::Word,
+                3.. => SelectKind::Line,
+                _ => SelectKind::Simple,
+            };
+            p.emulator_mut()
+                .select_start(ev.col, ev.row, kind, ev.right);
+            Ok(true)
+        }
+        MouseKind::Move if ev.button == 0 => {
+            p.emulator_mut().select_update(ev.col, ev.row, ev.right);
+            Ok(true)
+        }
+        MouseKind::Release if ev.button == 0 => {
+            if copy_on_select && let Some(t) = p.emulator().selection_text() {
+                on_copy(t);
+            }
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
+}
+
 fn handle(act: Act, s: &mut Session, look: &Look, login: &str) -> Vec<Effect> {
     match act {
         Act::Key(Action::NewTab) => {
@@ -305,6 +478,7 @@ fn handle(act: Act, s: &mut Session, look: &Look, login: &str) -> Vec<Effect> {
             Vec::new()
         }
         Act::Dismiss(p) => s.dismiss(p, login),
+        Act::Confirm(_) => Vec::new(),
     }
 }
 
@@ -376,7 +550,11 @@ fn publish(link: &Link, pane: PaneId, colors: &Mutex<Colors>, shared: &Mutex<Sha
 /// The tabs for the QML: `{active, focused, title, notice, tabs: [{id, name, active, panes:
 /// [{id, x, y, w, h, focused, state, status, message}], dividers: [{tab, path, axis, x, y, w, h,
 /// ratio}]}]}`, rectangles in each tab's unit square.
-pub fn layout_json(s: &Session, notice: Option<&str>) -> String {
+pub fn layout_json(
+    s: &Session,
+    notice: Option<&str>,
+    confirm: Option<&(Pending, Vec<String>)>,
+) -> String {
     use serde_json::json;
     let mut title = String::new();
     let tabs: Vec<_> = s
@@ -420,7 +598,10 @@ pub fn layout_json(s: &Session, notice: Option<&str>) -> String {
         out,
         "{}",
         json!({"active": s.active_tab(), "focused": s.focused_pane(), "title": title,
-               "notice": notice.unwrap_or(""), "tabs": tabs})
+               "notice": notice.unwrap_or(""), "tabs": tabs,
+               "confirm": confirm.map(|(what, programs)| json!({
+                   "what": match what { Pending::Pane(_) => "pane", Pending::Tab(_) => "tab" },
+                   "programs": programs.join(", ")}))})
     );
     out
 }
@@ -478,13 +659,42 @@ fn run(
     }
     ctx.shared.lock().unwrap().notice = None;
     let mut last_status = 0;
+    let mut pending: Option<(Pending, Vec<String>)> = None;
     let mut dirty: HashSet<PaneId> = session.pane_ids().into_iter().collect();
     let mut layout_changed = true;
     'main: loop {
         let mut effects = Vec::new();
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
-                Cmd::Input(p, bytes) => link.input(p, &bytes)?,
+                Cmd::Input(p, bytes) => {
+                    // Typing goes to the live screen and takes the selection away.
+                    if let Some(pn) = link.pane_mut(p) {
+                        let e = pn.emulator_mut();
+                        if e.display_offset() > 0 || e.selection_text().is_some() {
+                            e.scroll_to_bottom();
+                            e.select_clear();
+                            dirty.insert(p);
+                        }
+                    }
+                    link.input(p, &bytes)?;
+                }
+                Cmd::Mouse(p, ev) => {
+                    let l = look();
+                    if mouse(&mut link, p, ev, l.copy_on_select, &*ctx.on_copy)? {
+                        dirty.insert(p);
+                    }
+                }
+                Cmd::Copy(p) => {
+                    if let Some(t) = link.pane(p).and_then(|pn| pn.emulator().selection_text()) {
+                        (ctx.on_copy)(t);
+                    }
+                }
+                Cmd::Paste(p, text) => {
+                    let bracketed = link
+                        .pane(p)
+                        .is_some_and(|pn| pn.emulator().modes().bracketed_paste);
+                    link.input(p, &paste_bytes(&text, bracketed))?;
+                }
                 Cmd::Resize(p, c, r) => {
                     sizes.insert(p, (c, r));
                     if link.pane(p).is_some() {
@@ -494,8 +704,32 @@ fn run(
                 }
                 Cmd::Redraw => dirty.extend(session.pane_ids()),
                 Cmd::Act(act) => {
-                    effects.extend(handle(act, session, &look(), &login));
                     layout_changed = true;
+                    // Closing something that runs a program asks first.
+                    let target = match &act {
+                        Act::Key(Action::ClosePane) => Some(Pending::Pane(session.focused_pane())),
+                        Act::ClosePane(p) => Some(Pending::Pane(*p)),
+                        Act::CloseTab(t) => Some(Pending::Tab(*t)),
+                        _ => None,
+                    };
+                    if let Some(t) = target {
+                        let programs = busy_programs(session, t);
+                        if !programs.is_empty() {
+                            pending = Some((t, programs));
+                            continue;
+                        }
+                    }
+                    if let Act::Confirm(yes) = act {
+                        if let (Some((t, _)), true) = (pending.take(), yes) {
+                            let act = match t {
+                                Pending::Pane(p) => Act::ClosePane(p),
+                                Pending::Tab(t) => Act::CloseTab(t),
+                            };
+                            effects.extend(handle(act, session, &look(), &login));
+                        }
+                        continue;
+                    }
+                    effects.extend(handle(act, session, &look(), &login));
                 }
                 Cmd::End => {
                     if !ctx.launch.persistent {
@@ -550,7 +784,7 @@ fn run(
                 let mut sh = ctx.shared.lock().unwrap();
                 sh.frames.retain(|id, _| ids.contains(id));
                 sh.focused = session.focused_pane();
-                layout_json(session, sh.notice.as_deref())
+                layout_json(session, sh.notice.as_deref(), pending.as_ref())
             };
             ctx.shared.lock().unwrap().layout = json;
             dirty.extend(ids);

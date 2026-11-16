@@ -7,7 +7,8 @@ use kyko_term::{Colors, keys};
 use crate::appearance::Look;
 use kyko_core::config::Action;
 
-use crate::session::{Act, Launch, Workspace};
+use crate::session::{Act, Launch, MouseEv, MouseKind, Workspace};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 #[cxx::bridge]
 pub mod ffi {
@@ -30,6 +31,20 @@ pub mod ffi {
         ) -> u64;
         fn kyko_key(pane: u32, key: u32, mods: u8, text: &str) -> bool;
         fn kyko_text(pane: u32, text: &str);
+        fn kyko_paste(pane: u32, text: &str);
+        #[allow(clippy::too_many_arguments)]
+        #[allow(clippy::too_many_arguments)]
+        fn kyko_mouse(
+            pane: u32,
+            kind: u8,
+            button: u8,
+            col: u16,
+            row: u16,
+            right: bool,
+            mods: u8,
+            clicks: u8,
+        );
+        fn kyko_confirm(yes: bool);
         fn kyko_fixed_title() -> String;
         fn kyko_exit_status() -> i32;
         fn kyko_test_shot() -> String;
@@ -58,6 +73,8 @@ pub mod ffi {
         fn grid_reload_look();
         fn controller_send(code: i32);
         fn controller_layout_changed();
+        fn controller_copy(text: &str);
+        fn controller_paste(pane: u32);
         fn app_set_id(id: &str);
     }
 }
@@ -99,6 +116,7 @@ pub fn start() {
         Box::new(ffi::controller_layout_changed),
         Box::new(|| ffi::controller_send(crate::control::Command::Hide.code())),
         Box::new(|| ffi::controller_send(3)),
+        Box::new(|text| ffi::controller_copy(&text)),
     );
     let _ = WORKSPACE.set(ws);
 }
@@ -226,7 +244,14 @@ fn kyko_key(pane: u32, key: u32, mods: u8, text: &str) -> bool {
         return false;
     };
     if let Some(action) = crate::session::action_for(&look(), key, mods, text) {
-        w.act(Act::Key(action));
+        match action {
+            Action::Copy => w.copy(pane),
+            Action::Paste => ffi::controller_paste(pane),
+            Action::FontBigger => zoom(1),
+            Action::FontSmaller => zoom(-1),
+            Action::FontReset => zoom(0),
+            other => w.act(Act::Key(other)),
+        }
         return true;
     }
     let app_cursor = w
@@ -242,6 +267,62 @@ fn kyko_key(pane: u32, key: u32, mods: u8, text: &str) -> bool {
     }
     w.input(pane, bytes);
     true
+}
+
+/// The font size, as steps from the configured one; `0` takes it back.
+static ZOOM: AtomicI32 = AtomicI32::new(0);
+
+fn zoom(step: i32) {
+    let now = if step == 0 {
+        0
+    } else {
+        let base = i32::from(look().font_size);
+        (ZOOM.load(Ordering::SeqCst) + step).clamp(6 - base, 72 - base)
+    };
+    ZOOM.store(now, Ordering::SeqCst);
+    ffi::grid_reload_look();
+}
+
+fn kyko_paste(pane: u32, text: &str) {
+    if let Some(w) = WORKSPACE.get() {
+        w.paste(pane, text.to_string());
+    }
+}
+
+fn kyko_mouse(
+    pane: u32,
+    kind: u8,
+    button: u8,
+    col: u16,
+    row: u16,
+    right: bool,
+    mods: u8,
+    clicks: u8,
+) {
+    let kind = match kind {
+        0 => MouseKind::Press,
+        1 => MouseKind::Move,
+        2 => MouseKind::Release,
+        _ => MouseKind::Wheel,
+    };
+    if let Some(w) = WORKSPACE.get() {
+        w.mouse(
+            pane,
+            MouseEv {
+                kind,
+                button,
+                col,
+                row,
+                right,
+                mods,
+                clicks,
+            },
+        );
+    }
+}
+
+fn kyko_confirm(yes: bool) {
+    act(Act::Confirm(yes));
 }
 
 fn kyko_text(pane: u32, text: &str) {
@@ -334,7 +415,8 @@ fn kyko_palette_font() -> String {
 }
 
 fn kyko_palette_font_size() -> u16 {
-    look().font_size
+    let size = i32::from(look().font_size) + ZOOM.load(Ordering::SeqCst);
+    u16::try_from(size.clamp(6, 72)).unwrap_or(11)
 }
 
 /// A test aid: when `KYKO_TEST_SHOT` names a file, the window saves its screen there after a

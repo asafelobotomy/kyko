@@ -32,6 +32,8 @@ public:
     Q_INVOKABLE void setRatio(int tab, const QString& path, double ratio) const;
     Q_INVOKABLE void renameTab(int tab, const QString& name) const;
     Q_INVOKABLE QString fixedTitle() const;
+    // The answer to "close it anyway?".
+    Q_INVOKABLE void confirm(bool yes) const;
     // Test aid: where to save the window's screen (KYKO_TEST_SHOT), and after how many ms.
     Q_INVOKABLE QString shot() const;
     Q_INVOKABLE int shotDelay() const;
@@ -80,6 +82,11 @@ protected:
     void inputMethodEvent(QInputMethodEvent* e) override;
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
     void focusInEvent(QFocusEvent*) override;
+    void mousePressEvent(QMouseEvent* e) override;
+    void mouseMoveEvent(QMouseEvent* e) override;
+    void mouseReleaseEvent(QMouseEvent* e) override;
+    void hoverMoveEvent(QHoverEvent* e) override;
+    void wheelEvent(QWheelEvent* e) override;
 
 public:
     // The config or theme changed: new font, new glyphs, new cell size.
@@ -89,6 +96,8 @@ private:
     void applyFont();
     // Tells Rust how many columns and rows fit, when that changed.
     void fit();
+    // Sends a mouse event with its cell to Rust.
+    void sendMouse(quint8 kind, quint8 button, const QPointF& pos, Qt::KeyboardModifiers mods, quint8 clicks);
 
 private:
     struct Slot {
@@ -102,6 +111,12 @@ private:
     int m_cols = 0, m_rows = 0;
     int m_curX = -1, m_curY = -1;
     int m_pane = 0;
+    // For counting clicks: when and where the last press was, and how many in a row.
+    qint64 m_lastPress = 0;
+    QPoint m_lastCell;
+    int m_clicks = 0;
+    int m_wheel = 0;
+    Qt::MouseButtons m_down;
 
     QImage m_atlas;
     QHash<quint64, Slot> m_slots;
@@ -110,6 +125,9 @@ private:
     QSGTexture* m_texture = nullptr;
 };
 
+// Puts text on the clipboard, and reads it for a paste into a pane, on the GUI thread.
+void controller_copy(rust::Str text);
+void controller_paste(quint32 pane);
 // Called from Rust, on any thread: asks the item to draw again.
 void grid_request_repaint();
 // Names the window's application (Wayland app id, the `--class` option).
