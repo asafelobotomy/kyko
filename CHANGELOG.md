@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Prompt marks in the window (needs shell integration): a thin bar at the left edge of each
+  command's prompt, green when it succeeded, red when it failed and amber while it runs;
+  Ctrl+Shift+Up / Ctrl+Shift+Down jump to the previous / next prompt; Ctrl+Shift+O copies the
+  last command's output. All three keys can be changed in Preferences > Keys.
 - Shell integration, the same in bash, zsh and fish (`terminal.shell_integration`, on by default,
   in Preferences > Terminal): every new tab's shell reports its folder (OSC 7) and marks each
   prompt, command and exit status (OSC 133), and draws kyko's own prompt, rendered by the new

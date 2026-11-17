@@ -4,6 +4,7 @@
 //! shell (cursor position reports and the like) is collected by `take_replies`.
 mod colors;
 pub mod keys;
+pub mod marks;
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -40,9 +41,26 @@ pub struct Snapshot {
     pub rows: u16,
     /// Row-major, `cols * rows` cells.
     pub cells: Vec<Cell>,
+    /// One entry per row: [`GUTTER_NONE`], [`GUTTER_RUNNING`], [`GUTTER_OK`] or [`GUTTER_FAILED`]:
+    /// what the bar at the row's left edge shows about the command the row belongs to.
+    pub gutter: Vec<u8>,
     /// Column and row, or `None` when the program hid the cursor.
     pub cursor: Option<(u16, u16)>,
 }
+
+/// More than any piece of output `feed` hands the terminal at once can scroll.
+const HISTORY_ROOM: usize = 4096;
+/// The longest run of output handed to the terminal in one go.
+const PIECE: usize = 2048;
+
+/// The row is not part of a command the shell marked.
+pub const GUTTER_NONE: u8 = 0;
+/// The command is running.
+pub const GUTTER_RUNNING: u8 = 1;
+/// The command exited with status 0.
+pub const GUTTER_OK: u8 = 2;
+/// The command exited with another status.
+pub const GUTTER_FAILED: u8 = 3;
 
 /// What a mouse press starts selecting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,6 +179,11 @@ pub struct Emulator {
     /// Where the last search found its query: line, first column, last column.
     matches: Vec<(i32, usize, usize)>,
     current: usize,
+    scanner: marks::Scanner,
+    /// The shell's marks, by row number.
+    marks: marks::Table,
+    /// Lines that scrolled off the top of the history and are gone: row numbers count from them.
+    gone: u64,
 }
 
 impl Emulator {
@@ -178,12 +201,18 @@ impl Emulator {
             kitty_keyboard: false,
             matches: Vec::new(),
             current: 0,
+            scanner: marks::Scanner::default(),
+            marks: marks::Table::new(),
+            gone: 0,
         }
     }
 
     fn config(scrollback: usize, kitty_keyboard: bool) -> Config {
         Config {
-            scrolling_history: scrollback,
+            // The terminal itself is given room beyond the limit, so that it never drops a line
+            // unseen: `feed` trims the history to the limit itself, in pieces small enough not to
+            // overshoot the room, and so knows how many lines are gone (see `row_id`).
+            scrolling_history: scrollback + HISTORY_ROOM,
             kitty_keyboard,
             ..Config::default()
         }
@@ -259,8 +288,43 @@ impl Emulator {
 
     /// Output from the shell.
     pub fn feed(&mut self, bytes: &[u8]) {
-        self.processor.advance(&mut self.term, bytes);
+        let events = self.scanner.scan(bytes);
+        let mut at = 0;
+        for (end, event) in events {
+            // The terminal takes the output up to the mark first, so the cursor is where the
+            // shell had it when it sent the mark.
+            self.advance(&bytes[at..end]);
+            self.mark(event);
+            at = end;
+        }
+        self.advance(&bytes[at..]);
         self.sync_title();
+    }
+
+    /// Output to the terminal, a piece at a time, trimming the history to its limit after each.
+    fn advance(&mut self, bytes: &[u8]) {
+        for piece in bytes.chunks(PIECE) {
+            let before = self.history_len();
+            self.processor.advance(&mut self.term, piece);
+            if self.term.mode().contains(TermMode::ALT_SCREEN) {
+                continue;
+            }
+            let after = self.history_len();
+            if after < before {
+                // The program cleared the history (`CSI 3 J`).
+                self.gone += (before - after) as u64;
+            }
+            if after > self.scrollback {
+                // Setting the limit lower drops the oldest lines at once; then it goes back up.
+                self.term.set_options(Config {
+                    scrolling_history: self.scrollback,
+                    ..Self::config(self.scrollback, self.kitty_keyboard)
+                });
+                self.term
+                    .set_options(Self::config(self.scrollback, self.kitty_keyboard));
+                self.gone += (after - self.history_len()) as u64;
+            }
+        }
     }
 
     /// Forget everything, then feed `bytes`, a pane's replay from `kykod`. When the pane's ring
@@ -277,6 +341,9 @@ impl Emulator {
             &self.shared,
         );
         self.processor = Processor::new();
+        self.scanner = marks::Scanner::default();
+        self.marks.clear();
+        self.gone = 0;
         *self.shared.lock() = Shared::default();
         self.title = None;
         self.feed(bytes);
@@ -285,8 +352,19 @@ impl Emulator {
 
     /// Sizes below 2 columns by 1 row are clamped up to it.
     pub fn resize(&mut self, cols: u16, rows: u16) {
-        self.size = Size::clamped(cols, rows);
+        let new = Size::clamped(cols, rows);
+        let width_changed = new.cols != self.size.cols;
+        // Where the cursor's line stands, counted from the top of the history.
+        let cursor_row = |e: &Emulator| e.row_id(e.term.grid().cursor.point.line.0);
+        let before = cursor_row(self);
+        self.size = new;
         self.term.resize(self.size);
+        // A new width re-wraps lines, and then row numbers no longer mean what they did. A shell
+        // that has only printed its first prompt has nothing to re-wrap, and the cursor's row
+        // number says so: it is unchanged.
+        if width_changed && cursor_row(self) != before {
+            self.marks.clear();
+        }
     }
 
     pub fn snapshot(&self, colors: &Colors) -> Snapshot {
@@ -349,6 +427,7 @@ impl Emulator {
             cols: cols as u16,
             rows: rows as u16,
             cells,
+            gutter: self.gutter(),
             cursor,
         }
     }
@@ -535,5 +614,186 @@ impl Emulator {
     pub fn flush_sync(&mut self) {
         self.processor.stop_sync(&mut self.term);
         self.sync_title();
+    }
+}
+
+/// Prompt marks (see [`marks`]): what the shell's OSC 133 sequences let the window do.
+impl Emulator {
+    /// The number of the row at screen line `line` (negative lines are the history): it stays the
+    /// same line's number as the screen scrolls, and counts up from the oldest line ever lost.
+    fn row_id(&self, line: i32) -> u64 {
+        (self.gone as i64 + self.history_len() as i64 + i64::from(line)).max(0) as u64
+    }
+
+    /// The screen line of row number `id`.
+    fn line_of(&self, id: u64) -> i32 {
+        (id as i64 - self.gone as i64 - self.history_len() as i64) as i32
+    }
+
+    fn in_alt_screen(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    /// Records a mark the shell sent, on the row the cursor is on.
+    fn mark(&mut self, event: marks::Event) {
+        if self.in_alt_screen() {
+            // A full-screen program has the screen; the shell's marks are for the main one.
+            return;
+        }
+        let cursor = self.term.grid().cursor.point;
+        let id = self.row_id(cursor.line.0);
+        match event {
+            marks::Event::Prompt => self.marks.entry(id).or_default().prompt = true,
+            marks::Event::Input => {}
+            marks::Event::Output => self.marks.entry(id).or_default().output = true,
+            marks::Event::Done(code) => {
+                self.marks.entry(id).or_default().end = Some(cursor.column.0 > 0);
+                // The status belongs to the prompt the command began at: the nearest above.
+                let prompt = self
+                    .marks
+                    .range(..=id)
+                    .rev()
+                    .find(|(_, m)| m.prompt)
+                    .map(|(&p, _)| p);
+                if let Some(p) = prompt {
+                    let row = self.marks.entry(p).or_default();
+                    row.status.get_or_insert(code.unwrap_or(0));
+                }
+            }
+        }
+        self.forget_lost_marks();
+    }
+
+    /// Marks on lines that have scrolled out of the history are of no use.
+    fn forget_lost_marks(&mut self) {
+        let keep = self.gone;
+        self.marks = self.marks.split_off(&keep);
+    }
+
+    /// The nearest prompt row number before `id`.
+    fn prompt_before(&self, id: u64) -> Option<u64> {
+        self.marks
+            .range(..id)
+            .rev()
+            .find(|(_, m)| m.prompt)
+            .map(|(&p, _)| p)
+    }
+
+    /// The nearest prompt row number after `id`.
+    fn prompt_after(&self, id: u64) -> Option<u64> {
+        self.marks
+            .range(id + 1..)
+            .find(|(_, m)| m.prompt)
+            .map(|(&p, _)| p)
+    }
+
+    /// What the gutter shows for the command whose prompt is on row `prompt`.
+    fn gutter_of(&self, prompt: u64) -> u8 {
+        let row = self.marks.get(&prompt);
+        match row.and_then(|r| r.status) {
+            Some(0) => GUTTER_OK,
+            Some(_) => GUTTER_FAILED,
+            // No status yet: running if its output began and no later prompt came.
+            None if self.prompt_after(prompt).is_none()
+                && self.marks.range(prompt + 1..).any(|(_, m)| m.output) =>
+            {
+                GUTTER_RUNNING
+            }
+            None => GUTTER_NONE,
+        }
+    }
+
+    /// The gutter of every row in view.
+    fn gutter(&self) -> Vec<u8> {
+        let rows = self.term.screen_lines();
+        let mut out = vec![GUTTER_NONE; rows];
+        if self.marks.is_empty() || self.in_alt_screen() {
+            return out;
+        }
+        let first = -(self.display_offset() as i32);
+        let mut code = self
+            .prompt_before(self.row_id(first))
+            .map_or(GUTTER_NONE, |p| self.gutter_of(p));
+        for (i, slot) in out.iter_mut().enumerate() {
+            let id = self.row_id(first + i as i32);
+            if self.marks.get(&id).is_some_and(|m| m.prompt) {
+                code = self.gutter_of(id);
+            }
+            *slot = code;
+        }
+        out
+    }
+
+    /// Scrolls to the previous (`dir < 0`) or next (`dir > 0`) prompt: the one before or after the
+    /// line at the top of the view. False when there is none that way.
+    pub fn jump_prompt(&mut self, dir: i32) -> bool {
+        if self.in_alt_screen() {
+            return false;
+        }
+        let top = self.row_id(-(self.display_offset() as i32));
+        let target = if dir < 0 {
+            self.prompt_before(top)
+        } else {
+            // The prompt at the top of the view is where the view already is.
+            self.prompt_after(top)
+        };
+        let Some(id) = target else { return false };
+        let want = (-self.line_of(id)).clamp(0, self.history_len() as i32);
+        let now = self.display_offset() as i32;
+        if want == now {
+            // Already as far as the view goes: the prompt is on the live screen.
+            return false;
+        }
+        self.term.scroll_display(Scroll::Delta(want - now));
+        true
+    }
+
+    /// Selects the output of the last command that finished, from the line its output began on to
+    /// the line it ended on. False when there is none, or it printed nothing.
+    pub fn select_last_output(&mut self) -> bool {
+        if self.in_alt_screen() {
+            return false;
+        }
+        let Some((&end, inclusive)) = self
+            .marks
+            .iter()
+            .rev()
+            .find_map(|(id, m)| m.end.map(|inc| (id, inc)))
+        else {
+            return false;
+        };
+        let previous_end = self
+            .marks
+            .range(..end)
+            .rev()
+            .find(|(_, m)| m.end.is_some())
+            .map(|(&p, _)| p);
+        // Its output began at the last output mark before the end, and after the previous end. If
+        // that mark has scrolled out of the history, what is left starts at the oldest line.
+        let begin = match self.marks.range(..=end).rev().find(|(_, m)| m.output) {
+            Some((&b, _)) if previous_end.is_none_or(|p| p < b) => b,
+            None if previous_end.is_none() => self.gone,
+            _ => return false,
+        };
+        let last = if inclusive {
+            end
+        } else {
+            end.saturating_sub(1)
+        };
+        if last < begin {
+            return false;
+        }
+        let cols = self.term.columns();
+        let mut sel = Selection::new(
+            SelectionType::Lines,
+            Point::new(Line(self.line_of(begin)), Column(0)),
+            Side::Left,
+        );
+        sel.update(
+            Point::new(Line(self.line_of(last)), Column(cols.saturating_sub(1))),
+            Side::Right,
+        );
+        self.term.selection = Some(sel);
+        true
     }
 }
