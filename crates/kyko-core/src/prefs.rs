@@ -113,7 +113,7 @@ pub const PAGES: &[Page] = &[
             Item {
                 key: "terminal.new_tab_dir",
                 label: "New tabs start in",
-                help: "The home folder, or the focused pane's folder.",
+                help: "home: the home folder. current: the folder of the focused pane.",
                 kind: Kind::Choice(&["home", "current"]),
             },
             Item {
