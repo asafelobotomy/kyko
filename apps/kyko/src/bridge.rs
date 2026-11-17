@@ -263,7 +263,7 @@ fn setup() -> &'static Setup {
     SETUP.get().expect("configure ran first")
 }
 
-fn look() -> Look {
+pub(crate) fn look() -> Look {
     LOOK.get()
         .expect("configure ran first")
         .lock()
