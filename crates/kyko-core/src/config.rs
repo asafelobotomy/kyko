@@ -116,9 +116,15 @@ pub enum Action {
     FontBigger,
     FontSmaller,
     FontReset,
+    /// Scrolls to the previous prompt.
+    PrevPrompt,
+    /// Scrolls to the next prompt.
+    NextPrompt,
+    /// Selects and copies the output of the last command.
+    CopyLastOutput,
 }
 
-const ACTIONS: [Action; 25] = [
+const ACTIONS: [Action; 28] = [
     Action::NewTab,
     Action::ClosePane,
     Action::PrevTab,
@@ -144,6 +150,9 @@ const ACTIONS: [Action; 25] = [
     Action::FontBigger,
     Action::FontSmaller,
     Action::FontReset,
+    Action::PrevPrompt,
+    Action::NextPrompt,
+    Action::CopyLastOutput,
 ];
 
 const fn m(ctrl: bool, alt: bool, shift: bool) -> Mods {
@@ -191,6 +200,9 @@ impl Action {
             Action::FontBigger => "font_bigger",
             Action::FontSmaller => "font_smaller",
             Action::FontReset => "font_reset",
+            Action::PrevPrompt => "prev_prompt",
+            Action::NextPrompt => "next_prompt",
+            Action::CopyLastOutput => "copy_last_output",
         }
     }
 
@@ -213,6 +225,9 @@ impl Action {
             Action::FontBigger => (CTRL, Key::Char('+')),
             Action::FontSmaller => (CTRL, Key::Char('-')),
             Action::FontReset => (CTRL, Key::Char('0')),
+            Action::PrevPrompt => (CTRL_SHIFT, Key::Up),
+            Action::NextPrompt => (CTRL_SHIFT, Key::Down),
+            Action::CopyLastOutput => (CTRL_SHIFT, Key::Char('O')),
         };
         KeySeq::new(mods, key)
     }
@@ -220,7 +235,7 @@ impl Action {
 
 /// The sequence bound to each action; `None` is unbound.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Keys([Option<KeySeq>; 25]);
+pub struct Keys([Option<KeySeq>; 28]);
 
 impl Default for Keys {
     fn default() -> Self {

@@ -113,10 +113,17 @@ QSGGeometryNode* makeBgNode() {
 
 // Backgrounds: one quad for the whole item, one per run of cells with a non-default background,
 // and the cursor block on top.
-void fillBg(QSGGeometryNode* node, const FfiCell* cells, int cols, int rows, qreal cw, qreal ch, qreal w, qreal h,
-            int curX, int curY, quint32 curColor) {
+// The gutter: a thin bar at the left edge of the rows that belong to a command the shell marked,
+// green when it succeeded, red when it failed, yellow while it runs.
+constexpr float GUTTER_W = 3.0f;
+
+void fillBg(QSGGeometryNode* node, const FfiCell* cells, const uint8_t* gutter, int cols, int rows, qreal cw,
+            qreal ch, qreal w, qreal h, int curX, int curY, quint32 curColor) {
     const quint32 def = kyko_palette_bg();
     int quads = 1 + (curX >= 0 ? 1 : 0);
+    for (int r = 0; r < rows; ++r)
+        if (gutter[r])
+            ++quads;
     for (int r = 0; r < rows; ++r) {
         const FfiCell* row = cells + size_t(r) * cols;
         for (int c = 0; c < cols;) {
@@ -143,6 +150,9 @@ void fillBg(QSGGeometryNode* node, const FfiCell* cells, int cols, int rows, qre
             c = e;
         }
     }
+    for (int r = 0; r < rows; ++r)
+        if (gutter[r])
+            quad(p, 0, float(r * ch), GUTTER_W, float((r + 1) * ch), kyko_palette_gutter(gutter[r]));
     if (curX >= 0) {
         const bool wide = cells[size_t(curY) * cols + curX].flags & WIDE;
         quad(p, float(curX * cw), float(curY * ch), float((curX + (wide ? 2 : 1)) * cw), float((curY + 1) * ch),
@@ -375,10 +385,11 @@ GridView::Slot GridView::slotFor(quint32 ch, quint8 style) {
 
 QSGNode* GridView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     rust::Vec<FfiCell> cells;
+    rust::Vec<uint8_t> gutter;
     quint16 cols = 0, rows = 0;
     int cx = -1, cy = -1;
-    kyko_snapshot(quint32(m_pane), cells, cols, rows, cx, cy);
-    if (cols == 0 || rows == 0 || cells.size() < size_t(cols) * rows) {
+    kyko_snapshot(quint32(m_pane), cells, gutter, cols, rows, cx, cy);
+    if (cols == 0 || rows == 0 || cells.size() < size_t(cols) * rows || gutter.size() < size_t(rows)) {
         delete old;
         return nullptr;
     }
@@ -400,7 +411,7 @@ QSGNode* GridView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     }
     const quint32 cursorColor = kyko_palette_cursor();
     auto* bg = static_cast<QSGGeometryNode*>(root->firstChild());
-    fillBg(bg, cells.data(), cols, rows, m_cellW, m_cellH, width(), height(), cx, cy, cursorColor);
+    fillBg(bg, cells.data(), gutter.data(), cols, rows, m_cellW, m_cellH, width(), height(), cx, cy, cursorColor);
 
     auto* gn = static_cast<QSGGeometryNode*>(bg->nextSibling());
     int count = 0;

@@ -229,6 +229,24 @@ pub const PAGES: &[Page] = &[
                 kind: Kind::Key,
             },
             Item {
+                key: "keys.prev_prompt",
+                label: "Previous prompt",
+                help: "Scroll back to the prompt before the one at the top.",
+                kind: Kind::Key,
+            },
+            Item {
+                key: "keys.next_prompt",
+                label: "Next prompt",
+                help: "",
+                kind: Kind::Key,
+            },
+            Item {
+                key: "keys.copy_last_output",
+                label: "Copy last output",
+                help: "Selects and copies what the last command printed.",
+                kind: Kind::Key,
+            },
+            Item {
                 key: "keys.font_bigger",
                 label: "Bigger text",
                 help: "",

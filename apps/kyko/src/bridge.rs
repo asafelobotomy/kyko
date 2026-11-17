@@ -24,6 +24,7 @@ pub mod ffi {
         fn kyko_snapshot(
             pane: u32,
             out: &mut Vec<FfiCell>,
+            gutter: &mut Vec<u8>,
             cols: &mut u16,
             rows: &mut u16,
             cur_x: &mut i32,
@@ -67,6 +68,7 @@ pub mod ffi {
         fn kyko_palette_bg() -> u32;
         fn kyko_palette_fg() -> u32;
         fn kyko_palette_cursor() -> u32;
+        fn kyko_palette_gutter(kind: u8) -> u32;
         fn kyko_palette_font() -> String;
         fn kyko_palette_font_size() -> u16;
     }
@@ -295,12 +297,14 @@ fn kyko_resize(pane: u32, cols: u16, rows: u16) {
 fn kyko_snapshot(
     pane: u32,
     out: &mut Vec<ffi::FfiCell>,
+    gutter: &mut Vec<u8>,
     cols: &mut u16,
     rows: &mut u16,
     cur_x: &mut i32,
     cur_y: &mut i32,
 ) -> u64 {
     out.clear();
+    gutter.clear();
     *cols = 0;
     *rows = 0;
     let Some(w) = WORKSPACE.get() else { return 0 };
@@ -313,6 +317,7 @@ fn kyko_snapshot(
     (*cur_x, *cur_y) = snap
         .cursor
         .map_or((-1, -1), |(x, y)| (i32::from(x), i32::from(y)));
+    gutter.extend_from_slice(&snap.gutter);
     out.extend(snap.cells.iter().map(|c| ffi::FfiCell {
         ch: c.ch as u32,
         fg: c.fg,
@@ -331,6 +336,9 @@ fn kyko_key(pane: u32, key: u32, mods: u8, text: &str) -> bool {
     if let Some(action) = crate::session::action_for(&look(), key, mods, text) {
         match action {
             Action::Copy => w.copy(pane),
+            Action::PrevPrompt => w.jump_prompt(pane, -1),
+            Action::NextPrompt => w.jump_prompt(pane, 1),
+            Action::CopyLastOutput => w.copy_last_output(pane),
             Action::Paste => ffi::controller_paste(pane),
             Action::FontBigger => zoom(1),
             Action::FontSmaller => zoom(-1),
@@ -534,6 +542,16 @@ fn kyko_palette_fg() -> u32 {
 
 fn kyko_palette_cursor() -> u32 {
     colors().cursor
+}
+
+/// The colour of the bar beside a command: running, succeeded or failed (kyko-term's `GUTTER_*`).
+fn kyko_palette_gutter(kind: u8) -> u32 {
+    let c = colors();
+    match kind {
+        kyko_term::GUTTER_RUNNING => c.ansi[11],
+        kyko_term::GUTTER_OK => c.ansi[10],
+        _ => c.ansi[9],
+    }
 }
 
 fn kyko_palette_font() -> String {

@@ -89,6 +89,10 @@ enum Cmd {
     Input(PaneId, Vec<u8>),
     Mouse(PaneId, MouseEv),
     Copy(PaneId),
+    /// Scroll to the previous (-1) or next (1) prompt.
+    PromptJump(PaneId, i32),
+    /// Select the last command's output and copy it.
+    CopyLastOutput(PaneId),
     Paste(PaneId, String),
     Search(SearchOp),
     Resize(PaneId, u16, u16),
@@ -207,6 +211,16 @@ impl Workspace {
     /// Puts the pane's selection on the clipboard.
     pub fn copy(&self, pane: PaneId) {
         let _ = self.tx.send(Cmd::Copy(pane));
+    }
+
+    /// Scrolls the pane to the previous (`dir < 0`) or next prompt.
+    pub fn jump_prompt(&self, pane: PaneId, dir: i32) {
+        let _ = self.tx.send(Cmd::PromptJump(pane, dir));
+    }
+
+    /// Selects what the last command printed and puts it on the clipboard.
+    pub fn copy_last_output(&self, pane: PaneId) {
+        let _ = self.tx.send(Cmd::CopyLastOutput(pane));
     }
 
     pub fn paste(&self, pane: PaneId, text: String) {
@@ -743,6 +757,24 @@ fn run(
                 Cmd::Copy(p) => {
                     if let Some(t) = link.pane(p).and_then(|pn| pn.emulator().selection_text()) {
                         (ctx.on_copy)(t);
+                    }
+                }
+                Cmd::PromptJump(p, dir) => {
+                    if let Some(pn) = link.pane_mut(p)
+                        && pn.emulator_mut().jump_prompt(dir)
+                    {
+                        dirty.insert(p);
+                    }
+                }
+                Cmd::CopyLastOutput(p) => {
+                    if let Some(pn) = link.pane_mut(p) {
+                        let e = pn.emulator_mut();
+                        if e.select_last_output() {
+                            if let Some(t) = e.selection_text() {
+                                (ctx.on_copy)(t);
+                            }
+                            dirty.insert(p);
+                        }
                     }
                 }
                 Cmd::Search(op) => {
