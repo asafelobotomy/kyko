@@ -218,6 +218,9 @@ Window {
         TextField {
             implicitWidth: 200
             text: item_.current
+            // Empty follows the theme: show the font that is in use.
+            placeholderText: root.vals["terminal.font_now"] || ""
+            placeholderTextColor: root.dim
             onEditingFinished: root.save(item_.key, text)
         }
     }

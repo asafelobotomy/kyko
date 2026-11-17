@@ -26,6 +26,13 @@ fn read(path: &std::path::Path) -> Result<String, String> {
 
 /// `{values: {key: value}, error: ""}`: the settings now; `error` says why the file cannot be
 /// read when it does not parse (the values are then the defaults).
+/// The font the terminal draws with now, as `terminal.font_now`: what an empty Font field shows
+/// greyed, so "follows the theme" names the theme's font.
+fn with_theme_font(mut v: serde_json::Value) -> serde_json::Value {
+    v["terminal.font_now"] = json!(crate::bridge::look().font);
+    v
+}
+
 pub fn values() -> String {
     let path = config_path();
     let loaded = path
@@ -36,8 +43,10 @@ pub fn values() -> String {
             Config::parse(&t).map_err(|e| format!("config.toml line {}: {}", e.line, e.message))
         });
     match loaded {
-        Ok(l) => json!({"values": prefs::values_json(&l.config), "error": ""}),
-        Err(e) => json!({"values": prefs::values_json(&Config::default()), "error": e}),
+        Ok(l) => json!({"values": with_theme_font(prefs::values_json(&l.config)), "error": ""}),
+        Err(e) => {
+            json!({"values": with_theme_font(prefs::values_json(&Config::default())), "error": e})
+        }
     }
     .to_string()
 }
