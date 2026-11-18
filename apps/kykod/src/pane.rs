@@ -109,6 +109,9 @@ struct State {
     /// program is nudged to redraw (see [`Pane::resize`]). Any `Resize` clears
     /// it, so a window that resends its size does not make programs redraw.
     nudge: Option<u64>,
+    /// Set by [`Pane::attach`] after it took a row off the terminal; the window's first `Resize`
+    /// puts the row back. Both changes reach the program as `SIGWINCH`, so it redraws everything.
+    shrunk: bool,
 }
 
 impl Pane {
@@ -170,6 +173,7 @@ impl Pane {
                 exited: None,
                 closed: false,
                 nudge: None,
+                shrunk: false,
             }),
         });
         let writing = pane.clone();
@@ -370,6 +374,12 @@ impl Pane {
         let (cols, rows) = (cols.max(2), rows.max(1));
         let mut st = self.lock();
         let first = st.nudge.take() == Some(window.id());
+        if std::mem::take(&mut st.shrunk) {
+            st.cols = cols;
+            st.rows = rows;
+            self.pty.resize(cols, rows);
+            return;
+        }
         if (cols, rows) == (st.cols, st.rows) {
             if first && !st.closed && st.exited.is_none() {
                 self.pty.nudge();
@@ -498,6 +508,12 @@ impl Pane {
         st.live = Some(window.clone());
         st.info_sent = None;
         st.nudge = Some(window.id());
+        // A same-size nudge makes some programs (htop) repaint only what changed, so a row is
+        // taken off here and the window's `Resize` gives it back: a real size change both ways.
+        if st.exited.is_none() && st.rows > 1 {
+            self.pty.resize(st.cols, st.rows - 1);
+            st.shrunk = true;
+        }
         self.send_info(&mut st, end);
         if st.live.is_some() {
             Ok(())
