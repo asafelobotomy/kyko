@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Full-screen programs such as htop repaint everything after you reattach a tab.** Attaching now takes a row off the terminal and the window gives it back, a real size change both ways, instead of a same-size nudge that some programs answered by redrawing only what had changed.
+
 ## [0.2.1] - 2026-11-17
 
 ### Changed
