@@ -2,8 +2,11 @@
 #define KYKO_GRIDVIEW_H
 
 #include <QtCore/QHash>
+#include <QtCore/QList>
+#include <QtCore/QTimer>
 #include <QtGui/QFont>
 #include <QtGui/QImage>
+#include <QtGui/QRawFont>
 #include <QtQuick/QQuickItem>
 
 #include "rust/cxx.h"
@@ -87,6 +90,7 @@ Q_SIGNALS:
 protected:
     QSGNode* updatePaintNode(QSGNode* old, UpdatePaintNodeData*) override;
     void geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) override;
+    void focusOutEvent(QFocusEvent*) override;
     void keyPressEvent(QKeyEvent* e) override;
     void inputMethodEvent(QInputMethodEvent* e) override;
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
@@ -109,14 +113,37 @@ private:
     void sendMouse(quint8 kind, quint8 button, const QPointF& pos, Qt::KeyboardModifiers mods, quint8 clicks);
 
 private:
-    struct Slot {
-        float u0, v0, u1, v1;
-        bool wide;
+    // A picture in the atlas: where it is, and where it goes relative to its anchor (the pen
+    // position on the baseline for a glyph, the cell's top-left corner for a drawn shape).
+    struct Tile {
+        float u0 = 0, v0 = 0, u1 = 0, v1 = 0;
+        float ox = 0, oy = 0, w = 0, h = 0;
+        bool color = false;  // a colour glyph (emoji): drawn with its own colours
+        bool valid = false;  // false: nothing to draw (a space, or no room)
     };
-    Slot slotFor(quint32 ch, quint8 style);
+    // One glyph of a shaped run: which font and glyph, the run's cell it belongs to, and its
+    // offset from that cell's pen position (a mark over its base, a ligature's own offset).
+    struct Shaped {
+        int font;
+        quint32 glyph;
+        int cell;
+        float dx, dy;
+    };
+    const QList<Shaped>& shape(const QString& text, const QList<int>& cellOf, quint8 style);
+    Tile glyphTile(int font, quint32 glyph);
+    Tile boxTile(quint32 ch);
+    bool allocate(int w, int h, int& x, int& y);
+    void resetAtlas();
+    int fontIndex(const QRawFont& f);
 
+    QFont m_fonts[4];  // regular, bold, italic, bold italic
     QFont m_font;
-    qreal m_cellW = 8, m_cellH = 16, m_ascent = 12;
+    bool m_ligatures = true;
+    qreal m_cellW = 8, m_cellH = 16, m_ascent = 12, m_shift = 0;
+    qreal m_ulPos = 2, m_ulThick = 1, m_strikePos = 6;
+    int m_cursorShape = 0;  // 0 block, 1 beam, 2 underline
+    bool m_blink = false, m_blinkOn = true;
+    QTimer m_blinkTimer;
     int m_cols = 0, m_rows = 0;
     int m_curX = -1, m_curY = -1;
     int m_pane = 0;
@@ -128,9 +155,11 @@ private:
     Qt::MouseButtons m_down;
 
     QImage m_atlas;
-    QHash<quint64, Slot> m_slots;
-    int m_nextSlot = 0;
-    bool m_atlasDirty = true;
+    int m_shelfX = 0, m_shelfY = 0, m_shelfH = 0;
+    bool m_atlasDirty = true, m_atlasReset = false;
+    QList<QRawFont> m_rawFonts;
+    QHash<quint64, Tile> m_tiles;  // (font << 32 | glyph), and box shapes under font 0xffff
+    QHash<QString, QList<Shaped>> m_shaped;
     QSGTexture* m_texture = nullptr;
 };
 

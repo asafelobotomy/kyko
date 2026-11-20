@@ -123,6 +123,12 @@ pub const PAGES: &[Page] = &[
                 kind: Kind::Bool,
             },
             Item {
+                key: "terminal.ligatures",
+                label: "Ligatures",
+                help: "Draw sequences such as => and != as one sign when the font has them. Never under the cursor.",
+                kind: Kind::Bool,
+            },
+            Item {
                 key: "terminal.shell_integration",
                 label: "Shell integration",
                 help: "The same prompt marks, folder tracking and prompt in bash, zsh and fish. Your own prompt is kept. Applies to new tabs.",
@@ -344,6 +350,7 @@ pub fn values_json(c: &Config) -> Json {
         "terminal.scrollback": t.scrollback,
         "terminal.new_tab_dir": if t.new_tab_dir == NewTabDir::Home { "home" } else { "current" },
         "terminal.copy_on_select": t.copy_on_select,
+        "terminal.ligatures": t.ligatures,
         "terminal.shell_integration": t.shell_integration,
         "advanced.programs_write_clipboard": a.programs_write_clipboard,
         "advanced.allow_run": a.allow_run,

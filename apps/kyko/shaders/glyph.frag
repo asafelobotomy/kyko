@@ -8,6 +8,7 @@ layout(std140, binding = 0) uniform buf {
 };
 layout(binding = 1) uniform sampler2D atlas;
 void main() {
-    float a = texture(atlas, vUv).a;
-    fragColor = vec4(vColor.rgb, 1.0) * a * qt_Opacity;
+    vec4 t = texture(atlas, vUv);
+    // Vertex alpha 0 marks a colour glyph (emoji): its own premultiplied colours.
+    fragColor = vColor.a < 0.5 ? t * qt_Opacity : vec4(vColor.rgb, 1.0) * t.a * qt_Opacity;
 }

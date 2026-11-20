@@ -259,6 +259,7 @@ page has "Reset this page".
 | `terminal.new_tab_dir` | `home`, `current` (the focused pane's folder) | `current` |
 | `terminal.bell` | `none`, `visual`, `sound` | `visual` |
 | `terminal.copy_on_select` | bool | false |
+| `terminal.ligatures` | bool | true |
 | `terminal.confirm_multiline_paste` | bool | true |
 | `terminal.scrollback` | 0–100000 | 10000 |
 | `sessions.ring_kib` | 256–16384, output kept per pane for replay (§2.8); applies to new panes | 2048 |
