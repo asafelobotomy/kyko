@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`window.opacity_pct`** (Preferences > Window): a see-through background, so Hyprland's blur
   shows behind the text. Cells a program coloured stay opaque.
 
+### Fixed
+
+- **A full-screen program could come back one row short after kyko reattached** (`less`
+  until a key was pressed): the row kykod takes off to make it redraw went back too soon
+  after, and the program could miss the second resize.
+
 ## [0.4.0] - 2026-11-20
 
 ### Added
