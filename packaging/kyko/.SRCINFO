@@ -16,6 +16,7 @@ pkgbase = kyko
 	optdepends = xdg-utils: open links
 	optdepends = less: Ctrl+Shift+H shows the scrollback in a pager
 	optdepends = libcanberra: terminal.bell = "sound"
+	optdepends = unicode-character-database: Ctrl+Shift+U finds characters by name
 	options = !lto
 	source = kyko-0.5.0.tar.gz::https://github.com/asafelobotomy/kyko/releases/download/v0.5.0/kyko-0.5.0.tar.gz
 	sha256sums = 6dd3926db11505c912305ecc613707a93018274a330852e0f108d7fffd774bb8

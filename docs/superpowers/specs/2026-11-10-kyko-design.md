@@ -66,9 +66,9 @@ Confirmed by the user on 2026-11-13 (until then listed as assumptions):
 - X11. kyko is Wayland-only; §2.10 lists what each compositor gets.
 - Packages other than Arch's (deb, rpm, Flatpak) in the first release. Other distributions build
   from source; a Flatpak suits a terminal poorly because of its sandbox.
-- Session restore across logout or reboot, ligatures, inline images (sixel, kitty graphics),
-  remote control of pane contents, scripting, and plugins.
-- Kitty graphics protocol, sixel and kitty's kittens: not needed to replace kitty as the default (decided 2026-11-16).
+- Session restore across logout or reboot, and plugins. (Ligatures, remote control, session
+  files and inline images were out of scope here until 2026-11-20, when matching kitty's
+  features became the bar for replacing it as uQ's default: see §2.13 and §2.14.)
 
 ## 2. Architecture
 
@@ -172,6 +172,7 @@ Default keys (all settable; shown with the kyko window focused):
 | `Ctrl+Shift+H` | open the scrollback in `less` in a new tab |
 | `Ctrl+Shift+Z` | zoom the focused pane to fill its tab, and back |
 | `Ctrl+Shift+B` | type into every pane of the tab, and back to one |
+| `Ctrl+Shift+U` | type a character by its code point or name (names need the Unicode character database) |
 | `Ctrl+Shift+L` | label the links on screen; type a label to open one, its capital to copy it |
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | font size |
 
@@ -272,7 +273,7 @@ page has "Reset this page".
 | `sessions.ring_kib` | 256–16384, output kept per pane for replay (§2.8); applies to new panes | 2048 |
 | `terminal.font_size` | 6–48, or unset to follow the theme | unset |
 | `terminal.shell` | path, or unset for `$SHELL` | unset |
-| `keys.*` | key sequences for the actions in §2.3, or `""` for none: `new_tab`, `close_pane`, `prev_tab`, `next_tab`, `tab_1`…`tab_9`, `split_side`, `split_stacked`, `focus_left`, `focus_right`, `focus_up`, `focus_down`, `copy`, `paste`, `search`, `font_bigger`, `font_smaller`, `font_reset`, `show_scrollback`, `open_link`, `zoom_pane`, `broadcast` | as §2.3 |
+| `keys.*` | key sequences for the actions in §2.3, or `""` for none: `new_tab`, `close_pane`, `prev_tab`, `next_tab`, `tab_1`…`tab_9`, `split_side`, `split_stacked`, `focus_left`, `focus_right`, `focus_up`, `focus_down`, `copy`, `paste`, `search`, `font_bigger`, `font_smaller`, `font_reset`, `show_scrollback`, `open_link`, `zoom_pane`, `broadcast`, `unicode_input` | as §2.3 |
 | `advanced.programs_write_clipboard` | bool: programs in the terminal may set the clipboard | false |
 | `advanced.allow_run` | bool: other apps may call `Run` (§3.1); off disables **Run in kyko** | true |
 
@@ -427,7 +428,8 @@ Qt 6, `layer-shell-qt` and a D-Bus session. uQ features switch on when uQ is det
 - kyko makes no network connections. A URL opens only on `Ctrl`+click, through the desktop
   portal's OpenURI, so the window process never spawns a browser itself.
 - Escape sequences cannot read the clipboard, cannot report the window title back, and can set
-  the clipboard only when `advanced.programs_write_clipboard` is on.
+  the clipboard (OSC 52) only when `advanced.programs_write_clipboard` is on. Colour queries
+  (OSC 4, 10, 11, 12) are answered: colours are no secret, and editors need them.
 - Multi-line paste asks first (§2.4); `Run` can be switched off (`advanced.allow_run`).
 - `kyko-core`, `kyko-proto` and `kyko-term` carry `#![forbid(unsafe_code)]`; `kykod` and the
   window use `unsafe` only at the PTY and Qt boundaries, each block commented with its reason.
@@ -486,6 +488,28 @@ terminal" exclusion.
 - No escape sequence controls kyko: only the socket does, and only its user can open it.
 - `kyko --session FILE` runs a file of such commands (one per line, `#` comments) when the
   window opens; if it launches a tab, its tabs replace the first one.
+
+### 2.14 Images: kitty's graphics protocol (added 2026-11-20)
+
+- `ESC _ G <keys> ; <base64> ESC \` is read by the pane's emulator (`kyko_term::graphics`):
+  actions `t`, `T`, `p`, `q`, `d`; formats 24, 32 (raw RGB/RGBA) and 100 (PNG); `o=z` (zlib);
+  chunked transfers (`m=1`); media `d` (direct) and `f`/`t` (a file, read only when it is a
+  regular file the user can read, under 64 MiB; `t` files are deleted only under `/tmp`,
+  `/dev/shm` or `$TMPDIR` and only with `tty-graphics-protocol` in their name). Shared memory
+  (`s`) is answered `EINVAL`. Images are kept up to 256 MiB per pane, oldest dropped first.
+- Placements carry a source rectangle, a size in cells (`c`, `r`, one alone keeps the shape),
+  a pixel offset and a z-index. They are anchored to a line, so they scroll with the text and
+  leave with it; on the alternate screen they belong to the screen and go when it does.
+  `C=1` leaves the cursor; otherwise it ends after the image, as in kitty.
+- The window draws each placement as a textured quad, under the text when `z < 0` and over it
+  otherwise, cut to the pane. A texture is made once per image version and dropped when no
+  placement in view uses it. The cell size in pixels is measured from the font as the window
+  starts, before any pane runs; it answers `CSI 14 t` (the text area) and `CSI 16 t` (a cell).
+- Sixel images (`ESC P params q data ESC \`, `kyko_term::sixel`) go into the same store at
+  their own pixel size, unpainted pixels transparent; the cursor ends on the line below the
+  image, in its first column. Images are capped at 10000 pixels a side and 25 Mi pixels.
+- `kyko icat FILE...` shows images: PNG as it is, other formats through ImageMagick (`magick`),
+  shrunk to the terminal's width when wider.
 
 ## 3. Integration with uQ
 

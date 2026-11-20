@@ -29,8 +29,31 @@ pub mod ffi {
         text: String,
     }
 
+    /// An image placement in view (kitty's graphics protocol): which image, the part of it shown,
+    /// and where, in cells plus a pixel offset, at what drawn size.
+    struct FfiImage {
+        image: u32,
+        generation: u64,
+        width: u32,
+        height: u32,
+        sx: u32,
+        sy: u32,
+        sw: u32,
+        sh: u32,
+        col: i32,
+        row: i32,
+        ox: u32,
+        oy: u32,
+        dw: u32,
+        dh: u32,
+        z: i32,
+    }
+
     extern "Rust" {
         fn kyko_resize(pane: u32, cols: u16, rows: u16);
+        fn kyko_cell_px(w: u16, h: u16);
+        fn kyko_images(pane: u32, out: &mut Vec<FfiImage>);
+        fn kyko_image_pixels(pane: u32, image: u32, generation: u64, out: &mut Vec<u8>) -> bool;
         #[allow(clippy::too_many_arguments)]
         fn kyko_snapshot(
             pane: u32,
@@ -63,6 +86,8 @@ pub mod ffi {
             clicks: u8,
         );
         fn kyko_confirm(yes: bool);
+        fn kyko_unicode_search(query: &str) -> String;
+        fn kyko_unicode_done(text: &str, typed: bool);
         fn kyko_search(op: u8, text: &str);
         fn kyko_fixed_title() -> String;
         fn kyko_exit_status() -> i32;
@@ -103,6 +128,7 @@ pub mod ffi {
         fn grid_bell(pane: u32, mode: i32);
         fn app_set_id(id: &str);
         fn app_set_translucent();
+        fn grid_cell_px() -> u32;
     }
 }
 
@@ -319,6 +345,70 @@ fn kyko_resize(pane: u32, cols: u16, rows: u16) {
     if let Some(w) = WORKSPACE.get() {
         w.resize(pane, cols, rows);
     }
+}
+
+/// The window's cell size in pixels: images are sized in cells from it.
+fn kyko_cell_px(w: u16, h: u16) {
+    if let Some(ws) = WORKSPACE.get() {
+        ws.cell_px(w, h);
+    }
+}
+
+/// Measures the cell as soon as the application exists, so a program that draws an image at
+/// once (`kyko -e` with an image viewer) has its size before the first item is made.
+pub fn measure_cells() {
+    let px = ffi::grid_cell_px();
+    kyko_cell_px((px >> 16) as u16, (px & 0xffff) as u16);
+}
+
+fn kyko_images(pane: u32, out: &mut Vec<ffi::FfiImage>) {
+    out.clear();
+    let Some(w) = WORKSPACE.get() else { return };
+    let shared = w.shared.lock().unwrap();
+    let Some(snap) = shared.frames.get(&pane).and_then(|f| f.snapshot.as_ref()) else {
+        return;
+    };
+    out.extend(snap.images.iter().map(|v| ffi::FfiImage {
+        image: v.image,
+        generation: v.generation,
+        width: v.width,
+        height: v.height,
+        sx: v.src.0,
+        sy: v.src.1,
+        sw: v.src.2,
+        sh: v.src.3,
+        col: v.col,
+        row: v.row,
+        ox: v.offset.0,
+        oy: v.offset.1,
+        dw: v.size.0,
+        dh: v.size.1,
+        z: v.z,
+    }));
+}
+
+/// An image's RGBA pixels, once, for the window's texture cache.
+fn kyko_image_pixels(pane: u32, image: u32, generation: u64, out: &mut Vec<u8>) -> bool {
+    out.clear();
+    let Some(w) = WORKSPACE.get() else {
+        return false;
+    };
+    let rgba = {
+        let shared = w.shared.lock().unwrap();
+        let Some(snap) = shared.frames.get(&pane).and_then(|f| f.snapshot.as_ref()) else {
+            return false;
+        };
+        match snap
+            .images
+            .iter()
+            .find(|v| v.image == image && v.generation == generation)
+        {
+            Some(v) => v.rgba.clone(),
+            None => return false,
+        }
+    };
+    out.extend_from_slice(&rgba);
+    true
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -691,6 +781,25 @@ fn kyko_search(op: u8, text: &str) {
 
 fn kyko_confirm(yes: bool) {
     act(Act::Confirm(yes));
+}
+
+/// Characters for the Unicode input box, as JSON: `[{ch, code, name}]`.
+fn kyko_unicode_search(query: &str) -> String {
+    static NAMES: OnceLock<Vec<(char, String)>> = OnceLock::new();
+    let names = NAMES.get_or_init(kyko_core::unicode::load_names);
+    let found: Vec<_> = kyko_core::unicode::search(query, names, 12)
+        .into_iter()
+        .map(|f| {
+            serde_json::json!({"ch": f.ch.to_string(), "code": format!("U+{:04X}", u32::from(f.ch)),
+                               "name": f.name.to_lowercase()})
+        })
+        .collect();
+    serde_json::Value::from(found).to_string()
+}
+
+/// The Unicode input box closed; `typed` when `text` should go to the pane.
+fn kyko_unicode_done(text: &str, typed: bool) {
+    act(Act::Unicode(typed.then(|| text.to_string())));
 }
 
 fn kyko_text(pane: u32, text: &str) {

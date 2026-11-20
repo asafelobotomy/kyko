@@ -9,6 +9,7 @@ mod appearance;
 mod bridge;
 mod control;
 mod hotkey;
+mod icat;
 mod prefs;
 mod remote;
 mod session;
@@ -67,6 +68,11 @@ enum Sub {
     Remote {
         #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true, value_name = "COMMAND")]
         words: Vec<String>,
+    },
+    /// Show images in the terminal (kitty's graphics protocol); PNG, or any format ImageMagick reads
+    Icat {
+        #[arg(required = true, value_name = "FILE")]
+        files: Vec<PathBuf>,
     },
     /// Open a new tab in the drop-down
     NewTab {
@@ -223,6 +229,9 @@ fn main() -> ExitCode {
     if let Some(Sub::Remote { words }) = &cli.command {
         return remote_cli(words);
     }
+    if let Some(Sub::Icat { files }) = &cli.command {
+        return icat::run(files);
+    }
     match cli.command {
         Some(Sub::Toggle) => return control(control::Command::Toggle),
         Some(Sub::Show) => return control(control::Command::Show),
@@ -341,6 +350,7 @@ fn main() -> ExitCode {
 
     bridge::app_set_translucent();
     let mut app = QGuiApplication::new();
+    bridge::measure_cells();
     // Matches `org.kyko.Kyko.desktop`, so the compositor shows the desktop entry's icon.
     bridge::app_set_id(cli.class.as_deref().unwrap_or("org.kyko.Kyko"));
     bridge::grid_register();

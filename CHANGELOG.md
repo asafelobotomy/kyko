@@ -23,6 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sight, and moving the focus brings the next one up.
 - **Ctrl+Shift+B types into every pane of the tab** at once (a red border says so), and back.
 - **A scrollbar** while the view is scrolled back: drag it to move through the history.
+- **Images in the terminal: kitty's graphics protocol.** PNG and raw RGB/RGBA, zlib-compressed
+  or not, sent in pieces or as a file; placed, cropped, scaled to cells, drawn under or over the
+  text, deleted and queried. Images scroll with their lines, and programs such as `chafa`,
+  `timg`, `yazi`, `ranger` and `neovim`'s image plugins can show pictures in kyko as in kitty.
+- **Sixel images** too, which kitty does not draw: `img2sixel`, `chafa -f sixels`, `lsix` and
+  the like work in kyko.
+- **`CSI 16 t`** answers with the cell size in pixels, which image programs ask for.
+- **Ctrl+Shift+U types a character by its code point or name** (`1f600`, `smiling face`),
+  as kitty's Unicode input does; names come from the Unicode character database when it is
+  installed.
+- **Programs can ask for the colours** (OSC 4, 10, 11, 12 with `?`), as editors do to tell a
+  dark background from a light one.
+- **OSC 52 sets the clipboard** when `advanced.programs_write_clipboard` is on (off by
+  default). The setting was there before but did nothing. Programs still cannot read the
+  clipboard.
+- **`kyko icat FILE...`** shows images: PNG as it is, other formats through ImageMagick.
 - **`window.opacity_pct`** (Preferences > Window): a see-through background, so Hyprland's blur
   shows behind the text. Cells a program coloured stay opaque.
 

@@ -54,6 +54,8 @@ pub struct Shared {
     pub hints: Option<(PaneId, kyko_term::hints::Hints)>,
     /// The pane that has the keyboard in the active window, if any.
     pub looking_at: Option<PaneId>,
+    /// The size of a cell in pixels, as the window last measured it (images are sized by it).
+    pub cell_px: Option<(u16, u16)>,
 }
 
 /// What the find bar asks of the focused pane's scrollback.
@@ -114,6 +116,8 @@ enum Cmd {
     Paste(PaneId, String),
     Search(SearchOp),
     Resize(PaneId, u16, u16),
+    /// A pane's cell size in pixels.
+    CellPx(u16, u16),
     Redraw,
     Act(Act),
     End,
@@ -132,6 +136,8 @@ pub enum Act {
     Dismiss(PaneId),
     /// The answer to a close that asked first.
     Confirm(bool),
+    /// The Unicode input box closed: with the text to type, or without (Escape).
+    Unicode(Option<String>),
     /// A new tab that runs a command (held open after it ends), or a plain one.
     Run {
         command: Option<String>,
@@ -283,6 +289,12 @@ impl Workspace {
 
     pub fn resize(&self, pane: PaneId, cols: u16, rows: u16) {
         let _ = self.tx.send(Cmd::Resize(pane, cols, rows));
+    }
+
+    /// The cell size in pixels. One font serves the window, so it holds for every pane.
+    pub fn cell_px(&self, w: u16, h: u16) {
+        self.shared.lock().unwrap().cell_px = Some((w, h));
+        let _ = self.tx.send(Cmd::CellPx(w, h));
     }
 
     pub fn act(&self, act: Act) {
@@ -664,7 +676,7 @@ fn handle(act: Act, s: &mut Session, look: &Look, login: &str) -> Vec<Effect> {
             Vec::new()
         }
         Act::Dismiss(p) => s.dismiss(p, login),
-        Act::Confirm(_) => Vec::new(),
+        Act::Confirm(_) | Act::Unicode(_) => Vec::new(),
         Act::Run { command, cwd } => {
             let (args, hold) = match command {
                 Some(c) => (kyko_core::runq::shell_args(&c), true),
@@ -964,6 +976,7 @@ pub fn layout_json(
     notice: Option<&str>,
     confirm: Option<&(Pending, Vec<String>)>,
     find: Find,
+    unicode: bool,
 ) -> String {
     use serde_json::json;
     let mut title = String::new();
@@ -1010,6 +1023,7 @@ pub fn layout_json(
         json!({"active": s.active_tab(), "focused": s.focused_pane(), "title": title,
                "notice": notice.unwrap_or(""), "tabs": tabs,
                "find": {"open": find.open, "pos": find.pos + 1, "total": find.total},
+               "unicode": unicode,
                "confirm": confirm.map(|(what, programs)| json!({
                    "what": match what {
                        Pending::Pane(_) => "pane",
@@ -1029,6 +1043,16 @@ fn run(
 ) -> Result<(), Stop> {
     let look = || ctx.look.lock().unwrap().clone();
     let mut link = Link::connect(&ctx.socket, look().scrollback)?;
+    // A program that draws an image at once needs the cell size: give the window a moment to
+    // measure it (it is there already after the first time).
+    let until = std::time::Instant::now() + Duration::from_millis(500);
+    while ctx.shared.lock().unwrap().cell_px.is_none() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let px = ctx.shared.lock().unwrap().cell_px;
+    if let Some((w, h)) = px {
+        link.set_cell_pixels(u32::from(w), u32::from(h));
+    }
     let home = std::env::var("HOME").unwrap_or_default();
     let infos: Vec<PaneInfo> = link
         .pane_ids()
@@ -1105,10 +1129,12 @@ fn run(
     // The text a paste waiting for the user's word would send.
     let mut held_paste = String::new();
     let mut find = Find::default();
+    let mut unicode = false;
     let mut dirty: HashSet<PaneId> = session.pane_ids().into_iter().collect();
     let mut layout_changed = true;
     'main: loop {
         let mut effects = Vec::new();
+        link.set_theme(&ctx.colors.lock().unwrap());
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
                 Cmd::Input(p, bytes) => link.input(p, &bytes)?,
@@ -1224,6 +1250,7 @@ fn run(
                         link.input(t, &paste_bytes(&text, bracketed))?;
                     }
                 }
+                Cmd::CellPx(w, h) => link.set_cell_pixels(u32::from(w), u32::from(h)),
                 Cmd::Resize(p, c, r) => {
                     sizes.insert(p, (c, r));
                     if link.pane(p).is_some() {
@@ -1237,6 +1264,19 @@ fn run(
                     if matches!(act, Act::Key(Action::Search)) {
                         // The key opens the find bar; the bar's own Escape closes it.
                         find.open = true;
+                        continue;
+                    }
+                    if matches!(act, Act::Key(Action::UnicodeInput)) {
+                        unicode = true;
+                        continue;
+                    }
+                    if let Act::Unicode(text) = act {
+                        unicode = false;
+                        if let Some(t) = text {
+                            for p in session.typing_targets(session.focused_pane()) {
+                                link.input(p, t.as_bytes())?;
+                            }
+                        }
                         continue;
                     }
                     // Closing something that runs a program asks first.
@@ -1304,6 +1344,13 @@ fn run(
                         if pn.emulator_mut().take_bell() {
                             (ctx.on_bell)(p);
                         }
+                        // OSC 52: only when the user allows programs to set the clipboard.
+                        if let Some((text, primary)) = pn.emulator_mut().take_clipboard()
+                            && look().programs_write_clipboard
+                            && text.len() <= 1 << 20
+                        {
+                            (ctx.on_copy)(text, primary);
+                        }
                         let finished = pn.emulator_mut().take_finished();
                         if !finished.is_empty() {
                             let l = look();
@@ -1360,7 +1407,13 @@ fn run(
                 let mut sh = ctx.shared.lock().unwrap();
                 sh.frames.retain(|id, _| ids.contains(id));
                 sh.focused = session.focused_pane();
-                layout_json(session, sh.notice.as_deref(), pending.as_ref(), find)
+                layout_json(
+                    session,
+                    sh.notice.as_deref(),
+                    pending.as_ref(),
+                    find,
+                    unicode,
+                )
             };
             ctx.shared.lock().unwrap().layout = json;
             dirty.extend(ids);

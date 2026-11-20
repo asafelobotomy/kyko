@@ -295,6 +295,12 @@ pub const PAGES: &[Page] = &[
                 kind: Kind::Key,
             },
             Item {
+                key: "keys.unicode_input",
+                label: "Unicode input",
+                help: "Type a character by its code point (1f600) or its name (smiling face).",
+                kind: Kind::Key,
+            },
+            Item {
                 key: "keys.open_link",
                 label: "Open a link by keyboard",
                 help: "Labels each link on screen; type a label to open it, or its capital to copy it.",

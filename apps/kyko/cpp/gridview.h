@@ -3,6 +3,7 @@
 
 #include <QtCore/QHash>
 #include <QtCore/QList>
+#include <QtCore/QPair>
 #include <QtCore/QTimer>
 #include <QtGui/QFont>
 #include <QtGui/QImage>
@@ -37,6 +38,9 @@ public:
     Q_INVOKABLE QString fixedTitle() const;
     // The answer to "close it anyway?".
     Q_INVOKABLE void confirm(bool yes) const;
+    // The Unicode input box: matches for what is typed, and closing it (typing `text` or not).
+    Q_INVOKABLE QString unicodeSearch(const QString& query) const;
+    Q_INVOKABLE void unicodeDone(const QString& text, bool typed) const;
     // The find bar: 0 look for text, 1 next, 2 previous, 3 close.
     Q_INVOKABLE void search(int op, const QString& text) const;
     // Preferences (spec 2.6): the pages and values as JSON; a change or reset returns "" when it
@@ -176,6 +180,10 @@ private:
     QHash<quint64, Tile> m_tiles;  // (font << 32 | glyph), and box shapes under font 0xffff
     QHash<QString, QList<Shaped>> m_shaped;
     QSGTexture* m_texture = nullptr;
+    // Images: their textures by (id, generation), and the cell size the session was told.
+    QHash<QPair<quint32, quint64>, QSGTexture*> m_images;
+    int m_sentCellW = 0, m_sentCellH = 0;
+    void placeImages(QSGNode* under, QSGNode* over);
 };
 
 // Puts text on the clipboard, and reads it for a paste into a pane, on the GUI thread.
@@ -195,6 +203,8 @@ void controller_send(int code);
 void controller_layout_changed();
 // The look changed: asks the item and the controller to reload, on the GUI thread.
 void grid_reload_look();
+// The configured font's cell size in pixels, (width << 16) | height, before any item exists.
+quint32 grid_cell_px();
 // Registers GridView with QML as org.kyko.app.GridView.
 void grid_register();
 

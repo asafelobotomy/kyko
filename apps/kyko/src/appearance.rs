@@ -27,6 +27,8 @@ pub struct Look {
     pub new_tab_dir: NewTabDir,
     pub scrollback: usize,
     pub copy_on_select: bool,
+    /// Programs may set the clipboard with OSC 52.
+    pub programs_write_clipboard: bool,
     pub shell_integration: bool,
     pub ligatures: bool,
     pub confirm_multiline_paste: bool,
@@ -101,6 +103,7 @@ pub fn load() -> Look {
         new_tab_dir: config.terminal.new_tab_dir,
         scrollback: config.terminal.scrollback as usize,
         copy_on_select: config.terminal.copy_on_select,
+        programs_write_clipboard: config.advanced.programs_write_clipboard,
         shell_integration: config.terminal.shell_integration,
         ligatures: config.terminal.ligatures,
         confirm_multiline_paste: config.terminal.confirm_multiline_paste,

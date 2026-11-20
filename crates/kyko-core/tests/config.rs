@@ -151,13 +151,14 @@ fn default_is_the_table_in_the_spec() {
         ("open_link", "Ctrl+Shift+L"),
         ("zoom_pane", "Ctrl+Shift+Z"),
         ("broadcast", "Ctrl+Shift+B"),
+        ("unicode_input", "Ctrl+Shift+U"),
     ];
     for (name, s) in want {
         let action = Action::all().find(|a| a.key_name() == name).unwrap();
         assert_eq!(d.keys.get(action), Some(seq(s)), "{name}");
         assert_eq!(action.default_seq(), seq(s), "{name}");
     }
-    assert_eq!(Action::all().count(), 32);
+    assert_eq!(Action::all().count(), 33);
 }
 
 #[test]

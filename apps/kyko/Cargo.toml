@@ -17,6 +17,7 @@ kyko-hotkey = { path = "../../crates/kyko-hotkey" }
 kyko-link = { path = "../../crates/kyko-link" }
 kyko-proto = { path = "../../crates/kyko-proto" }
 kyko-term = { path = "../../crates/kyko-term" }
+libc = "0.2"
 serde_json = "1"
 
 [build-dependencies]

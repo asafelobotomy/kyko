@@ -9,3 +9,9 @@ repository.workspace = true
 # Pinned to a master commit: 0.26.0 panics on a full kitty keyboard stack (alacritty#9073, fixed
 # in 5421470), and no release has the fix yet. Move back to a crates.io version once one does.
 alacritty_terminal = { git = "https://github.com/alacritty/alacritty", rev = "791efff6d74c66bee390c259e322626ca93aadb6" }
+# Images in kitty's graphics protocol: PNG, and zlib-compressed raw pixels.
+miniz_oxide = "0.8"
+png = "0.17"
+
+[dev-dependencies]
+tempfile = "3.27.0"

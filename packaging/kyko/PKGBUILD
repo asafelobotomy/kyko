@@ -15,7 +15,8 @@ depends=(gcc-libs qt6-base qt6-declarative qt6-wayland layer-shell-qt)
 makedepends=(cargo qt6-shadertools)
 optdepends=('xdg-utils: open links'
             'less: Ctrl+Shift+H shows the scrollback in a pager'
-            'libcanberra: terminal.bell = "sound"')
+            'libcanberra: terminal.bell = "sound"'
+            'unicode-character-database: Ctrl+Shift+U finds characters by name')
 # The end-to-end tests run less as their full-screen program.
 checkdepends=(less)
 options=(!lto)
