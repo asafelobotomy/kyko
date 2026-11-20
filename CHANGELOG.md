@@ -7,22 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-11-20
+## [0.6.0] - 2026-11-20
 
 ### Added
 
-- **`kyko @`: control a kyko window from a shell or a script**, like `kitty @`:
-  `ls`, `send-text`, `get-text`, `launch` (a tab or a split, with a command), `focus-pane`,
-  `focus-tab`, `close-pane`, `set-tab-title`, `zoom` and `broadcast`. Commands typed inside kyko
-  reach their own window and pane (`$KYKO_LISTEN_ON`, `$KYKO_PANE_ID`); from elsewhere, give
-  `--to unix:PATH`. The socket is in `$XDG_RUNTIME_DIR/kyko/` and only its user can open it.
-  `kyko @ help` lists it all.
-- **`kyko --session FILE`** opens the tabs and splits a file describes: one `kyko @` command per
-  line (`launch --cwd ~/src`, `launch --type split-side htop`, `set-tab-title work`).
-- **Ctrl+Shift+Z zooms the focused pane** to fill its tab; the other panes keep their size out of
-  sight, and moving the focus brings the next one up.
-- **Ctrl+Shift+B types into every pane of the tab** at once (a red border says so), and back.
-- **A scrollbar** while the view is scrolled back: drag it to move through the history.
 - **Images in the terminal: kitty's graphics protocol.** PNG and raw RGB/RGBA, zlib-compressed
   or not, sent in pieces or as a file; placed, cropped, scaled to cells, drawn under or over the
   text, deleted and queried. Images scroll with their lines, and programs such as `chafa`,
@@ -39,6 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default). The setting was there before but did nothing. Programs still cannot read the
   clipboard.
 - **`kyko icat FILE...`** shows images: PNG as it is, other formats through ImageMagick.
+
+## [0.5.0] - 2026-11-20
+
+### Added
+
+- **`kyko @`: control a kyko window from a shell or a script**, like `kitty @`:
+  `ls`, `send-text`, `get-text`, `launch` (a tab or a split, with a command), `focus-pane`,
+  `focus-tab`, `close-pane`, `set-tab-title`, `zoom` and `broadcast`. Commands typed inside kyko
+  reach their own window and pane (`$KYKO_LISTEN_ON`, `$KYKO_PANE_ID`); from elsewhere, give
+  `--to unix:PATH`. The socket is in `$XDG_RUNTIME_DIR/kyko/` and only its user can open it.
+  `kyko @ help` lists it all.
+- **`kyko --session FILE`** opens the tabs and splits a file describes: one `kyko @` command per
+  line (`launch --cwd ~/src`, `launch --type split-side htop`, `set-tab-title work`).
+- **Ctrl+Shift+Z zooms the focused pane** to fill its tab; the other panes keep their size out of
+  sight, and moving the focus brings the next one up.
+- **Ctrl+Shift+B types into every pane of the tab** at once (a red border says so), and back.
+- **A scrollbar** while the view is scrolled back: drag it to move through the history.
 - **`window.opacity_pct`** (Preferences > Window): a see-through background, so Hyprland's blur
   shows behind the text. Cells a program coloured stay opaque.
 
