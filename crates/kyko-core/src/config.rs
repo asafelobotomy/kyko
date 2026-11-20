@@ -147,9 +147,11 @@ pub enum Action {
     ZoomPane,
     /// Typing in the tab goes to all its panes, or back to one.
     Broadcast,
+    /// Picks a character to type by its code point or name.
+    UnicodeInput,
 }
 
-const ACTIONS: [Action; 32] = [
+const ACTIONS: [Action; 33] = [
     Action::NewTab,
     Action::ClosePane,
     Action::PrevTab,
@@ -182,6 +184,7 @@ const ACTIONS: [Action; 32] = [
     Action::OpenLink,
     Action::ZoomPane,
     Action::Broadcast,
+    Action::UnicodeInput,
 ];
 
 const fn m(ctrl: bool, alt: bool, shift: bool) -> Mods {
@@ -236,6 +239,7 @@ impl Action {
             Action::OpenLink => "open_link",
             Action::ZoomPane => "zoom_pane",
             Action::Broadcast => "broadcast",
+            Action::UnicodeInput => "unicode_input",
         }
     }
 
@@ -265,6 +269,7 @@ impl Action {
             Action::OpenLink => (CTRL_SHIFT, Key::Char('L')),
             Action::ZoomPane => (CTRL_SHIFT, Key::Char('Z')),
             Action::Broadcast => (CTRL_SHIFT, Key::Char('B')),
+            Action::UnicodeInput => (CTRL_SHIFT, Key::Char('U')),
         };
         KeySeq::new(mods, key)
     }
@@ -272,7 +277,7 @@ impl Action {
 
 /// The sequence bound to each action; `None` is unbound.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Keys([Option<KeySeq>; 32]);
+pub struct Keys([Option<KeySeq>; 33]);
 
 impl Default for Keys {
     fn default() -> Self {

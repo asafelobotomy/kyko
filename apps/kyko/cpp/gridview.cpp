@@ -17,6 +17,7 @@
 #include <QtQuick/QSGGeometryNode>
 #include <QtQuick/QSGMaterial>
 #include <QtQuick/QSGMaterialShader>
+#include <QtQuick/QSGSimpleTextureNode>
 #include <QtQuick/QSGTexture>
 #include <QtQuick/QSGVertexColorMaterial>
 #include <algorithm>
@@ -270,6 +271,14 @@ QString str(const rust::String& s) { return QString::fromUtf8(s.data(), int(s.si
 
 QString Controller::layout() const { return str(kyko_layout()); }
 void Controller::confirm(bool yes) const { kyko_confirm(yes); }
+QString Controller::unicodeSearch(const QString& query) const {
+    const QByteArray q = query.toUtf8();
+    return str(kyko_unicode_search(rust::Str(q.data(), q.size())));
+}
+void Controller::unicodeDone(const QString& text, bool typed) const {
+    const QByteArray t = text.toUtf8();
+    kyko_unicode_done(rust::Str(t.data(), t.size()), typed);
+}
 void Controller::search(int op, const QString& text) const {
     const std::string t = text.toStdString();
     kyko_search(quint8(op), rust::Str(t.data(), t.size()));
@@ -583,12 +592,31 @@ GridView::GridView(QQuickItem* parent) : QQuickItem(parent) {
     resetAtlas();
 }
 
-void GridView::applyFont() {
+namespace {
+// The configured font, before the ligature features are set.
+QFont lookFont() {
     QFont base(QString::fromStdString(std::string(kyko_palette_font())));
     base.setPointSize(kyko_palette_font_size());
     base.setStyleHint(QFont::Monospace);
     base.setFixedPitch(true);
     base.setKerning(false);
+    return base;
+}
+
+// A cell: whole pixels, as wide as an M and as tall as the line height makes it.
+QSizeF cellOf(const QFontMetricsF& fm) {
+    const int pct = std::clamp(kyko_setting(rust::Str("line_height_pct")), 80, 200);
+    return QSizeF(std::ceil(fm.horizontalAdvance(QLatin1Char('M'))), std::ceil(fm.lineSpacing() * pct / 100.0));
+}
+}  // namespace
+
+quint32 grid_cell_px() {
+    const QSizeF c = cellOf(QFontMetricsF(lookFont()));
+    return (quint32(c.width()) << 16) | (quint32(c.height()) & 0xffff);
+}
+
+void GridView::applyFont() {
+    QFont base = lookFont();
     m_ligatures = kyko_setting(rust::Str("ligatures")) != 0;
     if (!m_ligatures) {
         // The same features kitty turns off for `disable_ligatures always`.
@@ -604,11 +632,11 @@ void GridView::applyFont() {
     m_font = base;
     QFontMetricsF fm(base);
     const qreal natural = fm.horizontalAdvance(QLatin1Char('M'));
-    m_cellW = std::ceil(natural);
+    const QSizeF cell = cellOf(fm);
+    m_cellW = cell.width();
     // Narrow glyphs sit in the middle of the whole-pixel cell.
     m_shift = std::floor((m_cellW - natural) / 2);
-    const int pct = std::clamp(kyko_setting(rust::Str("line_height_pct")), 80, 200);
-    m_cellH = std::ceil(fm.lineSpacing() * pct / 100.0);
+    m_cellH = cell.height();
     m_ascent = std::round(fm.ascent() + (m_cellH - fm.height()) / 2);
     m_ulThick = std::max<qreal>(1, std::round(fm.lineWidth()));
     m_ulPos = std::min(m_cellH - m_ulThick, std::round(m_ascent + std::max<qreal>(1, fm.underlinePos())));
@@ -651,6 +679,13 @@ void GridView::setPane(int pane) {
 }
 
 void GridView::fit() {
+    // Images are sized in pixels: the pane learns its cell's size.
+    const int cw = int(std::round(m_cellW)), ch = int(std::round(m_cellH));
+    if (cw != m_sentCellW || ch != m_sentCellH) {
+        m_sentCellW = cw;
+        m_sentCellH = ch;
+        kyko_cell_px(quint16(cw), quint16(ch));
+    }
     const int cols = int(width() / m_cellW), rows = int(height() / m_cellH);
     if (cols < 2 || rows < 1 || (cols == m_cols && rows == m_rows))
         return;
@@ -664,6 +699,7 @@ void GridView::fit() {
 GridView::~GridView() {
     g_views.removeAll(this);
     delete m_texture;
+    qDeleteAll(m_images);
 }
 
 QString GridView::shot() const {
@@ -675,6 +711,64 @@ void GridView::geometryChange(const QRectF& n, const QRectF& o) {
     QQuickItem::geometryChange(n, o);
     fit();
     update();
+}
+
+// Images from kitty's graphics protocol: a textured quad each, under the text (z < 0) or over
+// it, cut to the item. Textures are kept while an image is in view and made once per version.
+void GridView::placeImages(QSGNode* under, QSGNode* over) {
+    while (QSGNode* n = under->firstChild()) {
+        under->removeChildNode(n);
+        delete n;
+    }
+    while (QSGNode* n = over->firstChild()) {
+        over->removeChildNode(n);
+        delete n;
+    }
+    rust::Vec<FfiImage> images;
+    kyko_images(quint32(m_pane), images);
+    QHash<QPair<quint32, quint64>, QSGTexture*> kept;
+    const float w = float(width()), h = float(height());
+    for (const FfiImage& im : images) {
+        const QPair<quint32, quint64> key(im.image, im.generation);
+        QSGTexture* tex = kept.value(key);
+        if (!tex)
+            tex = m_images.take(key);
+        if (!tex) {
+            rust::Vec<quint8> px;
+            if (im.width == 0 || im.height == 0 || !kyko_image_pixels(quint32(m_pane), im.image, im.generation, px) ||
+                px.size() < size_t(im.width) * im.height * 4)
+                continue;
+            QImage img(px.data(), int(im.width), int(im.height), int(im.width) * 4, QImage::Format_RGBA8888);
+            tex = window()->createTextureFromImage(img.copy(), QQuickWindow::TextureHasAlphaChannel);
+            if (!tex)
+                continue;
+            tex->setFiltering(QSGTexture::Linear);
+        }
+        kept.insert(key, tex);
+        if (im.dw == 0 || im.dh == 0 || im.sw == 0 || im.sh == 0)
+            continue;
+        // Where it goes, then cut to the item, taking the same share off the source.
+        float x0 = float(im.col * m_cellW + im.ox), y0 = float(im.row * m_cellH + im.oy);
+        float x1 = x0 + float(im.dw), y1 = y0 + float(im.dh);
+        float sx0 = float(im.sx), sy0 = float(im.sy), sx1 = sx0 + float(im.sw), sy1 = sy0 + float(im.sh);
+        const float kx = (sx1 - sx0) / (x1 - x0), ky = (sy1 - sy0) / (y1 - y0);
+        if (x0 < 0) { sx0 -= x0 * kx; x0 = 0; }
+        if (y0 < 0) { sy0 -= y0 * ky; y0 = 0; }
+        if (x1 > w) { sx1 -= (x1 - w) * kx; x1 = w; }
+        if (y1 > h) { sy1 -= (y1 - h) * ky; y1 = h; }
+        if (x1 <= x0 || y1 <= y0)
+            continue;
+        auto* node = new QSGSimpleTextureNode;
+        node->setOwnsTexture(false);
+        node->setTexture(tex);
+        node->setFiltering(QSGTexture::Linear);
+        node->setRect(QRectF(x0, y0, x1 - x0, y1 - y0));
+        node->setSourceRect(QRectF(sx0, sy0, sx1 - sx0, sy1 - sy0));
+        (im.z < 0 ? under : over)->appendChildNode(node);
+    }
+    // What is no longer in view lets its texture go.
+    qDeleteAll(m_images);
+    m_images = kept;
 }
 
 bool GridView::allocate(int w, int h, int& x, int& y) {
@@ -873,6 +967,7 @@ QSGNode* GridView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     if (!root) {
         root = new QSGNode;
         root->appendChildNode(makeBgNode());
+        root->appendChildNode(new QSGNode);  // images under the text
         auto* gn = new QSGGeometryNode;
         auto* g = new QSGGeometry(glyphAttributes(), 0);
         g->setDrawingMode(QSGGeometry::DrawTriangles);
@@ -882,6 +977,7 @@ QSGNode* GridView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
         gn->setFlags(QSGNode::OwnsGeometry | QSGNode::OwnsMaterial);
         root->appendChildNode(gn);
         root->appendChildNode(makeBgNode());  // decorations: underlines, strikes, other cursors
+        root->appendChildNode(new QSGNode);  // images over the text
     }
     const quint32 cursorColor = kyko_palette_cursor();
     const quint32 bgColor = kyko_palette_bg();
@@ -958,7 +1054,8 @@ QSGNode* GridView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
         }
     }
 
-    auto* gn = static_cast<QSGGeometryNode*>(bg->nextSibling());
+    QSGNode* under = bg->nextSibling();
+    auto* gn = static_cast<QSGGeometryNode*>(under->nextSibling());
     QSGGeometry* g = gn->geometry();
     g->allocate(int(quads.size()) * 6);
     auto* v = static_cast<GlyphVertex*>(g->vertexData());
@@ -1096,6 +1193,7 @@ QSGNode* GridView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
         dp += 6;
     }
     dn->markDirty(QSGNode::DirtyGeometry);
+    placeImages(under, dn->nextSibling());
 
     if (m_atlasReset) {
         m_atlasReset = false;

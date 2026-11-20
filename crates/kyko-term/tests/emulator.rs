@@ -376,3 +376,82 @@ fn bell_is_reported_once() {
     assert!(e.take_bell());
     assert!(!e.take_bell());
 }
+
+#[test]
+fn kitty_graphics_places_an_image_and_moves_the_cursor() {
+    let mut e = Emulator::new(20, 6, 100);
+    e.set_cell_pixels(10, 20);
+    e.feed(b"ab");
+    // A 30x40 white RGBA image, id 4, sent in two pieces split inside the escape sequence.
+    let px = "////".repeat(30 * 40 * 4 / 3);
+    let seq = format!("\x1b_Ga=T,f=32,s=30,v=40,i=4;{px}\x1b\\");
+    let (a, b) = seq.as_bytes().split_at(17);
+    e.feed(a);
+    e.feed(b);
+    assert_eq!(e.take_replies(), b"\x1b_Gi=4;OK\x1b\\");
+    let s = snap(&e);
+    assert_eq!(s.images.len(), 1);
+    let v = &s.images[0];
+    assert_eq!((v.col, v.row, v.cols, v.rows), (2, 0, 3, 2));
+    assert_eq!((v.width, v.height), (30, 40));
+    // Down to the image's last row, then past its right edge.
+    assert_eq!(s.cursor, Some((5, 1)));
+    // It scrolls with the text, and goes when deleted.
+    e.feed(b"\r\n\n\n\n\n");
+    assert_eq!(snap(&e).images[0].row, -1);
+    e.feed(b"\x1b_Ga=d,d=A\x1b\\");
+    assert!(snap(&e).images.is_empty());
+}
+
+#[test]
+fn text_area_size_query_answers_in_pixels() {
+    let mut e = Emulator::new(20, 6, 100);
+    e.set_cell_pixels(10, 20);
+    e.feed(b"\x1b[14t");
+    assert_eq!(e.take_replies(), b"\x1b[4;120;200t");
+    // The cell, which image programs ask for; also when the query arrives in two pieces.
+    e.feed(b"\x1b[1");
+    e.feed(b"6t\x1b[0m\x1b[116t");
+    assert_eq!(e.take_replies(), b"\x1b[6;20;10t");
+}
+
+#[test]
+fn a_sixel_image_is_placed_at_the_cursor_and_the_cursor_goes_below_it() {
+    let mut e = Emulator::new(20, 10, 100);
+    e.set_cell_pixels(10, 20);
+    // 25x30 pixels: three columns and two rows of 10x20 cells.
+    e.feed(b"ab\x1bPq\"1;1;25;30#1;2;0;0;100#1!25~-!25~-!25~-!25~-!25~\x1b\\c");
+    let s = snap(&e);
+    assert_eq!(s.images.len(), 1);
+    let img = &s.images[0];
+    assert_eq!((img.width, img.height, img.col, img.row), (25, 30, 2, 0));
+    assert_eq!((img.cols, img.rows), (3, 2));
+    assert_eq!(img.rgba[2], 255);
+    // The `c` lands two lines down, in the image's column.
+    assert!(e.screen_text().lines().nth(2).unwrap().starts_with("  c"));
+}
+
+#[test]
+fn colour_queries_answer_with_the_theme_or_the_programs_own() {
+    let mut e = Emulator::new(20, 4, 100);
+    // Nothing drawn yet: no theme to answer from, and no answer.
+    e.feed(b"\x1b]11;?\x1b\\");
+    assert!(e.take_replies().is_empty());
+    let _ = snap(&e);
+    e.feed(b"\x1b]11;?\x1b\\");
+    let bg = String::from_utf8(e.take_replies()).unwrap();
+    assert!(bg.starts_with("\x1b]11;rgb:"), "{bg:?}");
+    e.feed(b"\x1b]4;1;rgb:12/34/56\x1b\\\x1b]4;1;?\x07");
+    let red = String::from_utf8(e.take_replies()).unwrap();
+    assert!(red.contains("1;rgb:1212/3434/5656"), "{red:?}");
+}
+
+#[test]
+fn a_program_can_offer_the_clipboard_text_and_a_replay_does_not() {
+    let mut e = Emulator::new(20, 4, 100);
+    e.feed(b"\x1b]52;c;aGVsbG8=\x07");
+    assert_eq!(e.take_clipboard(), Some(("hello".to_string(), false)));
+    assert_eq!(e.take_clipboard(), None);
+    e.replay(b"\x1b]52;p;aGVsbG8=\x07");
+    assert_eq!(e.take_clipboard(), None);
+}

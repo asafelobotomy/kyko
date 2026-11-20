@@ -107,6 +107,10 @@ pub struct Link {
     decoder: Decoder,
     panes: HashMap<PaneId, Pane>,
     scrollback: usize,
+    /// A cell's size in pixels, for images; every pane's emulator is told.
+    cell_px: Option<(u32, u32)>,
+    /// The theme, for answering programs that ask for colours.
+    theme: Option<kyko_term::Colors>,
     /// The layout blob `kykod` held when this window connected.
     pub layout: Vec<u8>,
 }
@@ -122,6 +126,8 @@ impl Link {
             decoder: Decoder::new(),
             panes: HashMap::new(),
             scrollback,
+            cell_px: None,
+            theme: None,
             layout: Vec::new(),
         };
         link.send(&ToHolder::Hello { version: VERSION })?;
@@ -154,6 +160,12 @@ impl Link {
                 emulator: {
                     let mut e = Emulator::new(info.cols, info.rows, self.scrollback);
                     e.set_kitty_keyboard(true);
+                    if let Some((w, h)) = self.cell_px {
+                        e.set_cell_pixels(w, h);
+                    }
+                    if let Some(t) = &self.theme {
+                        e.set_theme(t);
+                    }
                     e
                 },
                 program: info.program.clone(),
@@ -162,6 +174,25 @@ impl Link {
                 replay: None,
             },
         );
+    }
+
+    /// The window's cell size in pixels, for every pane now and to come.
+    pub fn set_cell_pixels(&mut self, w: u32, h: u32) {
+        self.cell_px = Some((w, h));
+        for pane in self.panes.values_mut() {
+            pane.emulator.set_cell_pixels(w, h);
+        }
+    }
+
+    /// The theme colours, for every pane now and to come.
+    pub fn set_theme(&mut self, colors: &kyko_term::Colors) {
+        if self.theme.as_ref() == Some(colors) {
+            return;
+        }
+        self.theme = Some(colors.clone());
+        for pane in self.panes.values() {
+            pane.emulator.set_theme(colors);
+        }
     }
 
     fn send(&mut self, frame: &ToHolder) -> Result<(), LinkError> {

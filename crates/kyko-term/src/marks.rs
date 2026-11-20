@@ -37,6 +37,12 @@ pub enum Event {
     /// A desktop notification a program asked for: OSC 9 (text), OSC 777 (`notify;title;body`)
     /// or a finished OSC 99 (kitty's protocol), as title and body.
     Notify(String, String),
+    /// A kitty graphics command (`ESC _ G ... ESC \`): what follows the `G`.
+    Graphics(Vec<u8>),
+    /// `CSI 16 t`: the size of a cell in pixels, which image programs ask for.
+    CellSizeRequest,
+    /// A sixel image (`ESC P ... q DATA ESC \`): the data after the `q`.
+    Sixel(Vec<u8>),
 }
 
 /// Longest OSC body that is looked at: room for a notification. Only bodies that start like
@@ -58,7 +64,20 @@ enum State {
     Osc,
     /// Inside an OSC, saw ESC: `\` ends it.
     OscEsc,
+    /// Inside `ESC _ G`, a graphics command.
+    Apc,
+    /// Inside an APC, saw ESC.
+    ApcEsc,
+    /// Inside `ESC [`: only `16 t` is looked for.
+    Csi,
+    /// Inside `ESC P`: only sixel images (`params q data`) are kept.
+    Dcs,
+    /// Inside a DCS, saw ESC.
+    DcsEsc,
 }
+
+/// The longest graphics command kept; programs send big images in chunks of 4096.
+const APC_LIMIT: usize = 8 << 20;
 
 /// Finds OSC 133 sequences in a byte stream that arrives in pieces.
 #[derive(Default)]
@@ -74,9 +93,14 @@ fn clip(s: &str) -> String {
 }
 
 fn base64(text: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
+    base64_bytes(text.as_bytes())
+}
+
+/// Standard base64, padding optional; `None` for anything else.
+pub(crate) fn base64_bytes(text: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
     let (mut acc, mut bits) = (0u32, 0u32);
-    for b in text.bytes() {
+    for &b in text {
         let v = match b {
             b'A'..=b'Z' => b - b'A',
             b'a'..=b'z' => b - b'a' + 26,
@@ -211,6 +235,15 @@ impl Scanner {
                     if b == b']' {
                         self.state = State::Osc;
                         self.body.clear();
+                    } else if b == b'_' {
+                        self.state = State::Apc;
+                        self.body.clear();
+                    } else if b == b'[' {
+                        self.state = State::Csi;
+                        self.body.clear();
+                    } else if b == b'P' {
+                        self.state = State::Dcs;
+                        self.body.clear();
                     } else if b != 0x1b {
                         self.state = State::Idle;
                     }
@@ -236,6 +269,72 @@ impl Scanner {
                         }
                     }
                 },
+                State::Csi => match b {
+                    b'0'..=b'9' | b';' if self.body.len() < 4 => self.body.push(b),
+                    b't' if self.body == b"16" => {
+                        found.push((i + 1, Event::CellSizeRequest));
+                        self.state = State::Idle;
+                    }
+                    0x1b => self.state = State::Esc,
+                    _ => self.state = State::Idle,
+                },
+                State::Dcs => match b {
+                    0x1b => self.state = State::DcsEsc,
+                    _ if self.body.len() >= APC_LIMIT => self.state = State::Idle,
+                    _ => {
+                        // Before the `q`, only a sixel's numeric parameters may come.
+                        if !self.body.contains(&b'q') && !matches!(b, b'0'..=b'9' | b';' | b'q') {
+                            self.state = State::Idle;
+                        } else {
+                            self.body.push(b);
+                        }
+                    }
+                },
+                State::DcsEsc => {
+                    if b == b'\\' {
+                        let body = std::mem::take(&mut self.body);
+                        let q = body.iter().position(|&c| c == b'q').map_or(0, |q| q + 1);
+                        found.push((i + 1, Event::Sixel(body[q..].to_vec())));
+                        self.state = State::Idle;
+                    } else {
+                        self.body.clear();
+                        self.state = match b {
+                            b']' => State::Osc,
+                            b'_' => State::Apc,
+                            b'P' => State::Dcs,
+                            b'[' => State::Csi,
+                            _ => State::Idle,
+                        };
+                    }
+                }
+                State::Apc => match b {
+                    0x1b => self.state = State::ApcEsc,
+                    _ if self.body.len() >= APC_LIMIT => self.state = State::Idle,
+                    _ => {
+                        // Only kitty's graphics commands are looked at.
+                        if self.body.is_empty() && b != b'G' {
+                            self.state = State::Idle;
+                        } else {
+                            self.body.push(b);
+                        }
+                    }
+                },
+                State::ApcEsc => {
+                    if b == b'\\' {
+                        let mut body = std::mem::take(&mut self.body);
+                        body.remove(0);
+                        found.push((i + 1, Event::Graphics(body)));
+                        self.state = State::Idle;
+                    } else {
+                        // A new escape sequence began: this one never ended.
+                        self.body.clear();
+                        self.state = match b {
+                            b']' => State::Osc,
+                            b'_' => State::Apc,
+                            _ => State::Idle,
+                        };
+                    }
+                }
                 State::OscEsc => {
                     if b == b'\\' {
                         self.end(i + 1, &mut found);

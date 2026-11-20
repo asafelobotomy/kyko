@@ -12,6 +12,7 @@ pub mod runq;
 pub mod session;
 pub mod tabsearch;
 pub mod theme;
+pub mod unicode;
 
 /// A problem with one setting or one field, which fell back to its default. The window logs
 /// each distinct warning once and shows it on the settings page.

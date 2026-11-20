@@ -3,14 +3,16 @@
 //! (`feed`), a grid snapshot comes out (`snapshot`), and what the terminal must answer to the
 //! shell (cursor position reports and the like) is collected by `take_replies`.
 mod colors;
+pub mod graphics;
 pub mod hints;
 pub mod keys;
 pub mod links;
 pub mod marks;
+pub mod sixel;
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use alacritty_terminal::event::{Event, EventListener};
+use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
@@ -183,6 +185,32 @@ pub struct Snapshot {
     /// OSC 8 hyperlinks: each linked cell's index in `cells` and its index in `link_uris`.
     pub links: Vec<(u32, u32)>,
     pub link_uris: Vec<String>,
+    /// Images on screen (kitty's graphics protocol), in the order to draw them.
+    pub images: Vec<ImageView>,
+}
+
+/// An image placement in view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageView {
+    /// The image's id; with `generation`, what a cached texture is keyed by.
+    pub image: u32,
+    pub generation: u64,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<Vec<u8>>,
+    /// The part of the image shown, in pixels.
+    pub src: (u32, u32, u32, u32),
+    /// The top-left cell in view; the row may be above the top when the image is cut off.
+    pub col: i32,
+    pub row: i32,
+    pub cols: u16,
+    pub rows: u16,
+    /// From the cell's corner, in pixels.
+    pub offset: (u32, u32),
+    /// The drawn size, in pixels.
+    pub size: (u32, u32),
+    /// Below 0 the text is drawn over the image.
+    pub z: i32,
 }
 
 /// More than any piece of output `feed` hands the terminal at once can scroll.
@@ -249,15 +277,24 @@ pub struct TermModes {
     pub cursor_blinking: bool,
 }
 
+/// How a colour query (OSC 4, 10, 11, 12 with `?`) wants its answer written.
+type ColorFormat = Arc<dyn Fn(alacritty_terminal::vte::ansi::Rgb) -> String + Sync + Send>;
+
 #[derive(Default)]
 struct Shared {
     replies: Vec<u8>,
     title: Option<String>,
     bell: bool,
+    /// Columns, rows and the cell size in pixels, for `CSI 14 t`.
+    window: (u16, u16, u32, u32),
+    /// Colour queries, answered after the output that asked is taken in.
+    color_queries: Vec<(usize, ColorFormat)>,
+    /// Text a program put on the clipboard (OSC 52), and whether it was the primary selection.
+    clipboard: Option<(String, bool)>,
 }
 
-/// Collects what the terminal says back to the shell and the window title. Clipboard and colour
-/// requests are ignored: programs cannot read the clipboard (spec 2.11).
+/// Collects what the terminal says back to the shell and the window title. Programs cannot read
+/// the clipboard (spec 2.11); what they write is kept for the window to allow or not.
 #[derive(Clone)]
 struct Listener(Arc<Mutex<Shared>>);
 
@@ -274,6 +311,27 @@ impl EventListener for Listener {
             Event::Title(title) => self.lock().title = Some(title),
             Event::ResetTitle => self.lock().title = None,
             Event::Bell => self.lock().bell = true,
+            Event::ColorRequest(index, format) => {
+                let mut s = self.lock();
+                if s.color_queries.len() < 64 {
+                    s.color_queries.push((index, format));
+                }
+            }
+            Event::ClipboardStore(kind, text) => {
+                let primary = kind == alacritty_terminal::term::ClipboardType::Selection;
+                self.lock().clipboard = Some((text, primary));
+            }
+            Event::TextAreaSizeRequest(format) => {
+                let mut s = self.lock();
+                let (cols, rows, w, h) = s.window;
+                let text = format(WindowSize {
+                    num_lines: rows,
+                    num_cols: cols,
+                    cell_width: w.min(u32::from(u16::MAX)) as u16,
+                    cell_height: h.min(u32::from(u16::MAX)) as u16,
+                });
+                s.replies.extend_from_slice(text.as_bytes());
+            }
             _ => {}
         }
     }
@@ -327,6 +385,12 @@ pub struct Emulator {
     started: Option<std::time::Instant>,
     /// Commands that ended since the last look: how long each ran and its exit status.
     finished: Vec<(std::time::Duration, u8)>,
+    /// Images and where they are placed.
+    graphics: graphics::Store,
+    /// A cell's size in pixels, as the window draws it.
+    cell_px: (u32, u32),
+    /// The theme the window last drew with, for colour queries.
+    theme: Mutex<Option<Colors>>,
     /// The shell's marks, by row number.
     marks: marks::Table,
     /// Lines that scrolled off the top of the history and are gone: row numbers count from them.
@@ -337,7 +401,10 @@ impl Emulator {
     /// A blank emulator; sizes below 2 columns by 1 row are clamped up to it.
     pub fn new(cols: u16, rows: u16, scrollback: usize) -> Self {
         let size = Size::clamped(cols, rows);
-        let shared = Listener(Arc::new(Mutex::new(Shared::default())));
+        let shared = Listener(Arc::new(Mutex::new(Shared {
+            window: (size.cols, size.rows, 8, 16),
+            ..Shared::default()
+        })));
         Emulator {
             term: Self::new_term(size, scrollback, false, &shared),
             processor: Processor::new(),
@@ -352,6 +419,9 @@ impl Emulator {
             notifications: Vec::new(),
             started: None,
             finished: Vec::new(),
+            graphics: graphics::Store::default(),
+            cell_px: (8, 16),
+            theme: Mutex::new(None),
             marks: marks::Table::new(),
             gone: 0,
         }
@@ -448,6 +518,16 @@ impl Emulator {
                         self.notifications.push((title, body));
                     }
                 }
+                marks::Event::Graphics(body) => self.graphics_command(&body),
+                marks::Event::Sixel(data) => self.sixel(&data),
+                marks::Event::CellSizeRequest => {
+                    let (w, h) = self.cell_px;
+                    let reply = format!("\x1b[6;{h};{w}t");
+                    self.shared
+                        .lock()
+                        .replies
+                        .extend_from_slice(reply.as_bytes());
+                }
                 other => self.mark(other),
             }
             at = end;
@@ -456,11 +536,68 @@ impl Emulator {
         self.sync_title();
     }
 
+    /// Where the cursor is, for the graphics store.
+    fn graphics_at(&self) -> graphics::At {
+        let point = self.term.grid().cursor.point;
+        let alt = self.in_alt_screen();
+        graphics::At {
+            col: point.column.0 as u16,
+            row: if alt {
+                point.line.0.max(0) as u64
+            } else {
+                self.row_id(point.line.0)
+            },
+            cell_w: self.cell_px.0,
+            cell_h: self.cell_px.1,
+            alt,
+        }
+    }
+
+    /// A sixel image, at the cursor; the cursor ends on the line below it, in the same column.
+    fn sixel(&mut self, data: &[u8]) {
+        let Some((w, h, rgba)) = sixel::decode(data) else {
+            return;
+        };
+        let at = self.graphics_at();
+        if let Some((_, rows)) = self.graphics.show(w, h, rgba, at) {
+            let moves = vec![b'\n'; usize::from(rows)];
+            self.advance(&moves);
+        }
+    }
+
+    /// A kitty graphics command, at the cursor.
+    fn graphics_command(&mut self, body: &[u8]) {
+        let at = self.graphics_at();
+        let out = self.graphics.command(body, at);
+        if let Some(r) = out.reply {
+            self.shared.lock().replies.extend_from_slice(&r);
+        }
+        if let Some((cols, rows)) = out.moved {
+            // Past the image: down to its last row, then right of it.
+            let mut moves = vec![b'\n'; usize::from(rows.saturating_sub(1))];
+            moves.extend_from_slice(format!("\x1b[{cols}C").as_bytes());
+            self.advance(&moves);
+        }
+    }
+
+    /// The window's cell size in pixels: images are sized in cells from it.
+    pub fn set_cell_pixels(&mut self, w: u32, h: u32) {
+        self.cell_px = (w.max(1), h.max(1));
+        self.shared.lock().window.2 = self.cell_px.0;
+        self.shared.lock().window.3 = self.cell_px.1;
+    }
+
     /// Output to the terminal, a piece at a time, trimming the history to its limit after each.
     fn advance(&mut self, bytes: &[u8]) {
         for piece in bytes.chunks(PIECE) {
             let before = self.history_len();
+            let was_alt = self.in_alt_screen();
             self.processor.advance(&mut self.term, piece);
+            self.answer_colors();
+            if was_alt != self.in_alt_screen() {
+                // Images placed on the alternate screen go when it is left (or entered anew).
+                self.graphics.leave_alt();
+            }
             if self.term.mode().contains(TermMode::ALT_SCREEN) {
                 continue;
             }
@@ -499,10 +636,21 @@ impl Emulator {
         self.scanner = marks::Scanner::default();
         self.marks.clear();
         self.gone = 0;
-        *self.shared.lock() = Shared::default();
+        self.graphics.clear();
+        *self.shared.lock() = Shared {
+            window: (
+                self.size.cols,
+                self.size.rows,
+                self.cell_px.0,
+                self.cell_px.1,
+            ),
+            ..Shared::default()
+        };
         self.title = None;
         self.feed(bytes);
-        self.shared.lock().replies.clear();
+        let mut s = self.shared.lock();
+        s.replies.clear();
+        s.clipboard = None;
     }
 
     /// Sizes below 2 columns by 1 row are clamped up to it.
@@ -514,6 +662,11 @@ impl Emulator {
         let before = cursor_row(self);
         self.size = new;
         self.term.resize(self.size);
+        {
+            let mut s = self.shared.lock();
+            s.window.0 = new.cols;
+            s.window.1 = new.rows;
+        }
         // A new width re-wraps lines, and then row numbers no longer mean what they did. A shell
         // that has only printed its first prompt has nothing to re-wrap, and the cursor's row
         // number says so: it is unchanged.
@@ -523,6 +676,7 @@ impl Emulator {
     }
 
     pub fn snapshot(&self, colors: &Colors) -> Snapshot {
+        self.set_theme(colors);
         let term = &self.term;
         let cols = term.columns();
         let rows = term.screen_lines();
@@ -627,7 +781,48 @@ impl Emulator {
             combining,
             links,
             link_uris,
+            images: self.image_views(offset, rows),
         }
+    }
+
+    /// The placements in view, below-text ones first.
+    fn image_views(&self, offset: i32, rows: usize) -> Vec<ImageView> {
+        let alt = self.in_alt_screen();
+        let mut out: Vec<ImageView> = self
+            .graphics
+            .placements
+            .iter()
+            .filter(|p| p.alt == alt)
+            .filter_map(|p| {
+                let line = if alt {
+                    p.row as i32
+                } else {
+                    self.line_of(p.row)
+                };
+                let row = line + offset;
+                if row + i32::from(p.rows) <= 0 || row >= rows as i32 {
+                    return None;
+                }
+                let img = self.graphics.image(p.image)?;
+                Some(ImageView {
+                    image: img.id,
+                    generation: img.generation,
+                    width: img.width,
+                    height: img.height,
+                    rgba: img.rgba.clone(),
+                    src: p.src,
+                    col: i32::from(p.col),
+                    row,
+                    cols: p.cols,
+                    rows: p.rows,
+                    offset: p.offset,
+                    size: p.size,
+                    z: p.z,
+                })
+            })
+            .collect();
+        out.sort_by_key(|v| v.z);
+        out
     }
 
     /// Notifications programs asked for (OSC 9, 777, 99), as title and body; empties the list.
@@ -639,6 +834,56 @@ impl Emulator {
     /// ran and its exit status.
     pub fn take_finished(&mut self) -> Vec<(std::time::Duration, u8)> {
         std::mem::take(&mut self.finished)
+    }
+
+    /// Answers the colour queries the last output made: the program's own colours (OSC 4, 10,
+    /// 11) first, then the theme's.
+    fn answer_colors(&mut self) {
+        let queries = std::mem::take(&mut self.shared.lock().color_queries);
+        if queries.is_empty() {
+            return;
+        }
+        let theme = self.theme.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some(theme) = theme else { return };
+        let mut out = String::new();
+        for (index, format) in queries {
+            let color = if index < 256 {
+                alacritty_terminal::vte::ansi::Color::Indexed(index as u8)
+            } else {
+                match index {
+                    257 => alacritty_terminal::vte::ansi::Color::Named(
+                        alacritty_terminal::vte::ansi::NamedColor::Background,
+                    ),
+                    258 => alacritty_terminal::vte::ansi::Color::Named(
+                        alacritty_terminal::vte::ansi::NamedColor::Cursor,
+                    ),
+                    _ => alacritty_terminal::vte::ansi::Color::Named(
+                        alacritty_terminal::vte::ansi::NamedColor::Foreground,
+                    ),
+                }
+            };
+            let v = resolve(color, self.term.colors(), &theme);
+            out.push_str(&format(alacritty_terminal::vte::ansi::Rgb {
+                r: (v >> 16) as u8,
+                g: (v >> 8) as u8,
+                b: v as u8,
+            }));
+        }
+        self.shared.lock().replies.extend_from_slice(out.as_bytes());
+    }
+
+    /// The theme colours, for answering colour queries; `snapshot` keeps it up to date too.
+    pub fn set_theme(&self, colors: &Colors) {
+        let mut t = self.theme.lock().unwrap_or_else(|e| e.into_inner());
+        if t.as_ref() != Some(colors) {
+            *t = Some(colors.clone());
+        }
+    }
+
+    /// What a program put on the clipboard (OSC 52) since the last call, and whether it was the
+    /// primary selection.
+    pub fn take_clipboard(&mut self) -> Option<(String, bool)> {
+        self.shared.lock().clipboard.take()
     }
 
     /// Whether the program rang the bell (BEL) since the last call.
@@ -897,7 +1142,10 @@ impl Emulator {
                 self.marks.entry(id).or_default().output = true;
                 self.started = Some(std::time::Instant::now());
             }
-            marks::Event::Notify(..) => unreachable!("handled in feed"),
+            marks::Event::Notify(..)
+            | marks::Event::Graphics(_)
+            | marks::Event::CellSizeRequest
+            | marks::Event::Sixel(_) => unreachable!("handled in feed"),
             marks::Event::Done(code) => {
                 if let Some(t) = self.started.take() {
                     self.finished.push((t.elapsed(), code.unwrap_or(0)));
