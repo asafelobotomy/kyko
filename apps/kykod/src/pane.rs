@@ -64,6 +64,10 @@ pub const QUIET: Duration = Duration::from_millis(100);
 /// KiB); the bound stops a background job that keeps writing from keeping the
 /// pane alive.
 const DRAIN_LIMIT: usize = 4 * OUTPUT_CHUNK;
+/// How long the row taken off at attach stays off at least. Two `SIGWINCH` close together can
+/// reach a program between its check for signals and its next `read`: `less` then shows the
+/// smaller size until a key is pressed. Spaced out, the second finds it waiting for input.
+const SHRUNK_FOR: Duration = Duration::from_millis(40);
 
 pub struct Pane {
     id: PaneId,
@@ -109,9 +113,13 @@ struct State {
     /// program is nudged to redraw (see [`Pane::resize`]). Any `Resize` clears
     /// it, so a window that resends its size does not make programs redraw.
     nudge: Option<u64>,
-    /// Set by [`Pane::attach`] after it took a row off the terminal; the window's first `Resize`
-    /// puts the row back. Both changes reach the program as `SIGWINCH`, so it redraws everything.
-    shrunk: bool,
+    /// Set by [`Pane::attach`] after it took a row off the terminal, with when; the window's
+    /// first `Resize` puts the row back, no sooner than [`SHRUNK_FOR`] after. Both changes reach
+    /// the program as `SIGWINCH`, so it redraws everything.
+    shrunk: Option<Instant>,
+    /// Counts sizes given to the terminal, so a delayed restore that a later `Resize` has
+    /// overtaken does nothing.
+    sized: u64,
 }
 
 impl Pane {
@@ -173,7 +181,8 @@ impl Pane {
                 exited: None,
                 closed: false,
                 nudge: None,
-                shrunk: false,
+                shrunk: None,
+                sized: 0,
             }),
         });
         let writing = pane.clone();
@@ -370,14 +379,34 @@ impl Pane {
     /// foreground program itself: after a replay that is what makes a
     /// full-screen program redraw. Later ones, and any after a real change,
     /// send nothing, and neither does one for a pane whose shell has ended.
-    pub fn resize(&self, window: &Window, cols: u16, rows: u16) {
+    /// The first after an attach that took a row off puts it back, at least
+    /// [`SHRUNK_FOR`] after it was taken (on a short-lived thread if need be).
+    pub fn resize(self: &Arc<Self>, window: &Window, cols: u16, rows: u16) {
         let (cols, rows) = (cols.max(2), rows.max(1));
         let mut st = self.lock();
         let first = st.nudge.take() == Some(window.id());
-        if std::mem::take(&mut st.shrunk) {
+        if let Some(at) = st.shrunk.take() {
+            st.sized += 1;
             st.cols = cols;
             st.rows = rows;
-            self.pty.resize(cols, rows);
+            let wait = (at + SHRUNK_FOR).saturating_duration_since(Instant::now());
+            if wait.is_zero() {
+                self.pty.resize(cols, rows);
+                return;
+            }
+            let (pane, sized) = (Arc::clone(self), st.sized);
+            let later = std::thread::Builder::new()
+                .name("kykod-unshrink".into())
+                .spawn(move || {
+                    std::thread::sleep(wait);
+                    let st = pane.lock();
+                    if st.sized == sized && !st.closed {
+                        pane.pty.resize(st.cols, st.rows);
+                    }
+                });
+            if later.is_err() {
+                self.pty.resize(cols, rows);
+            }
             return;
         }
         if (cols, rows) == (st.cols, st.rows) {
@@ -388,6 +417,7 @@ impl Pane {
         }
         st.cols = cols;
         st.rows = rows;
+        st.sized += 1;
         self.pty.resize(cols, rows);
     }
 
@@ -512,7 +542,8 @@ impl Pane {
         // taken off here and the window's `Resize` gives it back: a real size change both ways.
         if st.exited.is_none() && st.rows > 1 {
             self.pty.resize(st.cols, st.rows - 1);
-            st.shrunk = true;
+            st.shrunk = Some(Instant::now());
+            st.sized += 1;
         }
         self.send_info(&mut st, end);
         if st.live.is_some() {

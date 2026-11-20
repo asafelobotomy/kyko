@@ -246,6 +246,8 @@ fn decode(blob: &[u8], home: &str, shell: &str, w: &mut Vec<Warning>) -> Option<
             rename: t.rename.as_deref().and_then(clean_rename),
             root,
             focus,
+            zoomed: false,
+            broadcast: false,
         });
     }
     s.active = blob.active;
@@ -412,6 +414,8 @@ impl Session {
                 rename: None,
                 root: Node::Leaf(id),
                 focus: vec![id],
+                zoomed: false,
+                broadcast: false,
             });
             s.apply_info(id, &info.program, &info.cwd);
         }

@@ -123,7 +123,7 @@ QSGGeometryNode* makeBgNode() {
 constexpr float GUTTER_W = 3.0f;
 
 void fillBg(QSGGeometryNode* node, const FfiCell* cells, const uint8_t* gutter, int cols, int rows, qreal cw,
-            qreal ch, qreal w, qreal h, int curX, int curY, quint32 curColor) {
+            qreal ch, qreal w, qreal h, int curX, int curY, quint32 curColor, uchar alpha) {
     const quint32 def = kyko_palette_bg();
     int quads = 1 + (curX >= 0 ? 1 : 0);
     for (int r = 0; r < rows; ++r)
@@ -143,7 +143,20 @@ void fillBg(QSGGeometryNode* node, const FfiCell* cells, const uint8_t* gutter, 
     QSGGeometry* g = node->geometry();
     g->allocate(quads * 6);
     auto* p = g->vertexDataAsColoredPoint2D();
-    quad(p, 0, 0, float(w), float(h), def);
+    // The default background, see-through by `window.opacity_pct` (premultiplied, as the vertex
+    // colour material expects); the cells a program coloured stay opaque.
+    {
+        const uchar r = uchar(((def >> 16) & 0xff) * alpha / 255), g = uchar(((def >> 8) & 0xff) * alpha / 255),
+                    b = uchar((def & 0xff) * alpha / 255);
+        const float fw = float(w), fh = float(h);
+        p[0].set(0, 0, r, g, b, alpha);
+        p[1].set(fw, 0, r, g, b, alpha);
+        p[2].set(0, fh, r, g, b, alpha);
+        p[3].set(fw, 0, r, g, b, alpha);
+        p[4].set(fw, fh, r, g, b, alpha);
+        p[5].set(0, fh, r, g, b, alpha);
+        p += 6;
+    }
     for (int r = 0; r < rows; ++r) {
         const FfiCell* row = cells + size_t(r) * cols;
         for (int c = 0; c < cols;) {
@@ -602,6 +615,7 @@ void GridView::applyFont() {
     m_strikePos = std::round(m_ascent - fm.strikeOutPos());
     m_cursorShape = std::clamp(kyko_setting(rust::Str("cursor")), 0, 2);
     m_blink = kyko_setting(rust::Str("cursor_blink")) != 0;
+    m_bgAlpha = uchar(std::clamp(kyko_setting(rust::Str("opacity_pct")), 30, 100) * 255 / 100);
     m_blinkOn = true;
     if (m_blink && hasActiveFocus())
         m_blinkTimer.start();
@@ -873,7 +887,7 @@ QSGNode* GridView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     const quint32 bgColor = kyko_palette_bg();
     auto* bg = static_cast<QSGGeometryNode*>(root->firstChild());
     fillBg(bg, cells.data(), gutter.data(), cols, rows, m_cellW, m_cellH, width(), height(),
-           block ? cx : -1, cy, cursorColor);
+           block ? cx : -1, cy, cursorColor, m_bgAlpha);
 
     QHash<quint32, QString> combining;
     for (const FfiExtra& e : extras)
@@ -1043,26 +1057,43 @@ QSGNode* GridView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
             deco.append({x0, y1 - std::max(2.0f, t), x1, y1, cursorColor});
         }
     }
+    // See-through rectangles over the text: the visual bell and the scrollbar.
+    struct Veil {
+        float x0, y0, x1, y1;
+        quint32 c;
+        uchar a;
+    };
+    QList<Veil> veils;
+    const float pw = float(width()), ph = float(height());
+    const quint32 fgColor = kyko_palette_fg();
+    if (m_flash)
+        veils.append({0, 0, pw, ph, fgColor, 64});
+    kyko_scroll_pos(quint32(m_pane), m_scrollOff, m_scrollHist);
+    if (m_scrollHist > 0 && (m_scrollOff > 0 || m_scrollDrag)) {
+        const float bw = 6;
+        const float total = float(m_scrollHist + quint32(rows));
+        const float th = std::max(24.0f, ph * float(rows) / total);
+        const float top = (ph - th) * (1.0f - float(m_scrollOff) / float(m_scrollHist));
+        veils.append({pw - bw, 0, pw, ph, fgColor, 28});
+        veils.append({pw - bw, top, pw, top + th, fgColor, m_scrollDrag ? uchar(200) : uchar(140)});
+    }
     auto* dn = static_cast<QSGGeometryNode*>(gn->nextSibling());
     QSGGeometry* dg = dn->geometry();
-    dg->allocate(int(deco.size() + (m_flash ? 1 : 0)) * 6);
+    dg->allocate(int(deco.size() + veils.size()) * 6);
     auto* dp = dg->vertexDataAsColoredPoint2D();
     for (const Rect& d : deco)
         quad(dp, d.x0, d.y0, d.x1, d.y1, d.c);
-    if (m_flash) {
-        // The visual bell: the foreground colour at a quarter strength over the whole pane,
-        // premultiplied as the vertex colour material expects.
-        const quint32 c = kyko_palette_fg();
-        const uchar a = 64;
-        const uchar r = uchar(((c >> 16) & 0xff) * a / 255), g = uchar(((c >> 8) & 0xff) * a / 255),
-                    b = uchar((c & 0xff) * a / 255);
-        const float w = float(width()), h = float(height());
-        dp[0].set(0, 0, r, g, b, a);
-        dp[1].set(w, 0, r, g, b, a);
-        dp[2].set(0, h, r, g, b, a);
-        dp[3].set(w, 0, r, g, b, a);
-        dp[4].set(w, h, r, g, b, a);
-        dp[5].set(0, h, r, g, b, a);
+    for (const Veil& v : veils) {
+        // Premultiplied, as the vertex colour material expects.
+        const uchar r = uchar(((v.c >> 16) & 0xff) * v.a / 255), g = uchar(((v.c >> 8) & 0xff) * v.a / 255),
+                    b = uchar((v.c & 0xff) * v.a / 255);
+        dp[0].set(v.x0, v.y0, r, g, b, v.a);
+        dp[1].set(v.x1, v.y0, r, g, b, v.a);
+        dp[2].set(v.x0, v.y1, r, g, b, v.a);
+        dp[3].set(v.x1, v.y0, r, g, b, v.a);
+        dp[4].set(v.x1, v.y1, r, g, b, v.a);
+        dp[5].set(v.x0, v.y1, r, g, b, v.a);
+        dp += 6;
     }
     dn->markDirty(QSGNode::DirtyGeometry);
 
@@ -1090,8 +1121,20 @@ static quint8 buttonCode(Qt::MouseButton b) {
     return b == Qt::LeftButton ? 0 : b == Qt::MiddleButton ? 1 : b == Qt::RightButton ? 2 : 3;
 }
 
+void GridView::scrollToY(qreal y) {
+    const qreal f = std::clamp(y / std::max<qreal>(1, height()), 0.0, 1.0);
+    kyko_scroll_to(quint32(m_pane), quint32(std::lround(qreal(m_scrollHist) * (1.0 - f))));
+    update();
+}
+
 void GridView::mousePressEvent(QMouseEvent* e) {
     forceActiveFocus();
+    if (e->button() == Qt::LeftButton && m_scrollOff > 0 && m_scrollHist > 0 && e->position().x() >= width() - 10) {
+        m_scrollDrag = true;
+        scrollToY(e->position().y());
+        e->accept();
+        return;
+    }
     const QPoint cell(int(e->position().x() / m_cellW), int(e->position().y() / m_cellH));
     const qint64 now = e->timestamp();
     m_clicks = (now - m_lastPress < 400 && cell == m_lastCell && m_clicks < 3) ? m_clicks + 1 : 1;
@@ -1115,6 +1158,11 @@ void GridView::mousePressEvent(QMouseEvent* e) {
 }
 
 void GridView::mouseMoveEvent(QMouseEvent* e) {
+    if (m_scrollDrag) {
+        scrollToY(e->position().y());
+        e->accept();
+        return;
+    }
     if (QPoint(int(e->position().x() / m_cellW), int(e->position().y() / m_cellH)) != m_lastCell)
         m_dragged = true;
     const Qt::MouseButton b = (m_down & Qt::LeftButton) ? Qt::LeftButton : (m_down & Qt::MiddleButton) ? Qt::MiddleButton : Qt::RightButton;
@@ -1123,6 +1171,12 @@ void GridView::mouseMoveEvent(QMouseEvent* e) {
 }
 
 void GridView::mouseReleaseEvent(QMouseEvent* e) {
+    if (m_scrollDrag && e->button() == Qt::LeftButton) {
+        m_scrollDrag = false;
+        update();
+        e->accept();
+        return;
+    }
     m_down &= ~Qt::MouseButtons(e->button());
     sendMouse(2, buttonCode(e->button()), e->position(), e->modifiers(), 0);
     if (e->button() == Qt::LeftButton && !m_dragged && m_clicks == 1 && m_pane > 0 && m_cols > 0) {
@@ -1252,6 +1306,10 @@ QVariant GridView::inputMethodQuery(Qt::InputMethodQuery query) const {
     case Qt::ImFont: return m_font;
     default: return QQuickItem::inputMethodQuery(query);
     }
+}
+
+void app_set_translucent() {
+    QQuickWindow::setDefaultAlphaBuffer(true);
 }
 
 void app_set_id(rust::Str id) {

@@ -149,6 +149,11 @@ private:
     bool m_blink = false, m_blinkOn = true;
     QTimer m_blinkTimer;
     bool m_flash = false;  // the visual bell is showing
+    uchar m_bgAlpha = 255;  // window.opacity_pct
+    // The scrollbar: shown while the view is above the live screen, and draggable.
+    quint32 m_scrollOff = 0, m_scrollHist = 0;
+    bool m_scrollDrag = false;
+    void scrollToY(qreal y);
     int m_cols = 0, m_rows = 0;
     int m_curX = -1, m_curY = -1;
     int m_pane = 0;
@@ -182,6 +187,8 @@ void grid_bell(quint32 pane, int mode);
 void grid_request_repaint();
 // Names the window's application (Wayland app id, the `--class` option).
 void app_set_id(rust::Str id);
+// Windows get an alpha channel, so `window.opacity_pct` can let the desktop show through.
+void app_set_translucent();
 // Delivers a bus command to the controller, on the GUI thread, from any thread.
 void controller_send(int code);
 // The layout changed: tells the controller, on the GUI thread, from any thread.

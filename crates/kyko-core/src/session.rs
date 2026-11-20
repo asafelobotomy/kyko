@@ -63,6 +63,8 @@ pub struct PaneView<'a> {
     pub cwd: &'a str,
     pub busy: bool,
     pub focused: bool,
+    /// Behind a zoomed pane: kept at its size, not shown.
+    pub hidden: bool,
 }
 
 pub struct DividerView {
@@ -82,6 +84,10 @@ pub struct TabView<'a> {
     pub active: bool,
     pub panes: Vec<PaneView<'a>>,
     pub dividers: Vec<DividerView>,
+    /// A pane fills the tab (Ctrl+Shift+Z).
+    pub zoomed: bool,
+    /// Typing goes to all the tab's panes (Ctrl+Shift+B).
+    pub broadcast: bool,
 }
 
 /// A new tab's pane. `cwd` `None`: home. `args` empty: an interactive shell; the window builds
@@ -131,6 +137,11 @@ pub(crate) struct Tab {
     pub(crate) root: Node,
     /// Most recently focused first; the first is the tab's focused pane.
     pub(crate) focus: Vec<PaneId>,
+    /// The focused pane fills the tab; the others are kept at that size, out of sight. Not
+    /// saved with the layout.
+    pub(crate) zoomed: bool,
+    /// Typing in one pane goes to every pane of the tab.
+    pub(crate) broadcast: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -379,6 +390,8 @@ impl Session {
             rename: None,
             root: Node::Leaf(pane),
             focus: vec![pane],
+            zoomed: false,
+            broadcast: false,
         });
         self.active = tab;
         Ok(vec![Effect::Spawn {
@@ -458,13 +471,15 @@ impl Session {
             let focused = t.focus.first().copied();
             let mut bounds = Vec::new();
             t.root.bounds(UNIT, &mut bounds);
+            let zoomed = t.zoomed && bounds.len() > 1;
             let panes = bounds
                 .into_iter()
                 .filter_map(|(id, b)| {
                     let p = self.panes.get(&id)?;
                     Some(PaneView {
                         id,
-                        rect: b.rect(),
+                        rect: if zoomed { UNIT.rect() } else { b.rect() },
+                        hidden: zoomed && Some(id) != focused,
                         state: &p.state,
                         program: &p.program,
                         cwd: &p.cwd,
@@ -474,7 +489,9 @@ impl Session {
                 })
                 .collect();
             let mut dividers = Vec::new();
-            t.root.dividers(UNIT, &mut Vec::new(), &mut dividers);
+            if !zoomed {
+                t.root.dividers(UNIT, &mut Vec::new(), &mut dividers);
+            }
             TabView {
                 id: t.id,
                 name: self.tab_name(t),
@@ -484,8 +501,59 @@ impl Session {
                 active: t.id == self.active,
                 panes,
                 dividers,
+                zoomed,
+                broadcast: t.broadcast && !matches!(t.root, Node::Leaf(_)),
             }
         })
+    }
+
+    /// Ctrl+Shift+B: typing in the active tab goes to all its panes, or back to one. False
+    /// when the tab has one pane.
+    pub fn toggle_broadcast(&mut self) -> bool {
+        let i = self.active_index();
+        let Some(tab) = self.tabs.get_mut(i) else {
+            return false;
+        };
+        if matches!(tab.root, Node::Leaf(_)) {
+            tab.broadcast = false;
+            return false;
+        }
+        tab.broadcast = !tab.broadcast;
+        true
+    }
+
+    /// The panes typing in `pane` reaches: its whole tab's running panes while the tab
+    /// broadcasts, else `pane` alone.
+    pub fn typing_targets(&self, pane: PaneId) -> Vec<PaneId> {
+        let Some(tab) = self.tab_of(pane).map(|i| &self.tabs[i]) else {
+            return vec![pane];
+        };
+        if !tab.broadcast || matches!(tab.root, Node::Leaf(_)) {
+            return vec![pane];
+        }
+        let mut all = Vec::new();
+        tab.root.leaves(&mut all);
+        all.retain(|p| {
+            self.panes
+                .get(p)
+                .is_some_and(|x| x.state == PaneState::Running)
+        });
+        all
+    }
+
+    /// Ctrl+Shift+Z: the focused pane fills its tab, or goes back to its place. False when the
+    /// tab has one pane.
+    pub fn toggle_zoom(&mut self) -> bool {
+        let i = self.active_index();
+        let Some(tab) = self.tabs.get_mut(i) else {
+            return false;
+        };
+        if matches!(tab.root, Node::Leaf(_)) {
+            tab.zoomed = false;
+            return false;
+        }
+        tab.zoomed = !tab.zoomed;
+        true
     }
 
     pub fn active_tab(&self) -> TabId {
@@ -530,6 +598,8 @@ impl Session {
                 rename: None,
                 root: Node::Leaf(pane),
                 focus: vec![pane],
+                zoomed: false,
+                broadcast: false,
             },
         );
         self.active = tab;
@@ -555,15 +625,37 @@ impl Session {
     /// Splits the focused pane: the new pane goes right of or below it, at 0.5, in its folder,
     /// and takes the focus.
     pub fn split(&mut self, axis: SplitAxis, shell: &str) -> Result<Vec<Effect>, Full> {
+        let cwd = self.new_tab_dir(NewTabDir::Current);
+        self.split_with(
+            axis,
+            SpawnRequest {
+                cwd,
+                args: Vec::new(),
+                hold: false,
+            },
+            shell,
+        )
+    }
+
+    /// Splits the focused pane, the new one running `req`.
+    pub fn split_with(
+        &mut self,
+        axis: SplitAxis,
+        req: SpawnRequest,
+        shell: &str,
+    ) -> Result<Vec<Effect>, Full> {
         self.room()?;
         let i = self.active_index();
         let Some(&old) = self.tabs.get(i).and_then(|t| t.focus.first()) else {
             return Err(Full);
         };
         let pane = self.pane_id()?;
-        let cwd = self.new_tab_dir(NewTabDir::Current);
-        self.panes.insert(pane, Pane::new(shell, false));
+        self.panes.insert(pane, Pane::new(shell, req.hold));
         let tab = &mut self.tabs[i];
+        tab.zoomed = false;
+        if matches!(tab.root, Node::Leaf(_)) {
+            tab.broadcast = false;
+        }
         tab.root.replace_leaf(
             old,
             Node::Split {
@@ -576,8 +668,8 @@ impl Session {
         tab.focus.insert(0, pane);
         Ok(vec![Effect::Spawn {
             pane,
-            cwd,
-            args: Vec::new(),
+            cwd: req.cwd,
+            args: req.args,
         }])
     }
 
@@ -950,6 +1042,55 @@ mod tests {
 
     fn tab(s: &Session) -> TabView<'_> {
         s.tabs().find(|t| t.active).unwrap()
+    }
+
+    #[test]
+    fn broadcast_types_into_every_running_pane_of_the_tab() {
+        let mut s = fresh();
+        let first = s.focused_pane();
+        assert!(!s.toggle_broadcast(), "one pane: nothing to broadcast to");
+        assert_eq!(s.typing_targets(first), vec![first]);
+        s.split(SplitAxis::Side, SH).unwrap();
+        let second = s.focused_pane();
+        assert!(s.toggle_broadcast());
+        assert!(tab(&s).broadcast);
+        let mut got = s.typing_targets(second);
+        got.sort();
+        assert_eq!(got, vec![first, second]);
+        s.pane_exited(first, 0, SH);
+        assert_eq!(s.typing_targets(second), vec![second]);
+        assert!(!tab(&s).broadcast, "a lone pane does not broadcast");
+        // A new split starts without it.
+        s.split(SplitAxis::Side, SH).unwrap();
+        assert!(!tab(&s).broadcast);
+    }
+
+    #[test]
+    fn zoom_fills_the_tab_with_the_focused_pane() {
+        let mut s = fresh();
+        assert!(!s.toggle_zoom(), "one pane: nothing to zoom");
+        s.split(SplitAxis::Side, SH).unwrap();
+        let focused = s.focused_pane();
+        assert!(s.toggle_zoom());
+        let t = tab(&s);
+        assert!(t.zoomed);
+        assert!(t.dividers.is_empty());
+        for p in &t.panes {
+            assert_eq!(p.rect, UNIT.rect());
+            assert_eq!(p.hidden, p.id != focused);
+        }
+        // Moving the focus shows the other pane, still zoomed.
+        assert!(s.focus_dir(Dir::Left));
+        let t = tab(&s);
+        assert!(t.panes.iter().any(|p| p.id != focused && !p.hidden));
+        // A split brings the panes back.
+        s.split(SplitAxis::Stacked, SH).unwrap();
+        let t = tab(&s);
+        assert!(!t.zoomed);
+        assert!(t.panes.iter().all(|p| !p.hidden));
+        assert!(s.toggle_zoom());
+        assert!(s.toggle_zoom());
+        assert!(!tab(&s).zoomed);
     }
 
     fn rect_of(s: &Session, pane: PaneId) -> Rect {

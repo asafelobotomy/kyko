@@ -69,6 +69,12 @@ pub const PAGES: &[Page] = &[
                 kind: Kind::Int(40, 100),
             },
             Item {
+                key: "window.opacity_pct",
+                label: "Background opacity (%)",
+                help: "Below 100 the desktop, and its blur, shows through the background.",
+                kind: Kind::Int(30, 100),
+            },
+            Item {
                 key: "window.above_fullscreen",
                 label: "Show over full-screen windows",
                 help: "",
@@ -277,6 +283,18 @@ pub const PAGES: &[Page] = &[
                 kind: Kind::Key,
             },
             Item {
+                key: "keys.zoom_pane",
+                label: "Zoom pane",
+                help: "The focused pane fills its tab, or goes back to its place.",
+                kind: Kind::Key,
+            },
+            Item {
+                key: "keys.broadcast",
+                label: "Type into all panes",
+                help: "Typing in the tab goes to every pane in it, until pressed again.",
+                kind: Kind::Key,
+            },
+            Item {
                 key: "keys.open_link",
                 label: "Open a link by keyboard",
                 help: "Labels each link on screen; type a label to open it, or its capital to copy it.",
@@ -372,6 +390,7 @@ pub fn values_json(c: &Config) -> Json {
         "window.tabs": if w.tabs == TabsAt::Top { "top" } else { "bottom" },
         "window.height_pct": w.height_pct,
         "window.width_pct": w.width_pct,
+        "window.opacity_pct": w.opacity_pct,
         "window.above_fullscreen": w.above_fullscreen,
         "window.hide_on_focus_loss": w.hide_on_focus_loss,
         "window.animations": w.animations,

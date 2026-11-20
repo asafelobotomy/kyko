@@ -711,8 +711,16 @@ impl Emulator {
     /// Everything in the history and on the screen as text, one line per row, oldest first,
     /// with trailing blanks taken off each line and blank lines at the end dropped.
     pub fn all_text(&self) -> String {
+        self.text_from(-(self.term.grid().history_size() as i32))
+    }
+
+    /// The live screen's text, as [`Emulator::all_text`] gives it.
+    pub fn screen_text(&self) -> String {
+        self.text_from(0)
+    }
+
+    fn text_from(&self, top: i32) -> String {
         let grid = self.term.grid();
-        let top = -(grid.history_size() as i32);
         let bottom = grid.screen_lines() as i32 - 1;
         let cols = grid.columns();
         let mut out = String::new();

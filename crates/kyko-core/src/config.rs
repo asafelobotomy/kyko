@@ -65,6 +65,9 @@ pub struct WindowConfig {
     pub tabs: TabsAt,
     pub height_pct: u32,
     pub width_pct: u32,
+    /// How opaque the terminal's background is, in percent: below 100 the desktop (and its blur)
+    /// shows through. Cells a program coloured stay opaque.
+    pub opacity_pct: u32,
     pub monitor: Monitor,
     pub above_fullscreen: bool,
     pub hide_on_focus_loss: bool,
@@ -140,9 +143,13 @@ pub enum Action {
     ShowScrollback,
     /// Labels every link on screen; typing a label opens that link.
     OpenLink,
+    /// The focused pane fills its tab, or goes back to its place.
+    ZoomPane,
+    /// Typing in the tab goes to all its panes, or back to one.
+    Broadcast,
 }
 
-const ACTIONS: [Action; 30] = [
+const ACTIONS: [Action; 32] = [
     Action::NewTab,
     Action::ClosePane,
     Action::PrevTab,
@@ -173,6 +180,8 @@ const ACTIONS: [Action; 30] = [
     Action::CopyLastOutput,
     Action::ShowScrollback,
     Action::OpenLink,
+    Action::ZoomPane,
+    Action::Broadcast,
 ];
 
 const fn m(ctrl: bool, alt: bool, shift: bool) -> Mods {
@@ -225,6 +234,8 @@ impl Action {
             Action::CopyLastOutput => "copy_last_output",
             Action::ShowScrollback => "show_scrollback",
             Action::OpenLink => "open_link",
+            Action::ZoomPane => "zoom_pane",
+            Action::Broadcast => "broadcast",
         }
     }
 
@@ -252,6 +263,8 @@ impl Action {
             Action::CopyLastOutput => (CTRL_SHIFT, Key::Char('O')),
             Action::ShowScrollback => (CTRL_SHIFT, Key::Char('H')),
             Action::OpenLink => (CTRL_SHIFT, Key::Char('L')),
+            Action::ZoomPane => (CTRL_SHIFT, Key::Char('Z')),
+            Action::Broadcast => (CTRL_SHIFT, Key::Char('B')),
         };
         KeySeq::new(mods, key)
     }
@@ -259,7 +272,7 @@ impl Action {
 
 /// The sequence bound to each action; `None` is unbound.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Keys([Option<KeySeq>; 30]);
+pub struct Keys([Option<KeySeq>; 32]);
 
 impl Default for Keys {
     fn default() -> Self {
@@ -305,6 +318,7 @@ impl Default for Config {
                 tabs: TabsAt::Top,
                 height_pct: 45,
                 width_pct: 88,
+                opacity_pct: 100,
                 monitor: Monitor::Focused,
                 above_fullscreen: true,
                 hide_on_focus_loss: true,
@@ -692,6 +706,7 @@ impl Reader {
                 "tabs",
                 "height_pct",
                 "width_pct",
+                "opacity_pct",
                 "monitor",
                 "above_fullscreen",
                 "hide_on_focus_loss",
@@ -725,6 +740,7 @@ impl Reader {
             ),
             height_pct: self.int(&s, "height_pct", 20..=100, dw.height_pct),
             width_pct: self.int(&s, "width_pct", 40..=100, dw.width_pct),
+            opacity_pct: self.int(&s, "opacity_pct", 30..=100, dw.opacity_pct),
             monitor,
             above_fullscreen: self.bool(&s, "above_fullscreen", dw.above_fullscreen),
             hide_on_focus_loss: self.bool(&s, "hide_on_focus_loss", dw.hide_on_focus_loss),

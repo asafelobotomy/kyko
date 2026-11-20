@@ -10,6 +10,7 @@ mod bridge;
 mod control;
 mod hotkey;
 mod prefs;
+mod remote;
 mod session;
 mod watch;
 
@@ -28,6 +29,9 @@ struct Cli {
     /// Start in this folder
     #[arg(long, short = 'd', alias = "directory", value_name = "DIR")]
     working_directory: Option<PathBuf>,
+    /// Open the tabs a session file describes: one `kyko @` command per line (launch, set-tab-title...)
+    #[arg(long, value_name = "FILE")]
+    session: Option<PathBuf>,
     /// Run this program and its arguments instead of the shell; the window closes when it ends
     #[arg(short = 'e', long = "exec", num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true, value_name = "COMMAND")]
     exec: Vec<String>,
@@ -58,6 +62,12 @@ enum Sub {
     },
     /// Open the Preferences window
     Preferences,
+    /// Control a running kyko window: `kyko @ ls`, `kyko @ send-text`, `kyko @ launch`... (`kyko @ help`)
+    #[command(name = "@", alias = "remote", disable_help_flag = true)]
+    Remote {
+        #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true, value_name = "COMMAND")]
+        words: Vec<String>,
+    },
     /// Open a new tab in the drop-down
     NewTab {
         /// Start in this folder
@@ -116,6 +126,7 @@ fn preferences_window() -> ExitCode {
         cwd: String::new(),
         login_shell: login_shell(),
         persistent: false,
+        startup: Vec::new(),
     };
     bridge::configure(PathBuf::new(), launch, appearance::load(), String::new());
     let mut app = QGuiApplication::new();
@@ -129,8 +140,89 @@ fn preferences_window() -> ExitCode {
     ExitCode::from(u8::try_from(code & 0xff).unwrap_or(1))
 }
 
+/// `kyko @ ...`: one request to the window in `$KYKO_LISTEN_ON` (or `--to`).
+fn remote_cli(words: &[String]) -> ExitCode {
+    use kyko_core::remote::{Match, Request, parse_args};
+    let parsed = match parse_args(words) {
+        Ok(p) => p,
+        Err(e) => {
+            let usage = e.starts_with("usage");
+            eprintln!("{}{e}", if usage { "" } else { "kyko @: " });
+            return ExitCode::from(if usage && words.first().is_some_and(|w| w == "help") {
+                0
+            } else {
+                2
+            });
+        }
+    };
+    let Some(to) = parsed.to.clone().or_else(|| {
+        std::env::var("KYKO_LISTEN_ON")
+            .ok()
+            .filter(|s| !s.is_empty())
+    }) else {
+        eprintln!("kyko @: not inside kyko: $KYKO_LISTEN_ON is not set; give --to unix:PATH");
+        return ExitCode::from(1);
+    };
+    let mut request = parsed.request;
+    // Inside kyko and talking to its own window, "here" is the pane the command runs in.
+    let here = parsed
+        .to
+        .is_none()
+        .then(|| std::env::var("KYKO_PANE_ID").ok()?.parse::<u32>().ok())
+        .flatten();
+    if let Some(id) = here {
+        match &mut request {
+            Request::SendText { target, .. }
+            | Request::GetText { target, .. }
+            | Request::ClosePane { target }
+                if *target == Match::Here =>
+            {
+                *target = Match::Pane(id);
+            }
+            _ => {}
+        }
+    }
+    if parsed.stdin
+        && let Request::SendText { text, .. } = &mut request
+    {
+        let mut more = String::new();
+        if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut more) {
+            eprintln!("kyko @: reading standard input: {e}");
+            return ExitCode::from(1);
+        }
+        text.push_str(&more);
+    }
+    match remote::call(&to, &request) {
+        Ok(reply) if reply.ok => {
+            match (&request, &reply.data) {
+                (Request::GetText { .. }, d) => print!("{}", d["text"].as_str().unwrap_or("")),
+                (Request::Launch { .. }, d) => println!("{}", d["pane"]),
+                (Request::Ls, d) => {
+                    println!("{}", serde_json::to_string_pretty(d).unwrap_or_default())
+                }
+                _ => {}
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(reply) => {
+            eprintln!(
+                "kyko @: {}",
+                reply.error.unwrap_or_else(|| "refused".into())
+            );
+            ExitCode::from(1)
+        }
+        Err(e) => {
+            eprintln!("kyko @: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(Sub::Remote { words }) = &cli.command {
+        return remote_cli(words);
+    }
     match cli.command {
         Some(Sub::Toggle) => return control(control::Command::Toggle),
         Some(Sub::Show) => return control(control::Command::Show),
@@ -164,6 +256,22 @@ fn main() -> ExitCode {
         _ => None,
     };
 
+    let startup = match &cli.session {
+        Some(path) => {
+            let home = std::env::var("HOME").unwrap_or_default();
+            match std::fs::read_to_string(path)
+                .map_err(|e| e.to_string())
+                .and_then(|t| kyko_core::remote::parse_session(&t, &home))
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("kyko: {}: {e}", path.display());
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        None => Vec::new(),
+    };
     let (shell, args) = match cli.exec.split_first() {
         Some((program, rest)) => (program.clone(), rest.to_vec()),
         None => (login_shell(), Vec::new()),
@@ -202,6 +310,7 @@ fn main() -> ExitCode {
         cwd,
         login_shell: login_shell(),
         persistent: dropdown.is_some(),
+        startup,
     };
     bridge::configure(
         socket,
@@ -230,6 +339,7 @@ fn main() -> ExitCode {
         bridge::set_look(look)
     });
 
+    bridge::app_set_translucent();
     let mut app = QGuiApplication::new();
     // Matches `org.kyko.Kyko.desktop`, so the compositor shows the desktop entry's icon.
     bridge::app_set_id(cli.class.as_deref().unwrap_or("org.kyko.Kyko"));

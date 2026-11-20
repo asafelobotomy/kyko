@@ -8,10 +8,15 @@ Window {
     visible: true
     color: "#282828"
     function hex(v) { return "#" + ("000000" + v.toString(16)).slice(-6) }
+    // The theme's background at `window.opacity_pct`.
+    function backdrop() {
+        const c = Qt.color(hex(ctl.setting("background")))
+        return Qt.rgba(c.r, c.g, c.b, Math.max(30, Math.min(100, ctl.setting("opacity_pct"))) / 100)
+    }
     Controller {
         id: ctl
         // Follows the theme: the background the grids draw on.
-        onLookChanged: root.color = root.hex(ctl.setting("background"))
+        onLookChanged: root.color = root.backdrop()
         // The last tab closed: a windowed kyko has nothing left to show.
         onCommand: function (code) { if (code === 3) Qt.quit() }
     }
@@ -27,7 +32,7 @@ Window {
 
     // The first size: 100 columns by 28 rows of the first pane, under the tab bar.
     Component.onCompleted: {
-        color = hex(ctl.setting("background"))
+        color = backdrop()
         const probe = Qt.createQmlObject('import org.kyko.app; GridView {}', ws)
         width = Math.round(probe.cellWidth() * 100 + 2 * pad)
         height = Math.round(probe.cellHeight() * 28 + 2 * pad + ws.barH + 4)

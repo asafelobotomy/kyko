@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-20
+
+### Added
+
+- **`kyko @`: control a kyko window from a shell or a script**, like `kitty @`:
+  `ls`, `send-text`, `get-text`, `launch` (a tab or a split, with a command), `focus-pane`,
+  `focus-tab`, `close-pane`, `set-tab-title`, `zoom` and `broadcast`. Commands typed inside kyko
+  reach their own window and pane (`$KYKO_LISTEN_ON`, `$KYKO_PANE_ID`); from elsewhere, give
+  `--to unix:PATH`. The socket is in `$XDG_RUNTIME_DIR/kyko/` and only its user can open it.
+  `kyko @ help` lists it all.
+- **`kyko --session FILE`** opens the tabs and splits a file describes: one `kyko @` command per
+  line (`launch --cwd ~/src`, `launch --type split-side htop`, `set-tab-title work`).
+- **Ctrl+Shift+Z zooms the focused pane** to fill its tab; the other panes keep their size out of
+  sight, and moving the focus brings the next one up.
+- **Ctrl+Shift+B types into every pane of the tab** at once (a red border says so), and back.
+- **A scrollbar** while the view is scrolled back: drag it to move through the history.
+- **`window.opacity_pct`** (Preferences > Window): a see-through background, so Hyprland's blur
+  shows behind the text. Cells a program coloured stay opaque.
+
+### Fixed
+
+- **A full-screen program could come back one row short after kyko reattached** (`less`
+  until a key was pressed): the row kykod takes off to make it redraw went back too soon
+  after, and the program could miss the second resize.
+
 ## [0.4.0] - 2026-11-20
 
 ### Added
