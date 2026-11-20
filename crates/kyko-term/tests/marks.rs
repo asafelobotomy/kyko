@@ -206,3 +206,15 @@ fn a_resize_before_anything_wraps_keeps_the_marks_and_a_rewrap_drops_them() {
     w.resize(20, 24);
     assert!(gutter(&w).iter().all(|g| *g == GUTTER_NONE));
 }
+
+#[test]
+fn finished_commands_are_reported_with_their_status() {
+    let mut e = Emulator::new(20, 12, 100);
+    e.feed(session().as_bytes());
+    let done: Vec<u8> = e.take_finished().into_iter().map(|(_, s)| s).collect();
+    assert_eq!(done, [0, 1]);
+    assert!(e.take_finished().is_empty());
+    // A D with no C before it (an empty command line) is not a finished command.
+    e.feed(format!("{}{A}$ ", d(0)).as_bytes());
+    assert!(e.take_finished().is_empty());
+}

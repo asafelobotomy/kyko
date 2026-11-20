@@ -1,6 +1,8 @@
 #include "gridview.h"
 
 #include <QtCore/QPointer>
+#include <QtCore/QProcess>
+#include <QtCore/QTimer>
 #include <QtGui/QFontMetricsF>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QClipboard>
@@ -171,9 +173,29 @@ void grid_request_repaint() {
             QMetaObject::invokeMethod(v, [v] { v->update(); }, Qt::QueuedConnection);
 }
 
-void controller_copy(rust::Str text) {
+void controller_copy(rust::Str text, bool primary) {
     const QString s = QString::fromUtf8(text.data(), int(text.size()));
-    QMetaObject::invokeMethod(qApp, [s] { QGuiApplication::clipboard()->setText(s); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(
+        qApp,
+        [s, primary] {
+            QClipboard* c = QGuiApplication::clipboard();
+            if (!primary)
+                c->setText(s, QClipboard::Clipboard);
+            else if (c->supportsSelection())
+                c->setText(s, QClipboard::Selection);
+        },
+        Qt::QueuedConnection);
+}
+
+void grid_bell(quint32 pane, int mode) {
+    for (const QPointer<GridView>& p : std::as_const(g_views))
+        if (GridView* v = p)
+            QMetaObject::invokeMethod(
+                v, [v, pane, mode] {
+                    if (quint32(v->pane()) == pane)
+                        v->bell(mode);
+                },
+                Qt::QueuedConnection);
 }
 
 void controller_paste(quint32 pane) {
@@ -536,6 +558,7 @@ GridView::GridView(QQuickItem* parent) : QQuickItem(parent) {
     setActiveFocusOnTab(true);
     setAcceptedMouseButtons(Qt::LeftButton | Qt::MiddleButton | Qt::RightButton);
     setAcceptHoverEvents(true);
+    setCursor(Qt::IBeamCursor);
     g_views.append(this);
     m_blinkTimer.setInterval(530);
     QObject::connect(&m_blinkTimer, &QTimer::timeout, this, [this] {
@@ -791,6 +814,29 @@ const QList<GridView::Shaped>& GridView::shape(const QString& text, const QList<
     return *m_shaped.insert(key, out);
 }
 
+void GridView::bell(int mode) {
+    if (mode <= 0)
+        return;
+    if (QQuickWindow* w = window(); w && !w->isActive())
+        w->alert(0);
+    if (mode == 2) {
+        // libcanberra plays the theme's bell through the desktop's sound server; without it
+        // the bell is silent rather than a flash nobody asked for.
+        QProcess::startDetached(QStringLiteral("canberra-gtk-play"),
+                                {QStringLiteral("-i"), QStringLiteral("bell"), QStringLiteral("-d"),
+                                 QStringLiteral("kyko")});
+        return;
+    }
+    if (m_flash)
+        return;
+    m_flash = true;
+    update();
+    QTimer::singleShot(120, this, [this] {
+        m_flash = false;
+        update();
+    });
+}
+
 QSGNode* GridView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     rust::Vec<FfiCell> cells;
     rust::Vec<FfiExtra> extras;
@@ -973,6 +1019,14 @@ QSGNode* GridView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
                 deco.append({x0, top + float(m_strikePos), x1, top + float(m_strikePos) + th, fg});
         }
     }
+    for (qsizetype i = 0; i + 2 < m_hover.size(); i += 3) {
+        const int r = m_hover[i], a = m_hover[i + 1], b = m_hover[i + 2];
+        if (r >= rows)
+            continue;
+        const quint32 fg = cells[size_t(r) * cols + std::min<int>(a, cols - 1)].fg;
+        const float y = float(r * m_cellH + m_ulPos);
+        deco.append({float(a * m_cellW), y, float(b * m_cellW), y + th, fg});
+    }
     if (cursorShown && !block && cx < cols && cy < rows) {
         const bool wide = cells[size_t(cy) * cols + cx].flags & WIDE;
         const float x0 = float(cx * m_cellW), x1 = float((cx + (wide ? 2 : 1)) * m_cellW);
@@ -991,10 +1045,25 @@ QSGNode* GridView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     }
     auto* dn = static_cast<QSGGeometryNode*>(gn->nextSibling());
     QSGGeometry* dg = dn->geometry();
-    dg->allocate(int(deco.size()) * 6);
+    dg->allocate(int(deco.size() + (m_flash ? 1 : 0)) * 6);
     auto* dp = dg->vertexDataAsColoredPoint2D();
     for (const Rect& d : deco)
         quad(dp, d.x0, d.y0, d.x1, d.y1, d.c);
+    if (m_flash) {
+        // The visual bell: the foreground colour at a quarter strength over the whole pane,
+        // premultiplied as the vertex colour material expects.
+        const quint32 c = kyko_palette_fg();
+        const uchar a = 64;
+        const uchar r = uchar(((c >> 16) & 0xff) * a / 255), g = uchar(((c >> 8) & 0xff) * a / 255),
+                    b = uchar((c & 0xff) * a / 255);
+        const float w = float(width()), h = float(height());
+        dp[0].set(0, 0, r, g, b, a);
+        dp[1].set(w, 0, r, g, b, a);
+        dp[2].set(0, h, r, g, b, a);
+        dp[3].set(w, 0, r, g, b, a);
+        dp[4].set(w, h, r, g, b, a);
+        dp[5].set(0, h, r, g, b, a);
+    }
     dn->markDirty(QSGNode::DirtyGeometry);
 
     if (m_atlasReset) {
@@ -1028,12 +1097,26 @@ void GridView::mousePressEvent(QMouseEvent* e) {
     m_clicks = (now - m_lastPress < 400 && cell == m_lastCell && m_clicks < 3) ? m_clicks + 1 : 1;
     m_lastPress = now;
     m_lastCell = cell;
+    m_dragged = false;
     m_down |= e->button();
+    if (e->button() == Qt::MiddleButton && m_pane > 0) {
+        const quint8 m = (e->modifiers() & Qt::ShiftModifier) ? 1 : 0;
+        QClipboard* c = QGuiApplication::clipboard();
+        if (c->supportsSelection() && kyko_middle_paste(quint32(m_pane), m)) {
+            const std::string t = c->text(QClipboard::Selection).toStdString();
+            if (!t.empty())
+                kyko_paste(quint32(m_pane), rust::Str(t.data(), t.size()));
+            e->accept();
+            return;
+        }
+    }
     sendMouse(0, buttonCode(e->button()), e->position(), e->modifiers(), quint8(m_clicks));
     e->accept();
 }
 
 void GridView::mouseMoveEvent(QMouseEvent* e) {
+    if (QPoint(int(e->position().x() / m_cellW), int(e->position().y() / m_cellH)) != m_lastCell)
+        m_dragged = true;
     const Qt::MouseButton b = (m_down & Qt::LeftButton) ? Qt::LeftButton : (m_down & Qt::MiddleButton) ? Qt::MiddleButton : Qt::RightButton;
     sendMouse(1, buttonCode(b), e->position(), e->modifiers(), 0);
     e->accept();
@@ -1042,10 +1125,36 @@ void GridView::mouseMoveEvent(QMouseEvent* e) {
 void GridView::mouseReleaseEvent(QMouseEvent* e) {
     m_down &= ~Qt::MouseButtons(e->button());
     sendMouse(2, buttonCode(e->button()), e->position(), e->modifiers(), 0);
+    if (e->button() == Qt::LeftButton && !m_dragged && m_clicks == 1 && m_pane > 0 && m_cols > 0) {
+        const int col = std::clamp(int(e->position().x() / m_cellW), 0, m_cols - 1);
+        const int row = std::clamp(int(e->position().y() / m_cellH), 0, m_rows - 1);
+        quint8 m = 0;
+        if (e->modifiers() & Qt::ShiftModifier) m |= 1;
+        if (e->modifiers() & Qt::AltModifier) m |= 2;
+        if (e->modifiers() & Qt::ControlModifier) m |= 4;
+        kyko_open_link(quint32(m_pane), quint16(col), quint16(row), m);
+    }
     e->accept();
 }
 
+void GridView::hoverLink(const QPointF& pos) {
+    QList<quint16> spans;
+    if (m_pane > 0 && m_cols > 0 && pos.x() >= 0 && pos.y() >= 0) {
+        const int col = int(pos.x() / m_cellW), row = int(pos.y() / m_cellH);
+        rust::Vec<quint16> out;
+        if (col < m_cols && row < m_rows && kyko_link_spans(quint32(m_pane), quint16(col), quint16(row), out))
+            for (quint16 v : out)
+                spans.append(v);
+    }
+    if (spans == m_hover)
+        return;
+    m_hover = spans;
+    setCursor(m_hover.isEmpty() ? Qt::IBeamCursor : Qt::PointingHandCursor);
+    update();
+}
+
 void GridView::hoverMoveEvent(QHoverEvent* e) {
+    hoverLink(e->position());
     // Only programs asking for all motion hear this; Rust drops it for the rest.
     if (m_down == Qt::NoButton)
         sendMouse(1, 3, e->position(), e->modifiers(), 0);
@@ -1067,6 +1176,8 @@ void GridView::wheelEvent(QWheelEvent* e) {
 
 void GridView::focusInEvent(QFocusEvent* e) {
     QQuickItem::focusInEvent(e);
+    if (m_pane > 0)
+        kyko_focus_report(quint32(m_pane), true);
     m_blinkOn = true;
     if (m_blink)
         m_blinkTimer.start();
@@ -1075,6 +1186,8 @@ void GridView::focusInEvent(QFocusEvent* e) {
 
 void GridView::focusOutEvent(QFocusEvent* e) {
     QQuickItem::focusOutEvent(e);
+    if (m_pane > 0)
+        kyko_focus_report(quint32(m_pane), false);
     m_blinkTimer.stop();
     m_blinkOn = true;
     update();
@@ -1093,8 +1206,32 @@ void GridView::keyPressEvent(QKeyEvent* e) {
         mods |= 2;
     if (e->modifiers() & Qt::ControlModifier)
         mods |= 4;
+    if (e->modifiers() & Qt::MetaModifier)
+        mods |= 8;
     const std::string text = e->text().toStdString();
-    if (kyko_key(quint32(m_pane), quint32(e->key()), mods, rust::Str(text.data(), text.size())))
+    const quint8 event = e->isAutoRepeat() ? 2 : 1;
+    if (kyko_key(quint32(m_pane), quint32(e->key()), mods, rust::Str(text.data(), text.size()), event))
+        e->accept();
+    else
+        e->ignore();
+}
+
+void GridView::keyReleaseEvent(QKeyEvent* e) {
+    if (e->isAutoRepeat()) {
+        e->accept();
+        return;
+    }
+    quint8 mods = 0;
+    if (e->modifiers() & Qt::ShiftModifier)
+        mods |= 1;
+    if (e->modifiers() & Qt::AltModifier)
+        mods |= 2;
+    if (e->modifiers() & Qt::ControlModifier)
+        mods |= 4;
+    if (e->modifiers() & Qt::MetaModifier)
+        mods |= 8;
+    const std::string text = e->text().toStdString();
+    if (kyko_key(quint32(m_pane), quint32(e->key()), mods, rust::Str(text.data(), text.size()), 3))
         e->accept();
     else
         e->ignore();

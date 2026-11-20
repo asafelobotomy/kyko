@@ -1,7 +1,7 @@
 //! The colours and font the window draws with, from `config.toml` and uQ's theme.
 use std::ffi::OsString;
 
-use kyko_core::config::{Config, Cursor, Keys, NewTabDir, Shape, TabsAt};
+use kyko_core::config::{Bell, Config, Cursor, Keys, NewTabDir, NotifyOnFinish, Shape, TabsAt};
 use kyko_core::keys::KeySeq;
 use kyko_core::paths;
 use kyko_core::theme::{self, Theme};
@@ -28,12 +28,17 @@ pub struct Look {
     pub copy_on_select: bool,
     pub shell_integration: bool,
     pub ligatures: bool,
+    pub confirm_multiline_paste: bool,
     /// Line height in percent of the font's (80 to 200).
     pub line_height_pct: u32,
     pub padding: u32,
     /// 0 block, 1 beam, 2 underline.
     pub cursor: u8,
     pub cursor_blink: bool,
+    /// 0 none, 1 visual flash, 2 sound.
+    pub bell: i32,
+    pub notify_on_finish: NotifyOnFinish,
+    pub notify_after: u32,
     pub keys: Keys,
     pub hotkey: Option<KeySeq>,
     pub allow_run: bool,
@@ -96,6 +101,7 @@ pub fn load() -> Look {
         copy_on_select: config.terminal.copy_on_select,
         shell_integration: config.terminal.shell_integration,
         ligatures: config.terminal.ligatures,
+        confirm_multiline_paste: config.terminal.confirm_multiline_paste,
         line_height_pct: (config.terminal.line_height * 100.0).round() as u32,
         padding: config.terminal.padding,
         cursor: match config.terminal.cursor {
@@ -104,6 +110,13 @@ pub fn load() -> Look {
             Cursor::Underline => 2,
         },
         cursor_blink: config.terminal.cursor_blink,
+        bell: match config.terminal.bell {
+            Bell::None => 0,
+            Bell::Visual => 1,
+            Bell::Sound => 2,
+        },
+        notify_on_finish: config.terminal.notify_on_finish,
+        notify_after: config.terminal.notify_after,
         keys: config.keys.clone(),
         hotkey: config.hotkey,
         allow_run: config.advanced.allow_run,

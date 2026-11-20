@@ -33,6 +33,12 @@ pub fn validate(command: &str) -> Result<(), RunError> {
     }
 }
 
+/// `text` as one word for a POSIX shell: in single quotes, with each `'` closed, escaped and
+/// opened again.
+pub fn quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// The arguments that make the user's shell run `command`.
 pub fn shell_args(command: &str) -> Vec<String> {
     vec!["-c".to_string(), command.to_string()]
@@ -122,5 +128,14 @@ mod tests {
     fn an_empty_cwd_means_the_default() {
         assert_eq!(cwd(""), None);
         assert_eq!(cwd("/tmp"), Some("/tmp".into()));
+    }
+}
+
+#[cfg(test)]
+mod quote_tests {
+    #[test]
+    fn quotes_for_sh() {
+        assert_eq!(super::quote("a b"), "'a b'");
+        assert_eq!(super::quote("it's"), "'it'\\''s'");
     }
 }

@@ -319,3 +319,60 @@ fn combining_marks_follow_their_cell() {
             .any(|(i, t)| *i == 2 && t.contains('\u{200D}'))
     );
 }
+
+#[test]
+fn osc8_links_and_text_urls() {
+    let mut e = Emulator::new(20, 4, 100);
+    e.feed(b"\x1b]8;;https://kyko.example/\x1b\\click\x1b]8;;\x1b\\ x\r\n");
+    e.feed(b"go https://example.org/a/very/long/path ok");
+    let s = snap(&e);
+    let (url, spans) = s.link_at(2, 0).unwrap();
+    assert_eq!(url, "https://kyko.example/");
+    assert_eq!(spans, vec![(0, 0, 5)]);
+    assert!(s.link_at(7, 0).is_none());
+    // The URL wraps from row 1 into row 2 and is found whole from either row.
+    let (url, spans) = s.link_at(5, 1).unwrap();
+    assert_eq!(url, "https://example.org/a/very/long/path");
+    assert_eq!(spans, vec![(1, 3, 20), (2, 0, 19)]);
+    assert_eq!(
+        s.link_at(4, 2).unwrap().0,
+        "https://example.org/a/very/long/path"
+    );
+}
+
+#[test]
+fn every_link_on_screen_once() {
+    let mut e = Emulator::new(20, 6, 100);
+    e.feed(b"\x1b]8;;https://kyko.example/\x1b\\click\x1b]8;;\x1b\\ x\r\n");
+    e.feed(b"go https://example.org/a/very/long/path ok\r\n");
+    e.feed(b"\x1b]8;;ssh://no\x1b\\skip\x1b]8;;\x1b\\");
+    let all = snap(&e).all_links();
+    let urls: Vec<&str> = all.iter().map(|(u, _)| u.as_str()).collect();
+    assert_eq!(
+        urls,
+        [
+            "https://kyko.example/",
+            "https://example.org/a/very/long/path"
+        ]
+    );
+    let hints = kyko_term::hints::Hints::new(&snap(&e)).unwrap();
+    assert_eq!(hints.shown(), vec![(0, 0, "a"), (1, 3, "s")]);
+}
+
+#[test]
+fn ctrl_alt_drag_selects_a_rectangle() {
+    let mut e = Emulator::new(10, 3, 100);
+    e.feed(b"abcdef\r\nghijkl\r\nmnopqr");
+    e.select_start(1, 0, kyko_term::SelectKind::Block, false);
+    e.select_update(3, 2, true);
+    assert_eq!(e.selection_text().as_deref(), Some("bcd\nhij\nnop"));
+}
+
+#[test]
+fn bell_is_reported_once() {
+    let mut e = emu();
+    assert!(!e.take_bell());
+    e.feed(b"ding\x07");
+    assert!(e.take_bell());
+    assert!(!e.take_bell());
+}

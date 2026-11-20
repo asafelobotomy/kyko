@@ -434,14 +434,18 @@ Item {
                 wrapMode: Text.Wrap
                 color: ws.fg
                 font.pixelSize: 14
-                text: !confirm.asking ? "" : "Close this " + ws.layout.confirm.what + "? "
-                      + ws.layout.confirm.programs + " is still running in it."
+                text: !confirm.asking ? ""
+                      : ws.layout.confirm.what === "paste"
+                        ? "Paste " + ws.layout.confirm.programs + " lines? The program is not ready for a paste, so each line runs as it arrives."
+                        : "Close this " + ws.layout.confirm.what + "? " + ws.layout.confirm.programs + " is still running in it."
             }
             Row {
                 spacing: 8
                 anchors.right: parent.right
                 Repeater {
-                    model: [{ label: "Keep it", yes: false }, { label: "Close", yes: true }]
+                    model: confirm.asking && ws.layout.confirm.what === "paste"
+                           ? [{ label: "Cancel", yes: false }, { label: "Paste", yes: true }]
+                           : [{ label: "Keep it", yes: false }, { label: "Close", yes: true }]
                     delegate: Rectangle {
                         required property var modelData
                         width: 90

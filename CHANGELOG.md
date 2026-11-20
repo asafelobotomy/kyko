@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The kitty keyboard protocol** (`CSI > flags u`, all five flags): programs that ask for it
+  (Neovim, Helix, fish, kakoune) can tell Ctrl+I from Tab and Ctrl+[ from Escape, and see key
+  releases, repeats and the Super key. kyko answers the protocol's queries and keeps a stack of
+  flags per screen.
+- **Links.** URLs in the text and OSC 8 hyperlinks underline under the pointer and open with a
+  click (`xdg-open`; only http, https, ftp, file, mailto and gemini). In a program that takes
+  the mouse, Ctrl+Shift+click opens them. **Ctrl+Shift+L labels every link on screen**: type a
+  label to open its link, or its capital to copy it.
+- **Desktop notifications from programs**: OSC 9, OSC 777 (`notify;title;body`) and kitty's
+  OSC 99, shown through the desktop's notification service.
+- **A notification when a long command finishes** (`terminal.notify_on_finish`: `never`,
+  `unfocused` or `always`, for commands that ran `terminal.notify_after` seconds or more; off by
+  default). It says whether the command failed and how long it took.
+- **The bell** follows `terminal.bell`: `visual` flashes the pane, `sound` plays the desktop's
+  bell (libcanberra's `canberra-gtk-play`), and either marks the window urgent when it is in
+  the background. Preferences > Terminal now has the bell and the notification settings.
+- **Primary selection**: selecting text sets it and a middle click pastes it, as on any Linux
+  desktop. **Ctrl+Alt+drag selects a rectangle.**
+- **Ctrl+Shift+H opens the scrollback in `less`** in a new tab, colours kept.
+- **Paste guard**: pasting several lines into a shell that did not turn on bracketed paste asks
+  first, so a pasted command cannot run by itself (`terminal.confirm_multiline_paste`).
+- Focus reporting (`CSI ? 1004 h`), for programs that redraw when the window gains focus.
+
 ## [0.3.0] - 2026-11-20
 
 ### Added
