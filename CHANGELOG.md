@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.1] - 2026-11-20
+
+The release candidate for 1.0.0: kyko now matches kitty where a daily terminal needs it, and goes
+past it with sixel images and a drop-down that keeps its sessions. 1.0.0 follows once it has been
+checked on real hardware (`docs/notes/2026-11-13-v1-release-checklist.md`).
+
+### Changed
+
+- The README says what kyko does, and how to install, start, bind and remove it.
+
 ## [0.6.0] - 2026-11-20
 
 ### Added

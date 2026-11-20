@@ -4,7 +4,24 @@ Written on 2026-11-13 from a review of `main` at `e7b325a` (v0.0.2) against the 
 (`docs/superpowers/specs/2026-11-10-kyko-design.md`, §7 milestones). Tick items as they land; each
 milestone ends in a version bump through `docs/releasing.md`.
 
-## Where things stand
+## Status on 2026-11-20 (1.0.0-rc.1)
+
+Milestones 1 to 4 are built and released (0.1.0 to 0.2.2), and 0.3 to 0.6 brought kyko to kitty's
+features (rendering, kitty keyboard, links and hints, notifications, remote control, sessions,
+images and sixel, Unicode input). The unticked boxes below from milestones 1 to 4 are done but were
+not ticked as they landed; the changelog is the record. `kde`, `portal` and `uq` hotkey backends
+were not built: Hyprland binds the key itself and elsewhere `kyko toggle` is bound by hand.
+
+What 1.0.0 still waits on, all of it needing real hardware (cloud test machines have no GPU and
+no real compositor), checked by the owner on the rc:
+
+- [ ] Milestone 5's targets and live checklist below, on uQ (Hyprland) at least.
+- [ ] `yay -S kyko` from the AUR at the rc.
+- [ ] No Critical or Important issue found on the rc.
+
+Then bump to `1.0.0`.
+
+## Where things stood on 2026-11-13
 
 - **Done:** milestone 0 (spikes), slice 1a (workspace, packaging, CI, release on bump), slice 1b
   (`kyko-proto`, `kyko-term`, `kykod` with tests, unit file, hop bench). Releases v0.0.1 and v0.0.2

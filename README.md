@@ -36,6 +36,31 @@ The package installs a desktop entry and icon, so kyko shows up as a terminal em
 
 See [the changelog](CHANGELOG.md) for each release and `kyko --help` for the command line.
 
+## Install
+
+On Arch, from the AUR:
+
+```sh
+paru -S kyko        # or yay -S kyko
+```
+
+The drop-down starts on its own the first time you run `kyko toggle` (or press its key). To have
+it ready from login instead, enable the two user units:
+
+```sh
+systemctl --user enable --now kykod.service kyko.service
+```
+
+The toggle key is `hotkey.toggle` in Preferences (F12 by default). On Hyprland kyko binds it for
+you; on other desktops bind a key to `kyko toggle` in the desktop's own shortcut settings.
+
+For a normal window, run `kyko` or `kyko -e COMMAND`. Settings live in
+`~/.config/kyko/config.toml`, and Preferences (the gear on the tab bar, or `kyko preferences`)
+edits them; changes apply at once.
+
+To remove it: `systemctl --user disable --now kyko.service kykod.service`, then
+`paru -R kyko`.
+
 ## Building
 
 ```sh
