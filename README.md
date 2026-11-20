@@ -11,7 +11,30 @@ mouse reporting. Shells live in `kykod`, so the drop-down keeps them while hidde
 toggle key (`hotkey.toggle`, F12 by default) is bound for you; elsewhere bind `kyko toggle` by hand.
 The package installs a desktop entry and icon, so kyko shows up as a terminal emulator.
 
-kyko is pre-1.0: Preferences, the Run provider and more hotkey backends are still to come.
+## What it does
+
+- **Text:** ligatures, colour emoji, wide and combining characters, box drawing and Powerline
+  shapes drawn to the pixel, five underline styles in colour, and true colour.
+- **Images:** kitty's graphics protocol and sixel, so `chafa`, `timg`, `yazi`, `ranger` and
+  editor image plugins show pictures. `kyko icat FILE` shows one.
+- **Keyboard:** kitty's keyboard protocol, so editors and shells see every key and modifier.
+  Every action has a key you can change in Preferences.
+- **Tabs and splits:** split side by side or stacked, drag the dividers, zoom a pane
+  (Ctrl+Shift+Z), and type into every pane of a tab at once (Ctrl+Shift+B).
+- **Links:** URLs and OSC 8 links open on Ctrl+click; Ctrl+Shift+L labels every link on screen
+  to open or copy it from the keyboard.
+- **Shell integration:** jump between prompts, copy the last command's output, and get a
+  desktop notification when a long command finishes while you look elsewhere.
+- **Scrollback:** search it (Ctrl+Shift+F), open it in a pager (Ctrl+Shift+H), or drag the
+  scrollbar.
+- **Remote control:** `kyko @ ls`, `kyko @ launch`, `kyko @ send-text` and more, like
+  `kitty @`, over a socket only you can open; `kyko --session FILE` opens a set of tabs.
+- **Also:** Unicode input by name (Ctrl+Shift+U), a see-through background, a bell that
+  flashes, sounds or marks the window, colour queries, and a guard on multi-line pastes.
+- **On uQ:** follows uQ's theme live, lists its tabs in Spotlight, and runs commands that
+  Spotlight sends it.
+
+See [the changelog](CHANGELOG.md) for each release and `kyko --help` for the command line.
 
 ## Building
 
