@@ -20,6 +20,8 @@ Window {
     readonly property bool animated: ctl.setting("animations") === 1
     property color bg: hex(ctl.setting("background"))
     property color accent: hex(ctl.setting("accent"))
+    // `window.opacity_pct`: below 1 the desktop, and its blur, shows through the panel.
+    property real opacityF: Math.max(30, Math.min(100, ctl.setting("opacity_pct"))) / 100
 
     function hex(v) { return "#" + ("000000" + v.toString(16)).slice(-6) }
 
@@ -91,6 +93,7 @@ Window {
         onLookChanged: {
             root.bg = root.hex(ctl.setting("background"))
             root.accent = root.hex(ctl.setting("accent"))
+            root.opacityF = Math.max(30, Math.min(100, ctl.setting("opacity_pct"))) / 100
         }
     }
 
@@ -100,7 +103,7 @@ Window {
         width: parent.width
         height: root.panelH
         radius: ctl.setting("radius")
-        color: root.bg
+        color: Qt.rgba(root.bg.r, root.bg.g, root.bg.b, root.opacityF)
         border.width: ctl.setting("border_width")
         border.color: root.accent
 

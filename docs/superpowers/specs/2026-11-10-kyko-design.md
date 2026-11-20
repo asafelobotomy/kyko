@@ -170,6 +170,8 @@ Default keys (all settable; shown with the kyko window focused):
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | copy / paste |
 | `Ctrl+Shift+F` | search scrollback |
 | `Ctrl+Shift+H` | open the scrollback in `less` in a new tab |
+| `Ctrl+Shift+Z` | zoom the focused pane to fill its tab, and back |
+| `Ctrl+Shift+B` | type into every pane of the tab, and back to one |
 | `Ctrl+Shift+L` | label the links on screen; type a label to open one, its capital to copy it |
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | font size |
 
@@ -246,6 +248,7 @@ page has "Reset this page".
 | `window.tabs` | `top`, `bottom` | `top` |
 | `window.height_pct` | 20–100 | 45 |
 | `window.width_pct` | 40–100 (island only) | 88 |
+| `window.opacity_pct` | 30–100: the default background's opacity; below 100 the desktop shows through | 100 |
 | `window.monitor` | `focused`, `primary`, or an output name | `focused` |
 | `window.above_fullscreen` | bool | true |
 | `window.hide_on_focus_loss` | bool | true |
@@ -269,7 +272,7 @@ page has "Reset this page".
 | `sessions.ring_kib` | 256–16384, output kept per pane for replay (§2.8); applies to new panes | 2048 |
 | `terminal.font_size` | 6–48, or unset to follow the theme | unset |
 | `terminal.shell` | path, or unset for `$SHELL` | unset |
-| `keys.*` | key sequences for the actions in §2.3, or `""` for none: `new_tab`, `close_pane`, `prev_tab`, `next_tab`, `tab_1`…`tab_9`, `split_side`, `split_stacked`, `focus_left`, `focus_right`, `focus_up`, `focus_down`, `copy`, `paste`, `search`, `font_bigger`, `font_smaller`, `font_reset`, `show_scrollback`, `open_link` | as §2.3 |
+| `keys.*` | key sequences for the actions in §2.3, or `""` for none: `new_tab`, `close_pane`, `prev_tab`, `next_tab`, `tab_1`…`tab_9`, `split_side`, `split_stacked`, `focus_left`, `focus_right`, `focus_up`, `focus_down`, `copy`, `paste`, `search`, `font_bigger`, `font_smaller`, `font_reset`, `show_scrollback`, `open_link`, `zoom_pane`, `broadcast` | as §2.3 |
 | `advanced.programs_write_clipboard` | bool: programs in the terminal may set the clipboard | false |
 | `advanced.allow_run` | bool: other apps may call `Run` (§3.1); off disables **Run in kyko** | true |
 
@@ -469,6 +472,20 @@ terminal" exclusion.
   and pinned in Bindle, with kitty as the fallback when kyko is missing. See
   `/docs/notes/2026-11-16-default-terminal-plan.md`.
 - Milestone 3 gains the windowed mode; the checklist tracks it.
+
+### 2.13 Remote control and session files (added 2026-11-20)
+
+- Every kyko window listens on `$XDG_RUNTIME_DIR/kyko/rc-<pid>.sock` (folder 0700, socket 0600),
+  and its panes get `KYKO_LISTEN_ON=unix:<path>` and `KYKO_PANE_ID=<id>`. A connection carries
+  one JSON request (`{"cmd": "ls"}`, `kyko_core::remote::Request`) and gets one JSON reply
+  (`{"ok": true, "data": ...}` or `{"ok": false, "error": "..."}`); requests are capped at 4 MiB.
+- `kyko @ COMMAND` sends one: `ls`, `send-text`, `get-text`, `launch`, `focus-pane`,
+  `focus-tab`, `close-pane`, `set-tab-title`, `zoom`, `broadcast`. `--match pane:N|tab:N|all`
+  picks panes; without it, the pane the command runs in. `--to unix:PATH` reaches a window from
+  outside kyko. Ids are the ones `kyko @ ls` shows.
+- No escape sequence controls kyko: only the socket does, and only its user can open it.
+- `kyko --session FILE` runs a file of such commands (one per line, `#` comments) when the
+  window opens; if it launches a tab, its tabs replace the first one.
 
 ## 3. Integration with uQ
 

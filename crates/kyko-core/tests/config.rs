@@ -23,6 +23,7 @@ shape = "sheet"
 tabs = "bottom"
 height_pct = 60
 width_pct = 70
+opacity_pct = 85
 monitor = "DP-1"
 above_fullscreen = false
 hide_on_focus_loss = false
@@ -148,13 +149,15 @@ fn default_is_the_table_in_the_spec() {
         ("copy_last_output", "Ctrl+Shift+O"),
         ("show_scrollback", "Ctrl+Shift+H"),
         ("open_link", "Ctrl+Shift+L"),
+        ("zoom_pane", "Ctrl+Shift+Z"),
+        ("broadcast", "Ctrl+Shift+B"),
     ];
     for (name, s) in want {
         let action = Action::all().find(|a| a.key_name() == name).unwrap();
         assert_eq!(d.keys.get(action), Some(seq(s)), "{name}");
         assert_eq!(action.default_seq(), seq(s), "{name}");
     }
-    assert_eq!(Action::all().count(), 30);
+    assert_eq!(Action::all().count(), 32);
 }
 
 #[test]
@@ -179,6 +182,7 @@ fn every_key_set() {
             tabs: TabsAt::Bottom,
             height_pct: 60,
             width_pct: 70,
+            opacity_pct: 85,
             monitor: Monitor::Output("DP-1".into()),
             above_fullscreen: false,
             hide_on_focus_loss: false,
@@ -257,6 +261,7 @@ const BAD: &[(&str, &str, &str)] = &[
     ("window", "height_pct", "45.0"),
     ("window", "height_pct", "\"45\""),
     ("window", "width_pct", "39"),
+    ("window", "opacity_pct", "29"),
     ("window", "width_pct", "-1"),
     ("window", "monitor", "\"\""),
     ("window", "monitor", "1"),

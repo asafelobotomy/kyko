@@ -268,8 +268,11 @@ Item {
                 readonly property var info: ws.paneInfo(modelData)
                 readonly property bool isFocused: ws.layout.focused === modelData
                 property alias gridItem: grid
-                readonly property bool multi: ws.paneIds.length > 1
-                visible: info !== null
+                // A zoomed tab shows its one pane as if it were alone.
+                readonly property bool multi: ws.paneIds.length > 1 && !(ws.activeTab() && ws.activeTab().zoomed)
+                // Typing reaches every pane of the tab: each one wears a red border.
+                readonly property bool broadcasting: ws.activeTab() !== null && ws.activeTab().broadcast === true
+                visible: info !== null && !info.hidden
                 x: info ? Math.round(info.x * area.width) : 0
                 y: info ? Math.round(info.y * area.height) : 0
                 width: info ? Math.round((info.x + info.w) * area.width) - x : 0
@@ -280,8 +283,8 @@ Item {
                     anchors.margins: 1
                     color: "transparent"
                     radius: 4
-                    border.width: cell.multi && cell.isFocused ? 1 : 0
-                    border.color: ws.accent
+                    border.width: cell.multi && (cell.isFocused || cell.broadcasting) ? (cell.broadcasting ? 2 : 1) : 0
+                    border.color: cell.broadcasting ? "#e5534b" : ws.accent
                 }
                 GridView {
                     id: grid

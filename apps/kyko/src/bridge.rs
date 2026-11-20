@@ -47,6 +47,8 @@ pub mod ffi {
         fn kyko_link_spans(pane: u32, col: u16, row: u16, out: &mut Vec<u16>) -> bool;
         fn kyko_open_link(pane: u32, col: u16, row: u16, mods: u8) -> bool;
         fn kyko_middle_paste(pane: u32, mods: u8) -> bool;
+        fn kyko_scroll_pos(pane: u32, offset: &mut u32, history: &mut u32);
+        fn kyko_scroll_to(pane: u32, offset: u32);
         fn kyko_text(pane: u32, text: &str);
         fn kyko_paste(pane: u32, text: &str);
         #[allow(clippy::too_many_arguments)]
@@ -100,10 +102,11 @@ pub mod ffi {
         fn controller_paste(pane: u32);
         fn grid_bell(pane: u32, mode: i32);
         fn app_set_id(id: &str);
+        fn app_set_translucent();
     }
 }
 
-pub use ffi::{app_set_id, grid_register};
+pub use ffi::{app_set_id, app_set_translucent, grid_register};
 
 struct Setup {
     title: String,
@@ -268,6 +271,7 @@ fn kyko_setting(name: &str) -> i32 {
         "border_width" => n(l.border_width),
         "sheet" => b(l.sheet),
         "height_pct" => n(l.height_pct),
+        "opacity_pct" => n(l.opacity_pct),
         "width_pct" => n(l.width_pct),
         "above_fullscreen" => b(l.above_fullscreen),
         "hide_on_focus_loss" => b(l.hide_on_focus_loss),
@@ -453,7 +457,7 @@ fn kyko_key(pane: u32, key: u32, mods: u8, text: &str, event: u8) -> bool {
     if bytes.is_empty() {
         return false;
     }
-    w.input(pane, bytes);
+    w.typed(pane, bytes);
     true
 }
 
@@ -488,6 +492,20 @@ fn pick_link(w: &Workspace, pane: u32, key: u32, text: &str, event: u8) -> bool 
     }
     ffi::grid_request_repaint();
     true
+}
+
+/// How far the view is scrolled back, and how much history there is: the scrollbar.
+fn kyko_scroll_pos(pane: u32, offset: &mut u32, history: &mut u32) {
+    (*offset, *history) = WORKSPACE
+        .get()
+        .and_then(|w| w.shared.lock().unwrap().frames.get(&pane).map(|f| f.scroll))
+        .unwrap_or((0, 0));
+}
+
+fn kyko_scroll_to(pane: u32, offset: u32) {
+    if let Some(w) = WORKSPACE.get() {
+        w.scroll_to(pane, offset);
+    }
 }
 
 /// The link under a cell, for the hover underline: its cells as (row, start, end) triples.
@@ -677,7 +695,7 @@ fn kyko_confirm(yes: bool) {
 
 fn kyko_text(pane: u32, text: &str) {
     if let Some(w) = WORKSPACE.get() {
-        w.input(pane, text.as_bytes().to_vec());
+        w.typed(pane, text.as_bytes().to_vec());
     }
 }
 

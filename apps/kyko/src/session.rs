@@ -35,6 +35,8 @@ pub struct Frame {
     pub focus_reporting: bool,
     /// The program takes mouse clicks itself: a link then opens only with Ctrl+Shift.
     pub mouse_tracking: bool,
+    /// Lines the view is above the live screen, and lines of history there are.
+    pub scroll: (u32, u32),
 }
 
 /// What the window reads: the panes' frames and the tab layout.
@@ -97,6 +99,7 @@ pub struct MouseEv {
 
 enum Cmd {
     Input(PaneId, Vec<u8>),
+    Typed(PaneId, Vec<u8>),
     Mouse(PaneId, MouseEv),
     Copy(PaneId),
     /// Scroll to the previous (-1) or next (1) prompt.
@@ -104,6 +107,10 @@ enum Cmd {
     /// Select the last command's output and copy it.
     CopyLastOutput(PaneId),
     ShowScrollback(PaneId),
+    /// A `kyko @` request, and where its answer goes.
+    Remote(kyko_core::remote::Request, Sender<kyko_core::remote::Reply>),
+    /// Put the view this many lines above the live screen (the scrollbar).
+    ScrollTo(PaneId, u32),
     Paste(PaneId, String),
     Search(SearchOp),
     Resize(PaneId, u16, u16),
@@ -149,6 +156,8 @@ pub struct Launch {
     /// The holder outlives this window (the drop-down's): the tabs are restored from it, a lost
     /// connection is retried, and closing the window ends nothing.
     pub persistent: bool,
+    /// `--session FILE`: `kyko @` commands to run once the window is up.
+    pub startup: Vec<kyko_core::remote::Request>,
 }
 
 /// The window's links to the thread that do not need `Look` locked on the thread.
@@ -164,6 +173,10 @@ struct Ctx {
     on_quit: Box<dyn Fn() + Send>,
     on_copy: Box<dyn Fn(String, bool) + Send>,
     on_bell: Box<dyn Fn(PaneId) + Send>,
+    /// The control socket for `kyko @`, named to the panes in `$KYKO_LISTEN_ON`.
+    rc_path: Option<PathBuf>,
+    /// The session file's commands, until they have run.
+    startup: Mutex<Vec<kyko_core::remote::Request>>,
 }
 
 impl Workspace {
@@ -174,7 +187,7 @@ impl Workspace {
     #[allow(clippy::too_many_arguments)]
     pub fn start(
         socket: PathBuf,
-        launch: Launch,
+        mut launch: Launch,
         look: SharedLook,
         on_frames: Box<dyn Fn() + Send>,
         on_layout: Box<dyn Fn() + Send>,
@@ -184,8 +197,19 @@ impl Workspace {
         on_bell: Box<dyn Fn(PaneId) + Send>,
     ) -> Workspace {
         let (tx, rx) = channel();
+        let rc_tx = tx.clone();
+        let rc_path = crate::remote::serve(&crate::remote::socket_path(), move |req| {
+            let (reply_tx, reply_rx) = channel();
+            if rc_tx.send(Cmd::Remote(req, reply_tx)).is_err() {
+                return kyko_core::remote::Reply::err("the window is closing");
+            }
+            reply_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|_| kyko_core::remote::Reply::err("the window did not answer"))
+        });
         let shared = Arc::new(Mutex::new(Shared::default()));
         let colors: SharedColors = Arc::new(Mutex::new(look.lock().unwrap().colors.clone()));
+        let startup = Mutex::new(std::mem::take(&mut launch.startup));
         let ctx = Ctx {
             socket,
             launch,
@@ -198,6 +222,8 @@ impl Workspace {
             on_quit,
             on_copy,
             on_bell,
+            rc_path,
+            startup,
         };
         let thread = std::thread::Builder::new()
             .name("kyko-link".into())
@@ -213,6 +239,11 @@ impl Workspace {
 
     pub fn input(&self, pane: PaneId, bytes: Vec<u8>) {
         let _ = self.tx.send(Cmd::Input(pane, bytes));
+    }
+
+    /// Keys typed in `pane`: they reach every pane of its tab while the tab broadcasts.
+    pub fn typed(&self, pane: PaneId, bytes: Vec<u8>) {
+        let _ = self.tx.send(Cmd::Typed(pane, bytes));
     }
 
     pub fn search(&self, op: SearchOp) {
@@ -234,6 +265,10 @@ impl Workspace {
     }
 
     /// Selects what the last command printed and puts it on the clipboard.
+    pub fn scroll_to(&self, pane: PaneId, offset: u32) {
+        let _ = self.tx.send(Cmd::ScrollTo(pane, offset));
+    }
+
     pub fn show_scrollback(&self, pane: PaneId) {
         let _ = self.tx.send(Cmd::ShowScrollback(pane));
     }
@@ -599,6 +634,14 @@ fn handle(act: Act, s: &mut Session, look: &Look, login: &str) -> Vec<Effect> {
         Act::Key(Action::FocusRight) => focus(s, Dir::Right),
         Act::Key(Action::FocusUp) => focus(s, Dir::Up),
         Act::Key(Action::FocusDown) => focus(s, Dir::Down),
+        Act::Key(Action::Broadcast) => {
+            s.toggle_broadcast();
+            Vec::new()
+        }
+        Act::Key(Action::ZoomPane) => {
+            s.toggle_zoom();
+            Vec::new()
+        }
         // Copy, paste, search and the font size are the pane's own; they come with the
         // selection and search slices.
         Act::Key(_) => Vec::new(),
@@ -629,6 +672,170 @@ fn handle(act: Act, s: &mut Session, look: &Look, login: &str) -> Vec<Effect> {
             };
             s.new_tab(SpawnRequest { cwd, args, hold }, login)
                 .unwrap_or_default()
+        }
+    }
+}
+
+/// The panes a `kyko @` command names; `Here` is the focused pane (the client turns it into
+/// its own pane when it runs inside kyko).
+fn remote_targets(s: &Session, m: &kyko_core::remote::Match) -> Result<Vec<PaneId>, String> {
+    use kyko_core::remote::Match;
+    let all: Vec<(u32, PaneId)> = s
+        .tabs()
+        .flat_map(|t| t.panes.iter().map(|p| (t.id, p.id)).collect::<Vec<_>>())
+        .collect();
+    let found: Vec<PaneId> = match m {
+        Match::Here => vec![s.focused_pane()],
+        Match::Pane(p) => all
+            .iter()
+            .filter(|(_, q)| q == p)
+            .map(|(_, q)| *q)
+            .collect(),
+        Match::Tab(t) => all
+            .iter()
+            .filter(|(x, _)| x == t)
+            .map(|(_, q)| *q)
+            .collect(),
+        Match::All => all.iter().map(|(_, q)| *q).collect(),
+    };
+    if found.is_empty() {
+        return Err(match m {
+            Match::Pane(p) => format!("no pane {p}"),
+            Match::Tab(t) => format!("no tab {t}"),
+            _ => "no panes".to_string(),
+        });
+    }
+    Ok(found)
+}
+
+/// Carries out a `kyko @` request.
+fn remote_request(
+    req: kyko_core::remote::Request,
+    s: &mut Session,
+    link: &mut Link,
+    login: &str,
+) -> Result<(kyko_core::remote::Reply, Vec<Effect>), LinkError> {
+    use kyko_core::remote::{Place, Reply, Request};
+    use serde_json::json;
+    let fail = |e: String| Ok((Reply::err(e), Vec::new()));
+    let done = |data: serde_json::Value| Ok((Reply::ok(data), Vec::new()));
+    match req {
+        Request::Ls => {
+            let tabs: Vec<_> = s
+                .tabs()
+                .map(|t| {
+                    let panes: Vec<_> = t
+                        .panes
+                        .iter()
+                        .map(|p| {
+                            let title = link
+                                .pane(p.id)
+                                .and_then(|x| x.emulator().title().map(str::to_string));
+                            let state = match p.state {
+                                PaneState::Running => "running",
+                                PaneState::Exited(_) => "exited",
+                                PaneState::Failed(_) => "failed",
+                                PaneState::Ended => "ended",
+                            };
+                            json!({"id": p.id, "focused": p.focused, "program": p.program,
+                                   "cwd": p.cwd, "title": title, "state": state})
+                        })
+                        .collect();
+                    json!({"id": t.id, "name": t.name, "active": t.active, "zoomed": t.zoomed,
+                           "broadcast": t.broadcast, "panes": panes})
+                })
+                .collect();
+            done(json!({"tabs": tabs}))
+        }
+        Request::SendText { target, text } => {
+            let panes = match remote_targets(s, &target) {
+                Ok(p) => p,
+                Err(e) => return fail(e),
+            };
+            for p in &panes {
+                link.input(*p, text.as_bytes())?;
+            }
+            done(json!({"panes": panes}))
+        }
+        Request::GetText { target, all } => {
+            let panes = match remote_targets(s, &target) {
+                Ok(p) => p,
+                Err(e) => return fail(e),
+            };
+            let Some(pn) = link.pane(panes[0]) else {
+                return fail(format!("pane {} has no screen", panes[0]));
+            };
+            let e = pn.emulator();
+            done(json!({"text": if all { e.all_text() } else { e.screen_text() }}))
+        }
+        Request::Launch {
+            place,
+            cwd,
+            args,
+            hold,
+        } => {
+            // A pane's args are its shell's: the command goes to it as `-c 'word' 'word'`.
+            let args = if args.is_empty() {
+                args
+            } else {
+                let words: Vec<String> = args.iter().map(|a| kyko_core::runq::quote(a)).collect();
+                kyko_core::runq::shell_args(&words.join(" "))
+            };
+            let req = SpawnRequest { cwd, args, hold };
+            let made = match place {
+                Place::Tab => s.new_tab(req, login),
+                Place::SplitSide => s.split_with(SplitAxis::Side, req, login),
+                Place::SplitStacked => s.split_with(SplitAxis::Stacked, req, login),
+            };
+            match made {
+                Ok(effects) => {
+                    let pane = s.focused_pane();
+                    Ok((Reply::ok(json!({"pane": pane})), effects))
+                }
+                Err(_) => fail("no room for another pane".into()),
+            }
+        }
+        Request::FocusPane { pane } => {
+            if s.focus_pane(pane) {
+                done(serde_json::Value::Null)
+            } else {
+                fail(format!("no pane {pane}"))
+            }
+        }
+        Request::FocusTab { tab } => {
+            if s.focus_tab(tab) {
+                done(serde_json::Value::Null)
+            } else {
+                fail(format!("no tab {tab}"))
+            }
+        }
+        Request::ClosePane { target } => {
+            let panes = match remote_targets(s, &target) {
+                Ok(p) => p,
+                Err(e) => return fail(e),
+            };
+            let mut effects = Vec::new();
+            for p in panes {
+                effects.extend(s.close_pane(p, login));
+            }
+            Ok((Reply::ok(serde_json::Value::Null), effects))
+        }
+        Request::SetTabTitle { tab, title } => {
+            let tab = tab.unwrap_or_else(|| s.active_tab());
+            let name = (!title.is_empty()).then_some(title.as_str());
+            if s.rename(tab, name) {
+                done(serde_json::Value::Null)
+            } else {
+                fail(format!("no tab {tab}"))
+            }
+        }
+        Request::ToggleZoom => {
+            s.toggle_zoom();
+            done(json!({"zoomed": s.tabs().find(|t| t.active).is_some_and(|t| t.zoomed)}))
+        }
+        Request::ToggleBroadcast => {
+            s.toggle_broadcast();
+            done(json!({"broadcast": s.tabs().find(|t| t.active).is_some_and(|t| t.broadcast)}))
         }
     }
 }
@@ -689,7 +896,14 @@ fn apply(
                 let mut env = vec![
                     ("TERM".to_string(), "xterm-256color".to_string()),
                     ("COLORTERM".to_string(), "truecolor".to_string()),
+                    ("KYKO_PANE_ID".to_string(), pane.to_string()),
                 ];
+                if let Some(p) = &ctx.rc_path {
+                    env.push((
+                        "KYKO_LISTEN_ON".to_string(),
+                        format!("unix:{}", p.display()),
+                    ));
+                }
                 let mut args = args;
                 if ctx.look.lock().unwrap().shell_integration
                     && let Some(dir) = integration_dir()
@@ -733,6 +947,10 @@ fn publish(link: &Link, pane: PaneId, colors: &Mutex<Colors>, shared: &Mutex<Sha
             kitty: modes.kitty_flags,
             focus_reporting: modes.focus_reporting,
             mouse_tracking: modes.mouse_click || modes.mouse_drag || modes.mouse_motion,
+            scroll: (
+                u32::try_from(p.emulator().display_offset()).unwrap_or(u32::MAX),
+                u32::try_from(p.emulator().history_len()).unwrap_or(u32::MAX),
+            ),
         };
         shared.lock().unwrap().frames.insert(pane, frame);
     }
@@ -766,7 +984,7 @@ pub fn layout_json(
                         PaneState::Ended => ("ended", 0, String::new()),
                     };
                     json!({"id": p.id, "x": p.rect.x, "y": p.rect.y, "w": p.rect.w, "h": p.rect.h,
-                           "focused": p.focused, "busy": p.busy, "state": state,
+                           "focused": p.focused, "hidden": p.hidden, "busy": p.busy, "state": state,
                            "status": status, "message": message})
                 })
                 .collect();
@@ -782,7 +1000,7 @@ pub fn layout_json(
                 })
                 .collect();
             json!({"id": t.id, "name": t.name, "program": t.program, "active": t.active, "panes": panes,
-                   "dividers": dividers})
+                   "dividers": dividers, "zoomed": t.zoomed, "broadcast": t.broadcast})
         })
         .collect();
     let mut out = String::new();
@@ -854,6 +1072,33 @@ fn run(
             }
         }
     }
+    // A session file: its tabs take the place of the first one.
+    let startup = std::mem::take(&mut *ctx.startup.lock().unwrap());
+    if !startup.is_empty() {
+        use kyko_core::remote::{Place, Request};
+        let first = session.focused_pane();
+        let replaces = startup.iter().any(|r| {
+            matches!(
+                r,
+                Request::Launch {
+                    place: Place::Tab,
+                    ..
+                }
+            )
+        });
+        let mut more = Vec::new();
+        for req in startup {
+            let (reply, effects) = remote_request(req, session, &mut link, &login)?;
+            if let Some(e) = reply.error {
+                eprintln!("kyko: session file: {e}");
+            }
+            more.extend(effects);
+        }
+        if replaces {
+            more.extend(session.close_pane(first, &login));
+        }
+        apply(more, &mut link, ctx, sizes, &mut use_launch)?;
+    }
     ctx.shared.lock().unwrap().notice = None;
     let mut last_status = 0;
     let mut pending: Option<(Pending, Vec<String>)> = None;
@@ -866,17 +1111,20 @@ fn run(
         let mut effects = Vec::new();
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
-                Cmd::Input(p, bytes) => {
-                    // Typing goes to the live screen and takes the selection away.
-                    if let Some(pn) = link.pane_mut(p) {
-                        let e = pn.emulator_mut();
-                        if e.display_offset() > 0 || e.selection_text().is_some() {
-                            e.scroll_to_bottom();
-                            e.select_clear();
-                            dirty.insert(p);
+                Cmd::Input(p, bytes) => link.input(p, &bytes)?,
+                Cmd::Typed(p, bytes) => {
+                    for t in session.typing_targets(p) {
+                        // Typing goes to the live screen and takes the selection away.
+                        if let Some(pn) = link.pane_mut(t) {
+                            let e = pn.emulator_mut();
+                            if e.display_offset() > 0 || e.selection_text().is_some() {
+                                e.scroll_to_bottom();
+                                e.select_clear();
+                                dirty.insert(t);
+                            }
                         }
+                        link.input(t, &bytes)?;
                     }
-                    link.input(p, &bytes)?;
                 }
                 Cmd::Mouse(p, ev) => {
                     let l = look();
@@ -894,6 +1142,17 @@ fn run(
                         && pn.emulator_mut().jump_prompt(dir)
                     {
                         dirty.insert(p);
+                    }
+                }
+                Cmd::ScrollTo(p, offset) => {
+                    if let Some(pn) = link.pane_mut(p) {
+                        let e = pn.emulator_mut();
+                        let target = (offset as usize).min(e.history_len());
+                        let by = target as i64 - e.display_offset() as i64;
+                        if by != 0 {
+                            e.scroll(by.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
+                            dirty.insert(p);
+                        }
                     }
                 }
                 Cmd::ShowScrollback(p) => {
@@ -961,7 +1220,9 @@ fn run(
                         layout_changed = true;
                         continue;
                     }
-                    link.input(p, &paste_bytes(&text, bracketed))?;
+                    for t in session.typing_targets(p) {
+                        link.input(t, &paste_bytes(&text, bracketed))?;
+                    }
                 }
                 Cmd::Resize(p, c, r) => {
                     sizes.insert(p, (c, r));
@@ -1010,7 +1271,19 @@ fn run(
                     }
                     effects.extend(handle(act, session, &look(), &login));
                 }
+                Cmd::Remote(req, reply) => {
+                    layout_changed = true;
+                    let (answer, more) = remote_request(req, session, &mut link, &login)?;
+                    for p in session.pane_ids() {
+                        dirty.insert(p);
+                    }
+                    effects.extend(more);
+                    let _ = reply.send(answer);
+                }
                 Cmd::End => {
+                    if let Some(p) = &ctx.rc_path {
+                        let _ = std::fs::remove_file(p);
+                    }
                     if !ctx.launch.persistent {
                         // The window is closing and its shells go with it.
                         let _ = link.end_sessions(true);
