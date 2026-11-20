@@ -4,7 +4,7 @@
 # pkgver is the Cargo.toml version with '-rc.N' written 'rcN' (pacman forbids '-');
 # scripts/bump-version.sh keeps them in step.
 pkgname=kyko
-pkgver=0.3.0
+pkgver=0.4.0
 pkgrel=1
 _tag=${pkgver/rc/-rc.}
 pkgdesc="Drop-down terminal for uQ and other Wayland desktops"
@@ -13,6 +13,9 @@ url="https://github.com/asafelobotomy/kyko"
 license=(MIT)
 depends=(gcc-libs qt6-base qt6-declarative qt6-wayland layer-shell-qt)
 makedepends=(cargo qt6-shadertools)
+optdepends=('xdg-utils: open links'
+            'less: Ctrl+Shift+H shows the scrollback in a pager'
+            'libcanberra: terminal.bell = "sound"')
 # The end-to-end tests run less as their full-screen program.
 checkdepends=(less)
 options=(!lto)

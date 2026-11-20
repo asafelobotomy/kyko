@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-20
+
 ### Added
 
 - **The kitty keyboard protocol** (`CSI > flags u`, all five flags): programs that ask for it
