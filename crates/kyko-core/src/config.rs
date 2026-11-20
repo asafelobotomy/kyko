@@ -76,6 +76,8 @@ pub struct TerminalConfig {
     pub new_tab_dir: NewTabDir,
     pub bell: Bell,
     pub copy_on_select: bool,
+    /// Join character sequences the font draws as one (`=>`, `!=`); never under the cursor.
+    pub ligatures: bool,
     /// Marks, folder reports and kyko's prompt in bash, zsh and fish.
     pub shell_integration: bool,
     pub confirm_multiline_paste: bool,
@@ -299,6 +301,7 @@ impl Default for Config {
                 new_tab_dir: NewTabDir::Current,
                 bell: Bell::Visual,
                 copy_on_select: false,
+                ligatures: true,
                 shell_integration: true,
                 confirm_multiline_paste: true,
                 scrollback: 10_000,
@@ -740,6 +743,7 @@ impl Reader {
                 "new_tab_dir",
                 "bell",
                 "copy_on_select",
+                "ligatures",
                 "shell_integration",
                 "confirm_multiline_paste",
                 "scrollback",
@@ -798,6 +802,7 @@ impl Reader {
                 dt.bell,
             ),
             copy_on_select: self.bool(&s, "copy_on_select", dt.copy_on_select),
+            ligatures: self.bool(&s, "ligatures", dt.ligatures),
             shell_integration: self.bool(&s, "shell_integration", dt.shell_integration),
             confirm_multiline_paste: self.bool(
                 &s,

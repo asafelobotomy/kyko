@@ -17,13 +17,25 @@ pub mod ffi {
         fg: u32,
         bg: u32,
         flags: u8,
+        /// kyko-term's `UL_*` style.
+        underline: u8,
+        /// 0x01RRGGBB for the underline's own colour, 0 for the text's.
+        underline_color: u32,
+    }
+
+    /// The combining marks after the cell at `index` (a grapheme cluster).
+    struct FfiExtra {
+        index: u32,
+        text: String,
     }
 
     extern "Rust" {
         fn kyko_resize(pane: u32, cols: u16, rows: u16);
+        #[allow(clippy::too_many_arguments)]
         fn kyko_snapshot(
             pane: u32,
             out: &mut Vec<FfiCell>,
+            extras: &mut Vec<FfiExtra>,
             gutter: &mut Vec<u8>,
             cols: &mut u16,
             rows: &mut u16,
@@ -255,6 +267,11 @@ fn kyko_setting(name: &str) -> i32 {
         "hide_on_focus_loss" => b(l.hide_on_focus_loss),
         "animations" => b(l.animations),
         "tabs_bottom" => b(l.tabs_bottom),
+        "ligatures" => b(l.ligatures),
+        "line_height_pct" => n(l.line_height_pct),
+        "padding" => n(l.padding),
+        "cursor" => i32::from(l.cursor),
+        "cursor_blink" => b(l.cursor_blink),
         _ => 0,
     }
 }
@@ -294,9 +311,11 @@ fn kyko_resize(pane: u32, cols: u16, rows: u16) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn kyko_snapshot(
     pane: u32,
     out: &mut Vec<ffi::FfiCell>,
+    extras: &mut Vec<ffi::FfiExtra>,
     gutter: &mut Vec<u8>,
     cols: &mut u16,
     rows: &mut u16,
@@ -304,6 +323,7 @@ fn kyko_snapshot(
     cur_y: &mut i32,
 ) -> u64 {
     out.clear();
+    extras.clear();
     gutter.clear();
     *cols = 0;
     *rows = 0;
@@ -323,6 +343,12 @@ fn kyko_snapshot(
         fg: c.fg,
         bg: c.bg,
         flags: c.flags,
+        underline: c.underline,
+        underline_color: c.underline_color.map_or(0, |c| 0x0100_0000 | c),
+    }));
+    extras.extend(snap.combining.iter().map(|(index, text)| ffi::FfiExtra {
+        index: *index,
+        text: text.clone(),
     }));
     1
 }

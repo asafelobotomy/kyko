@@ -11,6 +11,11 @@ Keywords=terminal;shell;console;command;prompt;
 StartupWMClass=org.kyko.Kyko
 StartupNotify=true
 Actions=new-window;dropdown;
+X-TerminalArgExec=-e
+X-TerminalArgTitle=--title=
+X-TerminalArgAppId=--class=
+X-TerminalArgDir=--working-directory=
+X-TerminalArgHold=
 
 [Desktop Action new-window]
 Name=New Window

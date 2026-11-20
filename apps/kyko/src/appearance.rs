@@ -1,7 +1,7 @@
 //! The colours and font the window draws with, from `config.toml` and uQ's theme.
 use std::ffi::OsString;
 
-use kyko_core::config::{Config, Keys, NewTabDir, Shape, TabsAt};
+use kyko_core::config::{Config, Cursor, Keys, NewTabDir, Shape, TabsAt};
 use kyko_core::keys::KeySeq;
 use kyko_core::paths;
 use kyko_core::theme::{self, Theme};
@@ -27,6 +27,13 @@ pub struct Look {
     pub scrollback: usize,
     pub copy_on_select: bool,
     pub shell_integration: bool,
+    pub ligatures: bool,
+    /// Line height in percent of the font's (80 to 200).
+    pub line_height_pct: u32,
+    pub padding: u32,
+    /// 0 block, 1 beam, 2 underline.
+    pub cursor: u8,
+    pub cursor_blink: bool,
     pub keys: Keys,
     pub hotkey: Option<KeySeq>,
     pub allow_run: bool,
@@ -88,6 +95,15 @@ pub fn load() -> Look {
         scrollback: config.terminal.scrollback as usize,
         copy_on_select: config.terminal.copy_on_select,
         shell_integration: config.terminal.shell_integration,
+        ligatures: config.terminal.ligatures,
+        line_height_pct: (config.terminal.line_height * 100.0).round() as u32,
+        padding: config.terminal.padding,
+        cursor: match config.terminal.cursor {
+            Cursor::Block => 0,
+            Cursor::Beam => 1,
+            Cursor::Underline => 2,
+        },
+        cursor_blink: config.terminal.cursor_blink,
         keys: config.keys.clone(),
         hotkey: config.hotkey,
         allow_run: config.advanced.allow_run,

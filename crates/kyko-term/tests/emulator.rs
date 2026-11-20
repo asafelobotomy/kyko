@@ -282,3 +282,40 @@ fn search_finds_matches_in_the_history_and_steps_through_them() {
     e.search_clear();
     assert_eq!(e.selection_text(), None);
 }
+
+#[test]
+fn underline_styles_and_colour() {
+    let s = screen(b"\x1b[4:1ma\x1b[4:2mb\x1b[4:3mc\x1b[4:4md\x1b[4:5me\x1b[0mf\x1b[4:3;58:2::255:0:0mg\x1b[0m");
+    let ul: Vec<u8> = s.cells[..7].iter().map(|c| c.underline).collect();
+    assert_eq!(
+        ul,
+        [
+            UL_SINGLE, UL_DOUBLE, UL_CURLY, UL_DOTTED, UL_DASHED, UL_NONE, UL_CURLY
+        ]
+    );
+    assert_eq!(s.cells[0].underline_color, None);
+    assert_eq!(s.cells[6].underline_color, Some(0xff0000));
+    // The old flag still says "some underline".
+    assert!(s.cells[2].flags & UNDERLINE != 0);
+}
+
+#[test]
+fn strike_and_dim() {
+    let s = screen(b"\x1b[9ms\x1b[0m\x1b[2md\x1b[0m");
+    assert!(s.cells[0].flags & STRIKE != 0);
+    assert!(s.cells[1].flags & DIM != 0);
+}
+
+#[test]
+fn combining_marks_follow_their_cell() {
+    // e + COMBINING ACUTE, then a family emoji built with zero-width joiners.
+    let s = screen("e\u{301}x\u{1F468}\u{200D}\u{1F469}".as_bytes());
+    assert_eq!(s.cells[0].ch, 'e');
+    assert_eq!(s.combining[0], (0, "\u{301}".to_string()));
+    assert_eq!(s.cells[1].ch, 'x');
+    assert!(
+        s.combining
+            .iter()
+            .any(|(i, t)| *i == 2 && t.contains('\u{200D}'))
+    );
+}

@@ -25,6 +25,16 @@ pub const INVERSE: u8 = 8;
 pub const WIDE: u8 = 16;
 pub const WIDE_SPACER: u8 = 32;
 pub const STRIKE: u8 = 64;
+/// The cell is dim (SGR 2): drawn with its colour faded towards the background.
+pub const DIM: u8 = 128;
+
+/// Underline styles (SGR 4, 4:2 to 4:5, 21), in [`Cell::underline`].
+pub const UL_NONE: u8 = 0;
+pub const UL_SINGLE: u8 = 1;
+pub const UL_DOUBLE: u8 = 2;
+pub const UL_CURLY: u8 = 3;
+pub const UL_DOTTED: u8 = 4;
+pub const UL_DASHED: u8 = 5;
 
 /// One grid cell. Colours are 0xRRGGBB, already swapped with each other for inverse cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +43,24 @@ pub struct Cell {
     pub fg: u32,
     pub bg: u32,
     pub flags: u8,
+    /// One of the `UL_*` styles.
+    pub underline: u8,
+    /// The underline's own colour (SGR 58) as 0xRRGGBB, or `None` for the text's colour.
+    pub underline_color: Option<u32>,
+}
+
+impl Cell {
+    /// A cell with no underline.
+    pub const fn plain(ch: char, fg: u32, bg: u32, flags: u8) -> Self {
+        Cell {
+            ch,
+            fg,
+            bg,
+            flags,
+            underline: UL_NONE,
+            underline_color: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +74,9 @@ pub struct Snapshot {
     pub gutter: Vec<u8>,
     /// Column and row, or `None` when the program hid the cursor.
     pub cursor: Option<(u16, u16)>,
+    /// The combining marks and joiners that follow a cell's character (a grapheme cluster such as
+    /// `e` + U+0301 or a ZWJ emoji sequence), by the cell's index in `cells`, in order.
+    pub combining: Vec<(u32, String)>,
 }
 
 /// More than any piece of output `feed` hands the terminal at once can scroll.
@@ -371,12 +402,8 @@ impl Emulator {
         let term = &self.term;
         let cols = term.columns();
         let rows = term.screen_lines();
-        let blank = Cell {
-            ch: ' ',
-            fg: colors.fg,
-            bg: colors.bg,
-            flags: 0,
-        };
+        let blank = Cell::plain(' ', colors.fg, colors.bg, 0);
+        let mut combining = Vec::new();
         let mut cells = vec![blank; cols * rows];
         let content = term.renderable_content();
         let offset = content.display_offset as i32;
@@ -396,6 +423,7 @@ impl Emulator {
                 (WIDE, Flags::WIDE_CHAR),
                 (WIDE_SPACER, Flags::WIDE_CHAR_SPACER),
                 (STRIKE, Flags::STRIKEOUT),
+                (DIM, Flags::DIM),
             ] {
                 if f.intersects(flag) {
                     flags |= bit;
@@ -413,7 +441,37 @@ impl Emulator {
             } else {
                 item.cell.c
             };
-            cells[row as usize * cols + item.point.column.0] = Cell { ch, fg, bg, flags };
+            let underline = if f.contains(Flags::UNDERCURL) {
+                UL_CURLY
+            } else if f.contains(Flags::DOUBLE_UNDERLINE) {
+                UL_DOUBLE
+            } else if f.contains(Flags::DOTTED_UNDERLINE) {
+                UL_DOTTED
+            } else if f.contains(Flags::DASHED_UNDERLINE) {
+                UL_DASHED
+            } else if f.contains(Flags::UNDERLINE) {
+                UL_SINGLE
+            } else {
+                UL_NONE
+            };
+            let underline_color = item
+                .cell
+                .underline_color()
+                .map(|c| resolve(c, content.colors, colors));
+            let index = row as usize * cols + item.point.column.0;
+            if ch != ' '
+                && let Some(zw) = item.cell.zerowidth()
+            {
+                combining.push((index as u32, zw.iter().collect()));
+            }
+            cells[index] = Cell {
+                ch,
+                fg,
+                bg,
+                flags,
+                underline,
+                underline_color,
+            };
         }
         let cursor = (content.cursor.shape != CursorShape::Hidden)
             .then(|| {
@@ -429,6 +487,7 @@ impl Emulator {
             cells,
             gutter: self.gutter(),
             cursor,
+            combining,
         }
     }
 

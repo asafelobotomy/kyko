@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-20
+
+### Added
+
+- **A new text renderer.** Each run of text is shaped with HarfBuzz (through Qt), so:
+  - **Ligatures** in fonts that have them (`=>`, `!=`, `->` in JetBrains Mono, Fira Code,
+    Cascadia Code). `terminal.ligatures` (on by default, in Preferences > Terminal) turns them
+    off; the character under the cursor is never joined.
+  - **Colour emoji**, in their own colours, and **grapheme clusters**: combining accents,
+    flags and joined emoji such as families draw as one character.
+  - Fallback fonts for anything the terminal font lacks, placed glyph by glyph.
+- **All five underline styles** (SGR 4:1 to 4:5: single, double, curly, dotted, dashed) and
+  **underline colours** (SGR 58), as used by Neovim's diagnostics; **strikethrough** and **dim**
+  text are drawn too.
+- **Box drawing, block elements and Powerline separators drawn by kyko**, not the font, so lines
+  meet across cells at any line height: light, heavy, double, dashed, rounded and diagonal
+  lines, the block and shade characters, and U+E0B0 to U+E0BF.
+- The window now follows `terminal.cursor` (block, beam, underline), `terminal.cursor_blink`,
+  `terminal.line_height` and `terminal.padding`. An unfocused window shows the cursor as an
+  outline.
+- The desktop entry carries the `X-TerminalArg*` keys, so `xdg-terminal-exec` and launchers
+  that read them pass the command, title, app id and folder the right way.
+
 ## [0.2.2] - 2026-11-20
 
 ### Changed

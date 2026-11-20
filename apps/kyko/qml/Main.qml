@@ -4,7 +4,7 @@ import org.kyko.app
 
 Window {
     id: root
-    readonly property int pad: 8
+    readonly property int pad: ctl.setting("padding")
     visible: true
     color: "#282828"
     function hex(v) { return "#" + ("000000" + v.toString(16)).slice(-6) }
