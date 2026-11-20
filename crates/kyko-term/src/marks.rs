@@ -24,7 +24,7 @@ pub struct Row {
 pub type Table = BTreeMap<u64, Row>;
 
 /// What the shell reported.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     /// OSC 133;A
     Prompt,
@@ -34,10 +34,19 @@ pub enum Event {
     Output,
     /// OSC 133;D, with the exit status when there was one.
     Done(Option<u8>),
+    /// A desktop notification a program asked for: OSC 9 (text), OSC 777 (`notify;title;body`)
+    /// or a finished OSC 99 (kitty's protocol), as title and body.
+    Notify(String, String),
 }
 
-/// Longest OSC body that is looked at; a longer one is not a mark.
-const LIMIT: usize = 48;
+/// Longest OSC body that is looked at: room for a notification. Only bodies that start like
+/// one of the sequences here are kept; anything else is dropped after a few bytes.
+const LIMIT: usize = 4096;
+/// Longest OSC 133 body: a longer one is not a mark.
+const MARK_LIMIT: usize = 48;
+/// The longest notification title and body passed on, in characters.
+const SHOWN: usize = 512;
+const PREFIXES: [&[u8]; 4] = [b"133;", b"9;", b"777;", b"99;"];
 
 #[derive(Default)]
 enum State {
@@ -56,9 +65,115 @@ enum State {
 pub struct Scanner {
     state: State,
     body: Vec<u8>,
+    /// OSC 99 notifications still arriving in chunks, by id: title and body so far.
+    pending: Vec<(String, String, String)>,
 }
 
-fn parse(body: &[u8]) -> Option<Event> {
+fn clip(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).take(SHOWN).collect()
+}
+
+fn base64(text: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for b in text.bytes() {
+        let v = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => break,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+impl Scanner {
+    /// kitty's OSC 99: `99;key=value:key=value;payload`. `d=0` says more chunks follow for the
+    /// same `i`; `p` names the part (`title`, the default, or `body`); `e=1` means base64.
+    fn osc99(&mut self, rest: &[u8]) -> Option<Event> {
+        let rest = std::str::from_utf8(rest).ok()?;
+        let (meta, payload) = rest.split_once(';')?;
+        let (mut id, mut done, mut part, mut b64) = ("", true, "title", false);
+        for kv in meta.split(':') {
+            match kv.split_once('=') {
+                Some(("i", v)) => id = v,
+                Some(("d", v)) => done = v != "0",
+                Some(("p", v)) => part = v,
+                Some(("e", v)) => b64 = v == "1",
+                _ => {}
+            }
+        }
+        if !matches!(part, "title" | "body") {
+            // Queries (`p=?`), icons, buttons and closing are not supported; ignored.
+            return None;
+        }
+        let text = if b64 {
+            String::from_utf8_lossy(&base64(payload)?).into_owned()
+        } else {
+            payload.to_string()
+        };
+        let i = match self.pending.iter().position(|(pid, _, _)| pid == id) {
+            Some(i) => i,
+            None => {
+                if self.pending.len() >= 8 {
+                    self.pending.remove(0);
+                }
+                self.pending
+                    .push((id.to_string(), String::new(), String::new()));
+                self.pending.len() - 1
+            }
+        };
+        let entry = &mut self.pending[i];
+        let field = if part == "title" {
+            &mut entry.1
+        } else {
+            &mut entry.2
+        };
+        if field.len() < LIMIT {
+            field.push_str(&text);
+        }
+        if !done {
+            return None;
+        }
+        let (_, title, body) = self.pending.remove(i);
+        Some(Event::Notify(clip(&title), clip(&body)))
+    }
+
+    fn parse(&mut self, body: &[u8]) -> Option<Event> {
+        if let Some(rest) = body.strip_prefix(b"99;") {
+            return self.osc99(rest);
+        }
+        if let Some(rest) = body.strip_prefix(b"777;notify;") {
+            let text = String::from_utf8_lossy(rest);
+            let (title, body) = text.split_once(';').unwrap_or((&text, ""));
+            return Some(Event::Notify(clip(title), clip(body)));
+        }
+        if let Some(rest) = body.strip_prefix(b"9;") {
+            // ConEmu's OSC 9;N;... (progress and the like) is not a notification.
+            if rest.first().is_some_and(u8::is_ascii_digit)
+                && rest.get(1).is_none_or(|b| *b == b';')
+            {
+                return None;
+            }
+            return Some(Event::Notify(
+                clip(&String::from_utf8_lossy(rest)),
+                String::new(),
+            ));
+        }
+        parse_mark(body)
+    }
+}
+
+fn parse_mark(body: &[u8]) -> Option<Event> {
     let rest = body.strip_prefix(b"133;")?;
     let (kind, params) = match rest.iter().position(|&b| b == b';') {
         Some(i) => (&rest[..i], &rest[i + 1..]),
@@ -103,8 +218,23 @@ impl Scanner {
                 State::Osc => match b {
                     0x07 => self.end(i + 1, &mut found),
                     0x1b => self.state = State::OscEsc,
-                    _ if self.body.len() >= LIMIT => self.state = State::Idle,
-                    _ => self.body.push(b),
+                    _ if self.body.len() >= LIMIT
+                        || (self.body.len() >= MARK_LIMIT && self.body.starts_with(b"133;")) =>
+                    {
+                        self.state = State::Idle
+                    }
+                    _ => {
+                        self.body.push(b);
+                        // Only the OSCs looked at here are worth keeping.
+                        if self.body.len() <= 4
+                            && !PREFIXES.iter().any(|p| {
+                                let n = self.body.len().min(p.len());
+                                p[..n] == self.body[..n]
+                            })
+                        {
+                            self.state = State::Idle;
+                        }
+                    }
                 },
                 State::OscEsc => {
                     if b == b'\\' {
@@ -121,7 +251,8 @@ impl Scanner {
     }
 
     fn end(&mut self, at: usize, found: &mut Vec<(usize, Event)>) {
-        if let Some(e) = parse(&self.body) {
+        let body = std::mem::take(&mut self.body);
+        if let Some(e) = self.parse(&body) {
             found.push((at, e));
         }
         self.body.clear();
@@ -132,6 +263,41 @@ impl Scanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn notes(bytes: &[u8]) -> Vec<Event> {
+        Scanner::default()
+            .scan(bytes)
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect()
+    }
+
+    #[test]
+    fn notifications_in_three_dialects() {
+        let n = |t: &str, b: &str| Event::Notify(t.into(), b.into());
+        assert_eq!(notes(b"\x1b]9;Build done\x07"), [n("Build done", "")]);
+        assert_eq!(notes(b"\x1b]9;4;1;50\x07"), []);
+        assert_eq!(
+            notes(b"\x1b]777;notify;Title;Body text\x1b\\"),
+            [n("Title", "Body text")]
+        );
+        assert_eq!(
+            notes(b"\x1b]99;i=1:d=0;Hello\x1b\\\x1b]99;i=1:p=body;World\x1b\\"),
+            [n("Hello", "World")]
+        );
+        assert_eq!(notes(b"\x1b]99;e=1;SGk=\x07"), [n("Hi", "")]);
+        assert_eq!(notes(b"\x1b]99;p=?;\x07"), []);
+        // Control characters are taken out.
+        assert_eq!(notes(b"\x1b]9;a\x01b\x07"), [n("ab", "")]);
+    }
+
+    #[test]
+    fn other_long_oscs_are_dropped_early() {
+        let mut long = b"\x1b]52;c;".to_vec();
+        long.extend(std::iter::repeat_n(b'A', 10_000));
+        long.extend(b"\x07\x1b]133;A\x07");
+        assert_eq!(notes(&long), [Event::Prompt]);
+    }
 
     #[test]
     fn marks_are_found_with_either_terminator() {

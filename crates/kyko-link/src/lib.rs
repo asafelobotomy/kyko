@@ -151,7 +151,11 @@ impl Link {
         self.panes.insert(
             info.pane,
             Pane {
-                emulator: Emulator::new(info.cols, info.rows, self.scrollback),
+                emulator: {
+                    let mut e = Emulator::new(info.cols, info.rows, self.scrollback);
+                    e.set_kitty_keyboard(true);
+                    e
+                },
                 program: info.program.clone(),
                 cwd: info.cwd.clone(),
                 exited: info.exited,

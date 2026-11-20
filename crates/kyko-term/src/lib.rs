@@ -3,7 +3,9 @@
 //! (`feed`), a grid snapshot comes out (`snapshot`), and what the terminal must answer to the
 //! shell (cursor position reports and the like) is collected by `take_replies`.
 mod colors;
+pub mod hints;
 pub mod keys;
+pub mod links;
 pub mod marks;
 
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -49,6 +51,107 @@ pub struct Cell {
     pub underline_color: Option<u32>,
 }
 
+/// Cells a link covers: `(row, start, end)` with `end` exclusive, one per row it spans.
+pub type LinkSpans = Vec<(u16, u16, u16)>;
+
+impl Snapshot {
+    /// The link at a cell: an OSC 8 hyperlink, else a URL in the text, as the URL and the
+    /// cells it covers on that row (`row, start..end`). A URL that runs to the end of the row
+    /// goes on into the next one, as a wrapped line does.
+    pub fn link_at(&self, col: u16, row: u16) -> Option<(String, LinkSpans)> {
+        let cols = usize::from(self.cols);
+        let (col, row) = (usize::from(col), usize::from(row));
+        if col >= cols || row >= usize::from(self.rows) {
+            return None;
+        }
+        let index = (row * cols + col) as u32;
+        if let Some(&(_, n)) = self.links.iter().find(|(i, _)| *i == index) {
+            let uri = self.link_uris.get(n as usize)?.clone();
+            // The run of cells with the same link, on this row.
+            let same = |c: usize| {
+                self.links
+                    .iter()
+                    .any(|&(i, m)| i == (row * cols + c) as u32 && m == n)
+            };
+            let mut a = col;
+            while a > 0 && same(a - 1) {
+                a -= 1;
+            }
+            let mut b = col + 1;
+            while b < cols && same(b) {
+                b += 1;
+            }
+            return Some((uri, vec![(row as u16, a as u16, b as u16)]));
+        }
+        // Text: this row, with the rows before and after joined on when the URL reaches the
+        // edge, so a wrapped URL is found whole.
+        let text_row = |r: usize| -> Vec<char> {
+            self.cells[r * cols..(r + 1) * cols]
+                .iter()
+                .map(|c| c.ch)
+                .collect()
+        };
+        let mut first = row;
+        while first > 0
+            && self.cells[first * cols - 1].ch != ' '
+            && self.cells[first * cols].ch != ' '
+        {
+            first -= 1;
+        }
+        let mut last = row;
+        while last + 1 < usize::from(self.rows) && self.cells[(last + 1) * cols - 1].ch != ' ' {
+            last += 1;
+        }
+        let mut line = Vec::new();
+        for r in first..=last {
+            line.extend(text_row(r));
+        }
+        let at = (row - first) * cols + col;
+        let (a, b) = links::url_at(&line, at)?;
+        let url: String = line[a..b].iter().collect();
+        let mut spans = Vec::new();
+        let mut i = a;
+        while i < b {
+            let r = i / cols;
+            let end = ((r + 1) * cols).min(b);
+            spans.push((
+                (first + r) as u16,
+                (i % cols) as u16,
+                (end - r * cols) as u16,
+            ));
+            i = end;
+        }
+        Some((url, spans))
+    }
+
+    /// Every openable link on screen, top to bottom, each once.
+    pub fn all_links(&self) -> Vec<(String, LinkSpans)> {
+        let mut found: Vec<(String, LinkSpans)> = Vec::new();
+        let mut covered = vec![false; self.cells.len()];
+        let cols = usize::from(self.cols);
+        for row in 0..self.rows {
+            for col in 0..self.cols {
+                let index = usize::from(row) * cols + usize::from(col);
+                if covered[index] || self.cells[index].ch == ' ' {
+                    continue;
+                }
+                let Some((url, spans)) = self.link_at(col, row) else {
+                    continue;
+                };
+                for &(r, a, b) in &spans {
+                    for c in a..b {
+                        covered[usize::from(r) * cols + usize::from(c)] = true;
+                    }
+                }
+                if links::openable(&url) {
+                    found.push((url, spans));
+                }
+            }
+        }
+        found
+    }
+}
+
 impl Cell {
     /// A cell with no underline.
     pub const fn plain(ch: char, fg: u32, bg: u32, flags: u8) -> Self {
@@ -77,6 +180,9 @@ pub struct Snapshot {
     /// The combining marks and joiners that follow a cell's character (a grapheme cluster such as
     /// `e` + U+0301 or a ZWJ emoji sequence), by the cell's index in `cells`, in order.
     pub combining: Vec<(u32, String)>,
+    /// OSC 8 hyperlinks: each linked cell's index in `cells` and its index in `link_uris`.
+    pub links: Vec<(u32, u32)>,
+    pub link_uris: Vec<String>,
 }
 
 /// More than any piece of output `feed` hands the terminal at once can scroll.
@@ -102,6 +208,8 @@ pub enum SelectKind {
     Word,
     /// Whole lines: a triple click.
     Line,
+    /// A rectangle of cells: Ctrl+Alt+drag.
+    Block,
 }
 
 /// A cursor shape, as a program set it.
@@ -145,6 +253,7 @@ pub struct TermModes {
 struct Shared {
     replies: Vec<u8>,
     title: Option<String>,
+    bell: bool,
 }
 
 /// Collects what the terminal says back to the shell and the window title. Clipboard and colour
@@ -164,6 +273,7 @@ impl EventListener for Listener {
             Event::PtyWrite(text) => self.lock().replies.extend_from_slice(text.as_bytes()),
             Event::Title(title) => self.lock().title = Some(title),
             Event::ResetTitle => self.lock().title = None,
+            Event::Bell => self.lock().bell = true,
             _ => {}
         }
     }
@@ -211,6 +321,12 @@ pub struct Emulator {
     matches: Vec<(i32, usize, usize)>,
     current: usize,
     scanner: marks::Scanner,
+    /// Desktop notifications the program asked for, not yet shown.
+    notifications: Vec<(String, String)>,
+    /// When the running command's output began (OSC 133;C).
+    started: Option<std::time::Instant>,
+    /// Commands that ended since the last look: how long each ran and its exit status.
+    finished: Vec<(std::time::Duration, u8)>,
     /// The shell's marks, by row number.
     marks: marks::Table,
     /// Lines that scrolled off the top of the history and are gone: row numbers count from them.
@@ -233,6 +349,9 @@ impl Emulator {
             matches: Vec::new(),
             current: 0,
             scanner: marks::Scanner::default(),
+            notifications: Vec::new(),
+            started: None,
+            finished: Vec::new(),
             marks: marks::Table::new(),
             gone: 0,
         }
@@ -265,10 +384,8 @@ impl Emulator {
     /// Turns the kitty keyboard protocol on or off; it is off until this is called. While it
     /// is on, the emulator answers a program's `CSI ? u` query, so programs switch to kitty key
     /// encoding: the caller must then encode keys that way.
-    ///
-    /// Not safe to turn on for untrusted output yet: `alacritty_terminal` 0.26.0 panics on a
-    /// kitty stack 4096 deep when no window title has been pushed (`push_keyboard_mode` removes
-    /// from the title stack). Tests only, until that is fixed.
+    /// The window turns it on for every pane; it is safe for untrusted output since alacritty's
+    /// fix for the full-stack panic (alacritty#9073), which the pinned commit has.
     pub fn set_kitty_keyboard(&mut self, on: bool) {
         self.kitty_keyboard = on;
         self.term.set_options(Self::config(self.scrollback, on));
@@ -325,7 +442,14 @@ impl Emulator {
             // The terminal takes the output up to the mark first, so the cursor is where the
             // shell had it when it sent the mark.
             self.advance(&bytes[at..end]);
-            self.mark(event);
+            match event {
+                marks::Event::Notify(title, body) => {
+                    if self.notifications.len() < 16 {
+                        self.notifications.push((title, body));
+                    }
+                }
+                other => self.mark(other),
+            }
             at = end;
         }
         self.advance(&bytes[at..]);
@@ -404,6 +528,8 @@ impl Emulator {
         let rows = term.screen_lines();
         let blank = Cell::plain(' ', colors.fg, colors.bg, 0);
         let mut combining = Vec::new();
+        let mut links: Vec<(u32, u32)> = Vec::new();
+        let mut link_uris: Vec<String> = Vec::new();
         let mut cells = vec![blank; cols * rows];
         let content = term.renderable_content();
         let offset = content.display_offset as i32;
@@ -464,6 +590,17 @@ impl Emulator {
             {
                 combining.push((index as u32, zw.iter().collect()));
             }
+            if let Some(h) = item.cell.hyperlink() {
+                let uri = h.uri();
+                let n = match link_uris.iter().rposition(|u| u == uri) {
+                    Some(n) => n,
+                    None => {
+                        link_uris.push(uri.to_string());
+                        link_uris.len() - 1
+                    }
+                };
+                links.push((index as u32, n as u32));
+            }
             cells[index] = Cell {
                 ch,
                 fg,
@@ -488,7 +625,25 @@ impl Emulator {
             gutter: self.gutter(),
             cursor,
             combining,
+            links,
+            link_uris,
         }
+    }
+
+    /// Notifications programs asked for (OSC 9, 777, 99), as title and body; empties the list.
+    pub fn take_notifications(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.notifications)
+    }
+
+    /// Commands the shell said ended (OSC 133;D after 133;C) since the last call: how long each
+    /// ran and its exit status.
+    pub fn take_finished(&mut self) -> Vec<(std::time::Duration, u8)> {
+        std::mem::take(&mut self.finished)
+    }
+
+    /// Whether the program rang the bell (BEL) since the last call.
+    pub fn take_bell(&mut self) -> bool {
+        std::mem::take(&mut self.shared.lock().bell)
     }
 
     /// Bytes the terminal must send back to the shell; empties the buffer.
@@ -534,6 +689,7 @@ impl Emulator {
             SelectKind::Simple => SelectionType::Simple,
             SelectKind::Word => SelectionType::Semantic,
             SelectKind::Line => SelectionType::Lines,
+            SelectKind::Block => SelectionType::Block,
         };
         let side = if right { Side::Right } else { Side::Left };
         self.term.selection = Some(Selection::new(ty, self.point(col, row), side));
@@ -550,6 +706,31 @@ impl Emulator {
 
     pub fn select_clear(&mut self) {
         self.term.selection = None;
+    }
+
+    /// Everything in the history and on the screen as text, one line per row, oldest first,
+    /// with trailing blanks taken off each line and blank lines at the end dropped.
+    pub fn all_text(&self) -> String {
+        let grid = self.term.grid();
+        let top = -(grid.history_size() as i32);
+        let bottom = grid.screen_lines() as i32 - 1;
+        let cols = grid.columns();
+        let mut out = String::new();
+        for line in top..=bottom {
+            let row = &grid[Line(line)];
+            let mut text: String = (0..cols)
+                .filter(|&c| !row[Column(c)].flags.contains(Flags::WIDE_CHAR_SPACER))
+                .map(|c| row[Column(c)].c)
+                .collect();
+            let trimmed = text.trim_end().len();
+            text.truncate(trimmed);
+            out.push_str(&text);
+            out.push('\n');
+        }
+        let keep = out.trim_end_matches('\n').len();
+        out.truncate(keep);
+        out.push('\n');
+        out
     }
 
     /// The selected text, `None` when nothing (or only an empty range) is selected.
@@ -704,8 +885,15 @@ impl Emulator {
         match event {
             marks::Event::Prompt => self.marks.entry(id).or_default().prompt = true,
             marks::Event::Input => {}
-            marks::Event::Output => self.marks.entry(id).or_default().output = true,
+            marks::Event::Output => {
+                self.marks.entry(id).or_default().output = true;
+                self.started = Some(std::time::Instant::now());
+            }
+            marks::Event::Notify(..) => unreachable!("handled in feed"),
             marks::Event::Done(code) => {
+                if let Some(t) = self.started.take() {
+                    self.finished.push((t.elapsed(), code.unwrap_or(0)));
+                }
                 self.marks.entry(id).or_default().end = Some(cursor.column.0 > 0);
                 // The status belongs to the prompt the command began at: the nearest above.
                 let prompt = self

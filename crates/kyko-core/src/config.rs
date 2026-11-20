@@ -50,6 +50,15 @@ pub enum Bell {
     Sound,
 }
 
+/// When a long command's end shows a desktop notification (needs shell integration).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotifyOnFinish {
+    Never,
+    /// Only while the pane is not what the user is looking at.
+    Unfocused,
+    Always,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowConfig {
     pub shape: Shape,
@@ -75,6 +84,9 @@ pub struct TerminalConfig {
     pub cursor_blink: bool,
     pub new_tab_dir: NewTabDir,
     pub bell: Bell,
+    pub notify_on_finish: NotifyOnFinish,
+    /// Seconds a command must run before its end is worth a notification.
+    pub notify_after: u32,
     pub copy_on_select: bool,
     /// Join character sequences the font draws as one (`=>`, `!=`); never under the cursor.
     pub ligatures: bool,
@@ -124,9 +136,13 @@ pub enum Action {
     NextPrompt,
     /// Selects and copies the output of the last command.
     CopyLastOutput,
+    /// The whole scrollback in a pager (`less`), in a new tab.
+    ShowScrollback,
+    /// Labels every link on screen; typing a label opens that link.
+    OpenLink,
 }
 
-const ACTIONS: [Action; 28] = [
+const ACTIONS: [Action; 30] = [
     Action::NewTab,
     Action::ClosePane,
     Action::PrevTab,
@@ -155,6 +171,8 @@ const ACTIONS: [Action; 28] = [
     Action::PrevPrompt,
     Action::NextPrompt,
     Action::CopyLastOutput,
+    Action::ShowScrollback,
+    Action::OpenLink,
 ];
 
 const fn m(ctrl: bool, alt: bool, shift: bool) -> Mods {
@@ -205,6 +223,8 @@ impl Action {
             Action::PrevPrompt => "prev_prompt",
             Action::NextPrompt => "next_prompt",
             Action::CopyLastOutput => "copy_last_output",
+            Action::ShowScrollback => "show_scrollback",
+            Action::OpenLink => "open_link",
         }
     }
 
@@ -230,6 +250,8 @@ impl Action {
             Action::PrevPrompt => (CTRL_SHIFT, Key::Up),
             Action::NextPrompt => (CTRL_SHIFT, Key::Down),
             Action::CopyLastOutput => (CTRL_SHIFT, Key::Char('O')),
+            Action::ShowScrollback => (CTRL_SHIFT, Key::Char('H')),
+            Action::OpenLink => (CTRL_SHIFT, Key::Char('L')),
         };
         KeySeq::new(mods, key)
     }
@@ -237,7 +259,7 @@ impl Action {
 
 /// The sequence bound to each action; `None` is unbound.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Keys([Option<KeySeq>; 28]);
+pub struct Keys([Option<KeySeq>; 30]);
 
 impl Default for Keys {
     fn default() -> Self {
@@ -300,6 +322,8 @@ impl Default for Config {
                 cursor_blink: false,
                 new_tab_dir: NewTabDir::Current,
                 bell: Bell::Visual,
+                notify_on_finish: NotifyOnFinish::Never,
+                notify_after: 10,
                 copy_on_select: false,
                 ligatures: true,
                 shell_integration: true,
@@ -742,6 +766,8 @@ impl Reader {
                 "cursor_blink",
                 "new_tab_dir",
                 "bell",
+                "notify_on_finish",
+                "notify_after",
                 "copy_on_select",
                 "ligatures",
                 "shell_integration",
@@ -801,6 +827,17 @@ impl Reader {
                 ],
                 dt.bell,
             ),
+            notify_on_finish: self.choice(
+                &s,
+                "notify_on_finish",
+                &[
+                    ("never", NotifyOnFinish::Never),
+                    ("unfocused", NotifyOnFinish::Unfocused),
+                    ("always", NotifyOnFinish::Always),
+                ],
+                dt.notify_on_finish,
+            ),
+            notify_after: self.int(&s, "notify_after", 0..=86_400, dt.notify_after),
             copy_on_select: self.bool(&s, "copy_on_select", dt.copy_on_select),
             ligatures: self.bool(&s, "ligatures", dt.ligatures),
             shell_integration: self.bool(&s, "shell_integration", dt.shell_integration),

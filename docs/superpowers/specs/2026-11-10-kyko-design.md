@@ -169,6 +169,8 @@ Default keys (all settable; shown with the kyko window focused):
 | `Alt+Arrow` | focus the pane in that direction |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | copy / paste |
 | `Ctrl+Shift+F` | search scrollback |
+| `Ctrl+Shift+H` | open the scrollback in `less` in a new tab |
+| `Ctrl+Shift+L` | label the links on screen; type a label to open one, its capital to copy it |
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | font size |
 
 ### 2.4 Terminal
@@ -258,6 +260,8 @@ page has "Reset this page".
 | `terminal.cursor` | `block`, `beam`, `underline`; `terminal.cursor_blink` bool | `block`, false |
 | `terminal.new_tab_dir` | `home`, `current` (the focused pane's folder) | `current` |
 | `terminal.bell` | `none`, `visual`, `sound` | `visual` |
+| `terminal.notify_on_finish` | `never`, `unfocused`, `always`: a desktop notification when a command that ran `notify_after` seconds or longer ends (needs shell integration) | `never` |
+| `terminal.notify_after` | seconds, 0 to 86400 | `10` |
 | `terminal.copy_on_select` | bool | false |
 | `terminal.ligatures` | bool | true |
 | `terminal.confirm_multiline_paste` | bool | true |
@@ -265,7 +269,7 @@ page has "Reset this page".
 | `sessions.ring_kib` | 256–16384, output kept per pane for replay (§2.8); applies to new panes | 2048 |
 | `terminal.font_size` | 6–48, or unset to follow the theme | unset |
 | `terminal.shell` | path, or unset for `$SHELL` | unset |
-| `keys.*` | key sequences for the actions in §2.3, or `""` for none: `new_tab`, `close_pane`, `prev_tab`, `next_tab`, `tab_1`…`tab_9`, `split_side`, `split_stacked`, `focus_left`, `focus_right`, `focus_up`, `focus_down`, `copy`, `paste`, `search`, `font_bigger`, `font_smaller`, `font_reset` | as §2.3 |
+| `keys.*` | key sequences for the actions in §2.3, or `""` for none: `new_tab`, `close_pane`, `prev_tab`, `next_tab`, `tab_1`…`tab_9`, `split_side`, `split_stacked`, `focus_left`, `focus_right`, `focus_up`, `focus_down`, `copy`, `paste`, `search`, `font_bigger`, `font_smaller`, `font_reset`, `show_scrollback`, `open_link` | as §2.3 |
 | `advanced.programs_write_clipboard` | bool: programs in the terminal may set the clipboard | false |
 | `advanced.allow_run` | bool: other apps may call `Run` (§3.1); off disables **Run in kyko** | true |
 

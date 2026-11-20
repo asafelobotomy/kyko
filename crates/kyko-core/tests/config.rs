@@ -50,6 +50,8 @@ cursor = "beam"
 cursor_blink = true
 new_tab_dir = "home"
 bell = "sound"
+notify_on_finish = "unfocused"
+notify_after = 30
 copy_on_select = true
 ligatures = false
 shell_integration = false
@@ -144,13 +146,15 @@ fn default_is_the_table_in_the_spec() {
         ("prev_prompt", "Ctrl+Shift+Up"),
         ("next_prompt", "Ctrl+Shift+Down"),
         ("copy_last_output", "Ctrl+Shift+O"),
+        ("show_scrollback", "Ctrl+Shift+H"),
+        ("open_link", "Ctrl+Shift+L"),
     ];
     for (name, s) in want {
         let action = Action::all().find(|a| a.key_name() == name).unwrap();
         assert_eq!(d.keys.get(action), Some(seq(s)), "{name}");
         assert_eq!(action.default_seq(), seq(s), "{name}");
     }
-    assert_eq!(Action::all().count(), 28);
+    assert_eq!(Action::all().count(), 30);
 }
 
 #[test]
@@ -209,6 +213,8 @@ fn every_key_set() {
             cursor_blink: true,
             new_tab_dir: NewTabDir::Home,
             bell: Bell::Sound,
+            notify_on_finish: NotifyOnFinish::Unfocused,
+            notify_after: 30,
             copy_on_select: true,
             ligatures: false,
             shell_integration: false,
@@ -280,6 +286,8 @@ const BAD: &[(&str, &str, &str)] = &[
     ("terminal", "cursor_blink", "0"),
     ("terminal", "new_tab_dir", "\"/tmp\""),
     ("terminal", "bell", "\"loud\""),
+    ("terminal", "notify_on_finish", "\"sometimes\""),
+    ("terminal", "notify_after", "86401"),
     ("terminal", "copy_on_select", "\"true\""),
     ("terminal", "confirm_multiline_paste", "{}"),
     ("terminal", "scrollback", "100001"),

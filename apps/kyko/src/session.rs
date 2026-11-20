@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use kyko_core::config::Action;
+use kyko_core::config::{Action, NotifyOnFinish};
 use kyko_core::keys::{Key, Mods};
 use kyko_core::session::{Dir, Effect, PaneState, Session, SpawnRequest, SplitAxis};
 use kyko_link::{Event, Link, LinkError};
@@ -29,6 +29,12 @@ pub type SharedLook = Arc<Mutex<Look>>;
 pub struct Frame {
     pub snapshot: Option<Snapshot>,
     pub app_cursor: bool,
+    /// The kitty keyboard protocol flags the program turned on (0: legacy keys).
+    pub kitty: u8,
+    /// The program asked to hear focus in and out (`CSI ? 1004 h`).
+    pub focus_reporting: bool,
+    /// The program takes mouse clicks itself: a link then opens only with Ctrl+Shift.
+    pub mouse_tracking: bool,
 }
 
 /// What the window reads: the panes' frames and the tab layout.
@@ -42,6 +48,10 @@ pub struct Shared {
     pub exit: Option<i32>,
     /// Set when `kykod` cannot be reached or went away; the window says so.
     pub notice: Option<String>,
+    /// Link labels over a pane, while `open_link` waits for a label to be typed.
+    pub hints: Option<(PaneId, kyko_term::hints::Hints)>,
+    /// The pane that has the keyboard in the active window, if any.
+    pub looking_at: Option<PaneId>,
 }
 
 /// What the find bar asks of the focused pane's scrollback.
@@ -93,6 +103,7 @@ enum Cmd {
     PromptJump(PaneId, i32),
     /// Select the last command's output and copy it.
     CopyLastOutput(PaneId),
+    ShowScrollback(PaneId),
     Paste(PaneId, String),
     Search(SearchOp),
     Resize(PaneId, u16, u16),
@@ -151,13 +162,15 @@ struct Ctx {
     on_layout: Box<dyn Fn() + Send>,
     on_hide: Box<dyn Fn() + Send>,
     on_quit: Box<dyn Fn() + Send>,
-    on_copy: Box<dyn Fn(String) + Send>,
+    on_copy: Box<dyn Fn(String, bool) + Send>,
+    on_bell: Box<dyn Fn(PaneId) + Send>,
 }
 
 impl Workspace {
     /// Starts the thread. The callbacks run on it: `on_frames` when a pane's screen changed,
     /// `on_layout` when the tabs did, `on_hide` when the drop-down should hide (its last tab
-    /// closed), `on_quit` when a windowed kyko has nothing left to show.
+    /// closed), `on_quit` when a windowed kyko has nothing left to show, `on_bell` when a
+    /// pane's program rang the bell.
     #[allow(clippy::too_many_arguments)]
     pub fn start(
         socket: PathBuf,
@@ -167,7 +180,8 @@ impl Workspace {
         on_layout: Box<dyn Fn() + Send>,
         on_hide: Box<dyn Fn() + Send>,
         on_quit: Box<dyn Fn() + Send>,
-        on_copy: Box<dyn Fn(String) + Send>,
+        on_copy: Box<dyn Fn(String, bool) + Send>,
+        on_bell: Box<dyn Fn(PaneId) + Send>,
     ) -> Workspace {
         let (tx, rx) = channel();
         let shared = Arc::new(Mutex::new(Shared::default()));
@@ -183,6 +197,7 @@ impl Workspace {
             on_hide,
             on_quit,
             on_copy,
+            on_bell,
         };
         let thread = std::thread::Builder::new()
             .name("kyko-link".into())
@@ -219,6 +234,10 @@ impl Workspace {
     }
 
     /// Selects what the last command printed and puts it on the clipboard.
+    pub fn show_scrollback(&self, pane: PaneId) {
+        let _ = self.tx.send(Cmd::ShowScrollback(pane));
+    }
+
     pub fn copy_last_output(&self, pane: PaneId) {
         let _ = self.tx.send(Cmd::CopyLastOutput(pane));
     }
@@ -303,14 +322,14 @@ fn qt_key(key: u32, text: &str) -> Option<Key> {
 }
 
 /// The action a key press is bound to, when it is one. `mods` as `kyko_term::keys` has them:
-/// Shift 1, Alt 2, Ctrl 4.
+/// Shift 1, Alt 2, Ctrl 4, Super 8.
 pub fn action_for(look: &Look, key: u32, mods: u8, text: &str) -> Option<Action> {
     let key = qt_key(key, text)?;
     let mods = Mods {
         shift: mods & 1 != 0,
         alt: mods & 2 != 0,
         ctrl: mods & 4 != 0,
-        super_: false,
+        super_: mods & 8 != 0,
     };
     look.keys.action_for(mods, key)
 }
@@ -320,6 +339,9 @@ pub fn action_for(look: &Look, key: u32, mods: u8, text: &str) -> Option<Action>
 pub enum Pending {
     Pane(PaneId),
     Tab(u32),
+    /// A paste of several lines into a program that did not turn on bracketed paste, where
+    /// each line would run as it arrives.
+    Paste(PaneId),
 }
 
 /// The programs running in what `what` would close, other than the shell.
@@ -330,6 +352,7 @@ fn busy_programs(s: &Session, what: Pending) -> Vec<String> {
             let hit = match what {
                 Pending::Pane(p) => pane.id == p,
                 Pending::Tab(t) => tab.id == t,
+                Pending::Paste(_) => false,
             };
             if hit && pane.busy && !out.iter().any(|n| n == pane.program) {
                 out.push(pane.program.to_string());
@@ -350,6 +373,97 @@ fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
+/// Writes a pane's scrollback to a private file for the pager to read, in kyko's runtime folder.
+fn scrollback_file(text: &str) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("kyko");
+    std::fs::create_dir_all(&dir)?;
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let path = dir.join(format!("scrollback-{}-{n}.txt", std::process::id()));
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    f.write_all(text.as_bytes())?;
+    Ok(path)
+}
+
+/// Shows a notification a program asked for (OSC 9, 777, 99) on the desktop's notification
+/// service, off the session thread so a slow service never holds the terminal up.
+/// Whether a command that ran for `ran` earns a notification, the pane being `seen` or not.
+fn finish_worth_telling(when: NotifyOnFinish, after: u32, ran: Duration, seen: bool) -> bool {
+    ran.as_secs() >= u64::from(after)
+        && match when {
+            NotifyOnFinish::Never => false,
+            NotifyOnFinish::Unfocused => !seen,
+            NotifyOnFinish::Always => true,
+        }
+}
+
+/// "Finished after 1m 05s", or "Failed (exit 2) after 12s".
+fn finished_text(ran: Duration, status: u8) -> String {
+    let s = ran.as_secs();
+    let took = match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m {:02}s", s / 60, s % 60),
+        _ => format!("{}h {:02}m", s / 3600, s % 3600 / 60),
+    };
+    if status == 0 {
+        format!("Finished after {took}")
+    } else {
+        format!("Failed (exit {status}) after {took}")
+    }
+}
+
+fn notify(title: String, body: String) {
+    std::thread::spawn(move || {
+        let summary = if title.is_empty() {
+            "kyko".to_string()
+        } else {
+            title
+        };
+        let result = zbus::block_on(async {
+            let bus = zbus::Connection::session().await?;
+            let hints: std::collections::HashMap<&str, zbus::Variant<'_>> =
+                [("desktop-entry", zbus::Variant::from("org.kyko.Kyko"))].into();
+            bus.call_method(
+                Some("org.freedesktop.Notifications"),
+                "/org/freedesktop/Notifications",
+                Some("org.freedesktop.Notifications"),
+                "Notify",
+                &(
+                    "kyko",
+                    0u32,
+                    "org.kyko.Kyko",
+                    summary.as_str(),
+                    body.as_str(),
+                    Vec::<&str>::new(),
+                    hints,
+                    -1i32,
+                ),
+            )
+            .await
+            .map(|_| ())
+        });
+        if let Err(e) = result {
+            eprintln!("kyko: notification not shown: {e}");
+        }
+    });
+}
+
+/// Whether a paste has to be confirmed first: it has more than one line, the program did not
+/// ask for bracketed paste (so a shell would run each line as it arrives), and the setting is on.
+fn needs_paste_confirm(text: &str, bracketed: bool, setting: bool) -> bool {
+    setting && !bracketed && text.trim_end_matches(['\n', '\r']).contains(['\n', '\r'])
+}
+
 /// A mouse event on a pane: sent to the program when it asked for mouse reports, else it selects
 /// text or scrolls. True when the pane's picture changed.
 fn mouse(
@@ -357,7 +471,7 @@ fn mouse(
     pane: PaneId,
     ev: MouseEv,
     copy_on_select: bool,
-    on_copy: &dyn Fn(String),
+    on_copy: &dyn Fn(String, bool),
 ) -> Result<bool, LinkError> {
     let Some(p) = link.pane(pane) else {
         return Ok(false);
@@ -423,6 +537,8 @@ fn mouse(
             let kind = match ev.clicks {
                 2 => SelectKind::Word,
                 3.. => SelectKind::Line,
+                // Ctrl+Alt+drag selects a rectangle, as in kitty.
+                _ if ev.mods & 6 == 6 => SelectKind::Block,
                 _ => SelectKind::Simple,
             };
             p.emulator_mut()
@@ -434,8 +550,13 @@ fn mouse(
             Ok(true)
         }
         MouseKind::Release if ev.button == 0 => {
-            if copy_on_select && let Some(t) = p.emulator().selection_text() {
-                on_copy(t);
+            // What was selected becomes the primary selection (middle-click pastes it), and
+            // the clipboard as well when the setting asks.
+            if let Some(t) = p.emulator().selection_text() {
+                if copy_on_select {
+                    on_copy(t.clone(), false);
+                }
+                on_copy(t, true);
             }
             Ok(false)
         }
@@ -609,6 +730,9 @@ fn publish(link: &Link, pane: PaneId, colors: &Mutex<Colors>, shared: &Mutex<Sha
         let frame = Frame {
             snapshot: Some(snapshot),
             app_cursor: modes.app_cursor,
+            kitty: modes.kitty_flags,
+            focus_reporting: modes.focus_reporting,
+            mouse_tracking: modes.mouse_click || modes.mouse_drag || modes.mouse_motion,
         };
         shared.lock().unwrap().frames.insert(pane, frame);
     }
@@ -669,7 +793,11 @@ pub fn layout_json(
                "notice": notice.unwrap_or(""), "tabs": tabs,
                "find": {"open": find.open, "pos": find.pos + 1, "total": find.total},
                "confirm": confirm.map(|(what, programs)| json!({
-                   "what": match what { Pending::Pane(_) => "pane", Pending::Tab(_) => "tab" },
+                   "what": match what {
+                       Pending::Pane(_) => "pane",
+                       Pending::Tab(_) => "tab",
+                       Pending::Paste(_) => "paste",
+                   },
                    "programs": programs.join(", ")}))})
     );
     out
@@ -729,6 +857,8 @@ fn run(
     ctx.shared.lock().unwrap().notice = None;
     let mut last_status = 0;
     let mut pending: Option<(Pending, Vec<String>)> = None;
+    // The text a paste waiting for the user's word would send.
+    let mut held_paste = String::new();
     let mut find = Find::default();
     let mut dirty: HashSet<PaneId> = session.pane_ids().into_iter().collect();
     let mut layout_changed = true;
@@ -756,7 +886,7 @@ fn run(
                 }
                 Cmd::Copy(p) => {
                     if let Some(t) = link.pane(p).and_then(|pn| pn.emulator().selection_text()) {
-                        (ctx.on_copy)(t);
+                        (ctx.on_copy)(t, false);
                     }
                 }
                 Cmd::PromptJump(p, dir) => {
@@ -766,12 +896,32 @@ fn run(
                         dirty.insert(p);
                     }
                 }
+                Cmd::ShowScrollback(p) => {
+                    let Some(text) = link.pane(p).map(|pn| pn.emulator().all_text()) else {
+                        continue;
+                    };
+                    match scrollback_file(&text) {
+                        Ok(path) => {
+                            let q = kyko_core::runq::quote(&path.to_string_lossy());
+                            // `#!/bin/sh` runs it in sh whatever the login shell is.
+                            let command = format!("#!/bin/sh\nless -R +G -- {q}; rm -f -- {q}");
+                            let req = SpawnRequest {
+                                cwd: None,
+                                args: kyko_core::runq::shell_args(&command),
+                                hold: false,
+                            };
+                            effects.extend(session.new_tab(req, &login).unwrap_or_default());
+                            layout_changed = true;
+                        }
+                        Err(e) => eprintln!("kyko: cannot write the scrollback: {e}"),
+                    }
+                }
                 Cmd::CopyLastOutput(p) => {
                     if let Some(pn) = link.pane_mut(p) {
                         let e = pn.emulator_mut();
                         if e.select_last_output() {
                             if let Some(t) = e.selection_text() {
-                                (ctx.on_copy)(t);
+                                (ctx.on_copy)(t, false);
                             }
                             dirty.insert(p);
                         }
@@ -804,6 +954,13 @@ fn run(
                     let bracketed = link
                         .pane(p)
                         .is_some_and(|pn| pn.emulator().modes().bracketed_paste);
+                    if needs_paste_confirm(&text, bracketed, look().confirm_multiline_paste) {
+                        let lines = text.trim_end_matches('\n').lines().count();
+                        pending = Some((Pending::Paste(p), vec![lines.to_string()]));
+                        held_paste = text;
+                        layout_changed = true;
+                        continue;
+                    }
                     link.input(p, &paste_bytes(&text, bracketed))?;
                 }
                 Cmd::Resize(p, c, r) => {
@@ -840,9 +997,15 @@ fn run(
                             let act = match t {
                                 Pending::Pane(p) => Act::ClosePane(p),
                                 Pending::Tab(t) => Act::CloseTab(t),
+                                Pending::Paste(p) => {
+                                    link.input(p, &paste_bytes(&held_paste, false))?;
+                                    held_paste.clear();
+                                    continue;
+                                }
                             };
                             effects.extend(handle(act, session, &look(), &login));
                         }
+                        held_paste.clear();
                         continue;
                     }
                     effects.extend(handle(act, session, &look(), &login));
@@ -861,6 +1024,30 @@ fn run(
             match event {
                 Event::Changed(p) => {
                     dirty.insert(p);
+                    if let Some(pn) = link.pane_mut(p) {
+                        for (title, body) in pn.emulator_mut().take_notifications() {
+                            notify(title, body);
+                        }
+                        if pn.emulator_mut().take_bell() {
+                            (ctx.on_bell)(p);
+                        }
+                        let finished = pn.emulator_mut().take_finished();
+                        if !finished.is_empty() {
+                            let l = look();
+                            let seen = ctx.shared.lock().unwrap().looking_at == Some(p);
+                            let title = pn.emulator().title().unwrap_or("kyko").to_string();
+                            for (ran, status) in finished {
+                                if finish_worth_telling(
+                                    l.notify_on_finish,
+                                    l.notify_after,
+                                    ran,
+                                    seen,
+                                ) {
+                                    notify(title.clone(), finished_text(ran, status));
+                                }
+                            }
+                        }
+                    }
                 }
                 Event::Info { pane, program, cwd } => {
                     layout_changed |= session.apply_info(pane, &program, &cwd);
@@ -992,4 +1179,76 @@ pub fn ensure_shared_holder(socket: &Path) -> std::io::Result<()> {
         std::io::ErrorKind::TimedOut,
         "kykod did not start",
     ))
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::needs_paste_confirm;
+
+    #[test]
+    fn only_unbracketed_multi_line_pastes_ask() {
+        assert!(needs_paste_confirm("rm -rf x\nls\n", false, true));
+        assert!(
+            !needs_paste_confirm("ls\n", false, true),
+            "one line with its newline"
+        );
+        assert!(
+            !needs_paste_confirm("a\nb", true, true),
+            "bracketed paste is safe"
+        );
+        assert!(!needs_paste_confirm("a\nb", false, false), "setting off");
+        assert!(needs_paste_confirm("a\r\nb", false, true));
+    }
+}
+
+#[cfg(test)]
+mod finish_tests {
+    use super::{Duration, NotifyOnFinish, finish_worth_telling, finished_text};
+
+    #[test]
+    fn long_commands_notify_when_asked() {
+        let long = Duration::from_secs(12);
+        let short = Duration::from_secs(3);
+        assert!(!finish_worth_telling(
+            NotifyOnFinish::Never,
+            10,
+            long,
+            false
+        ));
+        assert!(finish_worth_telling(
+            NotifyOnFinish::Unfocused,
+            10,
+            long,
+            false
+        ));
+        assert!(!finish_worth_telling(
+            NotifyOnFinish::Unfocused,
+            10,
+            long,
+            true
+        ));
+        assert!(!finish_worth_telling(
+            NotifyOnFinish::Always,
+            10,
+            short,
+            false
+        ));
+        assert!(finish_worth_telling(NotifyOnFinish::Always, 10, long, true));
+    }
+
+    #[test]
+    fn the_text_says_how_it_ended_and_how_long_it_took() {
+        assert_eq!(
+            finished_text(Duration::from_secs(12), 0),
+            "Finished after 12s"
+        );
+        assert_eq!(
+            finished_text(Duration::from_secs(65), 2),
+            "Failed (exit 2) after 1m 05s"
+        );
+        assert_eq!(
+            finished_text(Duration::from_secs(7322), 0),
+            "Finished after 2h 02m"
+        );
+    }
 }

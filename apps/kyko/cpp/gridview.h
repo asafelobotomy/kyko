@@ -92,6 +92,7 @@ protected:
     void geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) override;
     void focusOutEvent(QFocusEvent*) override;
     void keyPressEvent(QKeyEvent* e) override;
+    void keyReleaseEvent(QKeyEvent* e) override;
     void inputMethodEvent(QInputMethodEvent* e) override;
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
     void focusInEvent(QFocusEvent*) override;
@@ -104,6 +105,9 @@ protected:
 public:
     // The config or theme changed: new font, new glyphs, new cell size.
     void reloadLook();
+    // The pane's program rang the bell: 1 flashes the pane, 2 plays the desktop's bell sound.
+    // Either marks the window urgent when it is not the active one.
+    void bell(int mode);
 
 private:
     void applyFont();
@@ -144,6 +148,7 @@ private:
     int m_cursorShape = 0;  // 0 block, 1 beam, 2 underline
     bool m_blink = false, m_blinkOn = true;
     QTimer m_blinkTimer;
+    bool m_flash = false;  // the visual bell is showing
     int m_cols = 0, m_rows = 0;
     int m_curX = -1, m_curY = -1;
     int m_pane = 0;
@@ -153,6 +158,11 @@ private:
     int m_clicks = 0;
     int m_wheel = 0;
     Qt::MouseButtons m_down;
+    // A press that did not move off its cell may be a click on a link.
+    bool m_dragged = false;
+    // The link under the pointer: (row, start, end) triples, underlined while hovered.
+    QList<quint16> m_hover;
+    void hoverLink(const QPointF& pos);
 
     QImage m_atlas;
     int m_shelfX = 0, m_shelfY = 0, m_shelfH = 0;
@@ -164,8 +174,10 @@ private:
 };
 
 // Puts text on the clipboard, and reads it for a paste into a pane, on the GUI thread.
-void controller_copy(rust::Str text);
+void controller_copy(rust::Str text, bool primary);
 void controller_paste(quint32 pane);
+// Called from Rust, on any thread: the pane's program rang the bell.
+void grid_bell(quint32 pane, int mode);
 // Called from Rust, on any thread: asks the item to draw again.
 void grid_request_repaint();
 // Names the window's application (Wayland app id, the `--class` option).

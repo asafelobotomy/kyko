@@ -42,7 +42,11 @@ pub mod ffi {
             cur_x: &mut i32,
             cur_y: &mut i32,
         ) -> u64;
-        fn kyko_key(pane: u32, key: u32, mods: u8, text: &str) -> bool;
+        fn kyko_key(pane: u32, key: u32, mods: u8, text: &str, event: u8) -> bool;
+        fn kyko_focus_report(pane: u32, focused: bool);
+        fn kyko_link_spans(pane: u32, col: u16, row: u16, out: &mut Vec<u16>) -> bool;
+        fn kyko_open_link(pane: u32, col: u16, row: u16, mods: u8) -> bool;
+        fn kyko_middle_paste(pane: u32, mods: u8) -> bool;
         fn kyko_text(pane: u32, text: &str);
         fn kyko_paste(pane: u32, text: &str);
         #[allow(clippy::too_many_arguments)]
@@ -92,8 +96,9 @@ pub mod ffi {
         fn grid_reload_look();
         fn controller_send(code: i32);
         fn controller_layout_changed();
-        fn controller_copy(text: &str);
+        fn controller_copy(text: &str, primary: bool);
         fn controller_paste(pane: u32);
+        fn grid_bell(pane: u32, mode: i32);
         fn app_set_id(id: &str);
     }
 }
@@ -135,7 +140,8 @@ pub fn start() {
         Box::new(ffi::controller_layout_changed),
         Box::new(|| ffi::controller_send(crate::control::Command::Hide.code())),
         Box::new(|| ffi::controller_send(3)),
-        Box::new(|text| ffi::controller_copy(&text)),
+        Box::new(|text, primary| ffi::controller_copy(&text, primary)),
+        Box::new(|pane| ffi::grid_bell(pane, look().bell)),
     );
     let _ = WORKSPACE.set(ws);
 }
@@ -350,21 +356,84 @@ fn kyko_snapshot(
         index: *index,
         text: text.clone(),
     }));
+    if let Some((_, hints)) = shared.hints.as_ref().filter(|(p, _)| *p == pane) {
+        let l = look();
+        let cols = usize::from(snap.cols);
+        let shown = hints.shown();
+        // Underline the links still in play, then write each one's label over its start.
+        for h in &hints.items {
+            if !h.label.starts_with(&hints.typed) {
+                continue;
+            }
+            for &(r, a, b) in &h.spans {
+                for c in a..b {
+                    if let Some(cell) = out.get_mut(usize::from(r) * cols + usize::from(c)) {
+                        cell.underline = kyko_term::UL_SINGLE;
+                        cell.underline_color = 0x0100_0000 | l.accent;
+                    }
+                }
+            }
+        }
+        for (r, c, label) in shown {
+            for (k, ch) in label.chars().enumerate() {
+                if let Some(cell) = out.get_mut(usize::from(r) * cols + usize::from(c) + k) {
+                    cell.ch = ch as u32;
+                    cell.fg = l.colors.bg;
+                    cell.bg = l.accent;
+                    cell.flags = kyko_term::BOLD;
+                    cell.underline = kyko_term::UL_NONE;
+                }
+                extras.retain(|e| e.index as usize != usize::from(r) * cols + usize::from(c) + k);
+            }
+        }
+    }
     1
 }
 
 /// A key press in `pane`: one of the window's actions, or bytes for the pane's program. True
 /// when kyko took it.
-fn kyko_key(pane: u32, key: u32, mods: u8, text: &str) -> bool {
+fn kyko_key(pane: u32, key: u32, mods: u8, text: &str, event: u8) -> bool {
     let Some(w) = WORKSPACE.get() else {
         return false;
     };
-    if let Some(action) = crate::session::action_for(&look(), key, mods, text) {
+    // Keys kyko took for itself: their release is not the program's either.
+    static TAKEN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+    if event == keys::RELEASE {
+        let mut taken = TAKEN.lock().unwrap();
+        if let Some(i) = taken.iter().position(|k| *k == key) {
+            taken.swap_remove(i);
+            return true;
+        }
+    }
+    if pick_link(w, pane, key, text, event) {
+        return true;
+    }
+    if event != keys::RELEASE
+        && let Some(action) = crate::session::action_for(&look(), key, mods, text)
+    {
+        if event == keys::PRESS {
+            let mut taken = TAKEN.lock().unwrap();
+            if !taken.contains(&key) {
+                taken.push(key);
+            }
+        }
         match action {
             Action::Copy => w.copy(pane),
             Action::PrevPrompt => w.jump_prompt(pane, -1),
             Action::NextPrompt => w.jump_prompt(pane, 1),
             Action::CopyLastOutput => w.copy_last_output(pane),
+            Action::ShowScrollback => w.show_scrollback(pane),
+            Action::OpenLink => {
+                let mut shared = w.shared.lock().unwrap();
+                let hints = shared
+                    .frames
+                    .get(&pane)
+                    .and_then(|f| f.snapshot.as_ref())
+                    .and_then(kyko_term::hints::Hints::new);
+                shared.hints = hints.map(|h| (pane, h));
+                drop(shared);
+                ffi::grid_request_repaint();
+            }
             Action::Paste => ffi::controller_paste(pane),
             Action::FontBigger => zoom(1),
             Action::FontSmaller => zoom(-1),
@@ -373,19 +442,167 @@ fn kyko_key(pane: u32, key: u32, mods: u8, text: &str) -> bool {
         }
         return true;
     }
-    let app_cursor = w
+    let (app_cursor, kitty) = w
         .shared
         .lock()
         .unwrap()
         .frames
         .get(&pane)
-        .is_some_and(|f| f.app_cursor);
-    let bytes = keys::encode(key, mods, text, app_cursor);
+        .map_or((false, 0), |f| (f.app_cursor, f.kitty));
+    let bytes = keys::encode_kitty(key, mods, text, app_cursor, kitty, event);
     if bytes.is_empty() {
         return false;
     }
     w.input(pane, bytes);
     true
+}
+
+/// While links are labelled in `pane`, keys pick a label instead of reaching the program:
+/// Escape or a wrong letter drops the labels, a label opens its link and its capital copies
+/// it. True when the key was taken.
+fn pick_link(w: &Workspace, pane: u32, key: u32, text: &str, event: u8) -> bool {
+    use kyko_term::hints::Outcome;
+    let mut shared = w.shared.lock().unwrap();
+    let Some((_, hints)) = shared.hints.as_mut().filter(|(p, _)| *p == pane) else {
+        return false;
+    };
+    if event == keys::RELEASE {
+        return true;
+    }
+    let ch = match key {
+        0x0100_0000 => None,
+        0x0100_0003 => Some('\u{8}'),
+        _ => Some(text.chars().next().unwrap_or('\0')),
+    };
+    let outcome = hints.key(ch);
+    if outcome != Outcome::Pending {
+        shared.hints = None;
+    }
+    drop(shared);
+    match outcome {
+        Outcome::Open(url) => {
+            open_url(&url);
+        }
+        Outcome::Copy(url) => ffi::controller_copy(&url, false),
+        Outcome::Pending | Outcome::Cancel => {}
+    }
+    ffi::grid_request_repaint();
+    true
+}
+
+/// The link under a cell, for the hover underline: its cells as (row, start, end) triples.
+fn kyko_link_spans(pane: u32, col: u16, row: u16, out: &mut Vec<u16>) -> bool {
+    out.clear();
+    let Some(w) = WORKSPACE.get() else {
+        return false;
+    };
+    let shared = w.shared.lock().unwrap();
+    let Some(snap) = shared.frames.get(&pane).and_then(|f| f.snapshot.as_ref()) else {
+        return false;
+    };
+    let Some((url, spans)) = snap.link_at(col, row) else {
+        return false;
+    };
+    if !kyko_term::links::openable(&url) {
+        return false;
+    }
+    for (r, a, b) in spans {
+        out.extend([r, a, b]);
+    }
+    true
+}
+
+/// A click on a link opens it with the desktop's handler (`xdg-open`). A program that takes
+/// mouse clicks itself keeps plain clicks; Ctrl+Shift+click opens the link there. True when a
+/// link was opened.
+fn kyko_open_link(pane: u32, col: u16, row: u16, mods: u8) -> bool {
+    let Some(w) = WORKSPACE.get() else {
+        return false;
+    };
+    let url = {
+        let shared = w.shared.lock().unwrap();
+        let Some(frame) = shared.frames.get(&pane) else {
+            return false;
+        };
+        if frame.mouse_tracking && mods & 5 != 5 {
+            return false;
+        }
+        let Some(snap) = frame.snapshot.as_ref() else {
+            return false;
+        };
+        match snap.link_at(col, row) {
+            Some((url, _)) if kyko_term::links::openable(&url) => url,
+            _ => return false,
+        }
+    };
+    open_url(&url)
+}
+
+/// Opens `url` with the desktop's handler (`xdg-open`), without waiting for it.
+fn open_url(url: &str) -> bool {
+    match std::process::Command::new("xdg-open")
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            true
+        }
+        Err(e) => {
+            eprintln!("kyko: cannot open {url}: xdg-open: {e}");
+            false
+        }
+    }
+}
+
+/// A middle click pastes the primary selection, unless the program takes clicks itself (then
+/// Shift+middle-click does). True when the window should paste.
+fn kyko_middle_paste(pane: u32, mods: u8) -> bool {
+    let Some(w) = WORKSPACE.get() else {
+        return false;
+    };
+    let tracking = w
+        .shared
+        .lock()
+        .unwrap()
+        .frames
+        .get(&pane)
+        .is_some_and(|f| f.mouse_tracking);
+    !tracking || mods & 1 != 0
+}
+
+/// The pane gained or lost the keyboard: tells a program that asked (`CSI ? 1004 h`).
+fn kyko_focus_report(pane: u32, focused: bool) {
+    let Some(w) = WORKSPACE.get() else { return };
+    {
+        let mut shared = w.shared.lock().unwrap();
+        if focused {
+            shared.looking_at = Some(pane);
+        } else if shared.looking_at == Some(pane) {
+            shared.looking_at = None;
+        }
+    }
+    let wants = w
+        .shared
+        .lock()
+        .unwrap()
+        .frames
+        .get(&pane)
+        .is_some_and(|f| f.focus_reporting);
+    if wants {
+        w.input(
+            pane,
+            if focused {
+                b"\x1b[I".to_vec()
+            } else {
+                b"\x1b[O".to_vec()
+            },
+        );
+    }
 }
 
 /// The font size, as steps from the configured one; `0` takes it back.

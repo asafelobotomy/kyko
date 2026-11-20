@@ -3,7 +3,7 @@
 //! that can be tested without Qt lives here.
 use serde_json::{Value as Json, json};
 
-use crate::config::{Action, Config, NewTabDir, Shape, TabsAt};
+use crate::config::{Action, Bell, Config, NewTabDir, NotifyOnFinish, Shape, TabsAt};
 use crate::configedit::{self, Value};
 use crate::keys::KeySeq;
 use crate::theme::{ThemeSource, builtin_keys};
@@ -115,6 +115,24 @@ pub const PAGES: &[Page] = &[
                 label: "New tabs start in",
                 help: "home: the home folder. current: the folder of the focused pane.",
                 kind: Kind::Choice(&["home", "current"]),
+            },
+            Item {
+                key: "terminal.bell",
+                label: "Bell",
+                help: "What a program's bell does: flash the pane, or play the desktop's bell sound.",
+                kind: Kind::Choice(&["none", "visual", "sound"]),
+            },
+            Item {
+                key: "terminal.notify_on_finish",
+                label: "Notify when a command finishes",
+                help: "A desktop notification when a long command ends; unfocused: only while you are looking elsewhere.",
+                kind: Kind::Choice(&["never", "unfocused", "always"]),
+            },
+            Item {
+                key: "terminal.notify_after",
+                label: "Long command, in seconds",
+                help: "How long a command must run before its end notifies.",
+                kind: Kind::Int(0, 86_400),
             },
             Item {
                 key: "terminal.copy_on_select",
@@ -253,6 +271,18 @@ pub const PAGES: &[Page] = &[
                 kind: Kind::Key,
             },
             Item {
+                key: "keys.show_scrollback",
+                label: "Scrollback in a pager",
+                help: "Opens everything the pane printed in less, in a new tab.",
+                kind: Kind::Key,
+            },
+            Item {
+                key: "keys.open_link",
+                label: "Open a link by keyboard",
+                help: "Labels each link on screen; type a label to open it, or its capital to copy it.",
+                kind: Kind::Key,
+            },
+            Item {
                 key: "keys.font_bigger",
                 label: "Bigger text",
                 help: "",
@@ -349,6 +379,17 @@ pub fn values_json(c: &Config) -> Json {
         "terminal.font_size": t.font_size.unwrap_or(0),
         "terminal.scrollback": t.scrollback,
         "terminal.new_tab_dir": if t.new_tab_dir == NewTabDir::Home { "home" } else { "current" },
+        "terminal.bell": match t.bell {
+            Bell::None => "none",
+            Bell::Visual => "visual",
+            Bell::Sound => "sound",
+        },
+        "terminal.notify_on_finish": match t.notify_on_finish {
+            NotifyOnFinish::Never => "never",
+            NotifyOnFinish::Unfocused => "unfocused",
+            NotifyOnFinish::Always => "always",
+        },
+        "terminal.notify_after": t.notify_after,
         "terminal.copy_on_select": t.copy_on_select,
         "terminal.ligatures": t.ligatures,
         "terminal.shell_integration": t.shell_integration,
