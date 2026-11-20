@@ -768,7 +768,7 @@ const QList<GridView::Shaped>& GridView::shape(const QString& text, const QList<
     const qreal base = line.ascent();
     struct G { int font; quint32 glyph; int str; QPointF pos; };
     QList<G> all;
-    for (const QGlyphRun& run : layout.glyphRuns()) {
+    for (const QGlyphRun& run : layout.glyphRuns(-1, -1, QTextLayout::RetrieveAll)) {
         const int font = fontIndex(run.rawFont());
         const QList<quint32> glyphs = run.glyphIndexes();
         const QList<QPointF> pos = run.positions();
