@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Corners follow uQ's radius.** The tab pills, buttons, pane borders, the Unicode picker, the
+  close dialog and the Preferences sidebar take their corners from the theme's `ui.radius`
+  instead of fixed sizes, so a square or extra-round uQ theme reaches them too (at kyko's own
+  default of 10 they look as before).
+- **No polling for live reload.** uQ's theme is followed with uQ's shared watcher (`uq_theme`,
+  vendored at 1.0.0 and pinned by `scripts/check-uq-theme.sh`), and `config.toml` with an
+  inotify watch, in place of a check twice a second.
+
+### Added
+
+- AppStream metainfo (`/usr/share/metainfo/org.kyko.Kyko.metainfo.xml`), so software centres
+  list kyko with its description.
+
+### Fixed
+
+- The desktop entry no longer repeats its generic name ("Terminal") as a keyword.
+
 ## [1.0.0-rc.1] - 2026-11-20
 
 The release candidate for 1.0.0: kyko now matches kitty where a daily terminal needs it, and goes

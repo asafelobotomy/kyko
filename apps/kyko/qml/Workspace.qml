@@ -19,7 +19,11 @@ Item {
     property color fg: hex(ctl.setting("foreground"))
     property color accent: hex(ctl.setting("accent"))
     readonly property color dim: Qt.rgba(fg.r, fg.g, fg.b, 0.12)
+    // uQ's corner radius (ui.radius; kyko's own themes use 10). Smaller parts take a share of
+    // it, so at 10 they keep their old sizes and a square uQ theme makes them all square.
+    property int radius: ctl.setting("radius")
 
+    function r(share) { return Math.round(ws.radius * share) }
     function hex(v) { return "#" + ("000000" + v.toString(16)).slice(-6) }
 
     function activeTab() {
@@ -79,6 +83,7 @@ Item {
             ws.bg = ws.hex(ws.ctl.setting("background"))
             ws.fg = ws.hex(ws.ctl.setting("foreground"))
             ws.accent = ws.hex(ws.ctl.setting("accent"))
+            ws.radius = ws.ctl.setting("radius")
         }
     }
     Component.onCompleted: reload()
@@ -105,7 +110,7 @@ Item {
                     readonly property bool active: tab !== null && tab.active
                     height: 26
                     width: Math.min(180, Math.max(90, label.implicitWidth + 44))
-                    radius: 8
+                    radius: ws.r(0.8)
                     color: active ? ws.accent : (hover.hovered ? Qt.rgba(ws.fg.r, ws.fg.g, ws.fg.b, 0.2) : ws.dim)
 
                     property bool editing: false
@@ -191,7 +196,7 @@ Item {
                     required property var modelData
                     width: 26
                     height: 26
-                    radius: 8
+                    radius: ws.r(0.8)
                     color: bh.hovered ? Qt.rgba(ws.fg.r, ws.fg.g, ws.fg.b, 0.2) : "transparent"
                     HoverHandler { id: bh }
                     // Drawn, not typeset: no font has to carry the icons.
@@ -200,7 +205,7 @@ Item {
                         anchors.centerIn: parent
                         width: 14
                         height: 12
-                        radius: 2
+                        radius: ws.r(0.2)
                         color: "transparent"
                         border.width: 1
                         border.color: ws.fg
@@ -218,7 +223,7 @@ Item {
                         anchors.centerIn: parent
                         width: 14
                         height: 14
-                        radius: 7
+                        radius: width / 2
                         color: "transparent"
                         border.width: 2
                         border.color: ws.fg
@@ -226,7 +231,7 @@ Item {
                             anchors.centerIn: parent
                             width: 4
                             height: 4
-                            radius: 2
+                            radius: width / 2
                             color: ws.fg
                         }
                     }
@@ -282,7 +287,7 @@ Item {
                     anchors.fill: parent
                     anchors.margins: 1
                     color: "transparent"
-                    radius: 4
+                    radius: ws.r(0.4)
                     border.width: cell.multi && (cell.isFocused || cell.broadcasting) ? (cell.broadcasting ? 2 : 1) : 0
                     border.color: cell.broadcasting ? "#e5534b" : ws.accent
                 }
@@ -301,7 +306,7 @@ Item {
                     anchors.centerIn: parent
                     color: ws.bg
                     border.color: ws.dim
-                    radius: 6
+                    radius: ws.r(0.6)
                     width: Math.min(parent.width - 16, note.implicitWidth + 24)
                     height: note.implicitHeight + 16
                     Text {
@@ -367,7 +372,7 @@ Item {
         anchors.topMargin: 8
         width: 300
         height: 32
-        radius: 8
+        radius: ws.r(0.8)
         color: ws.bg
         border.width: 1
         border.color: ws.accent
@@ -420,7 +425,7 @@ Item {
         anchors.topMargin: 24
         width: Math.min(area.width - 32, 460)
         height: pickerColumn.implicitHeight + 16
-        radius: 10
+        radius: ws.radius
         color: ws.bg
         border.width: 1
         border.color: ws.accent
@@ -474,7 +479,7 @@ Item {
                     required property int index
                     width: pickerColumn.width
                     height: 28
-                    radius: 6
+                    radius: ws.r(0.6)
                     color: index === picker.current ? ws.accent : "transparent"
                     Row {
                         anchors.verticalCenter: parent.verticalCenter
@@ -531,7 +536,7 @@ Item {
         anchors.centerIn: parent
         width: Math.min(parent.width - 32, 420)
         height: ask.implicitHeight + 32
-        radius: 10
+        radius: ws.radius
         color: ws.bg
         border.width: 1
         border.color: ws.accent
@@ -568,7 +573,7 @@ Item {
                         required property var modelData
                         width: 90
                         height: 28
-                        radius: 8
+                        radius: ws.r(0.8)
                         color: modelData.yes ? ws.accent : ws.dim
                         Text {
                             anchors.centerIn: parent

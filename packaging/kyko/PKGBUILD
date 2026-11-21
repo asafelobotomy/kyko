@@ -58,6 +58,7 @@ package() {
   # `kyko toggle` and the first Run start the drop-down through D-Bus activation.
   install -Dm644 packaging/org.kyko.Terminal1.service "$pkgdir/usr/share/dbus-1/services/org.kyko.Terminal1.service"
   install -Dm644 packaging/org.kyko.Kyko.desktop "$pkgdir/usr/share/applications/org.kyko.Kyko.desktop"
+  install -Dm644 packaging/org.kyko.Kyko.metainfo.xml "$pkgdir/usr/share/metainfo/org.kyko.Kyko.metainfo.xml"
   install -Dm644 packaging/org.kyko.Kyko.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/org.kyko.Kyko.svg"
   # uQ's Spotlight lists kyko's open tabs.
   install -Dm644 packaging/kyko.provider "$pkgdir/usr/share/uq/launcher/kyko.provider"
