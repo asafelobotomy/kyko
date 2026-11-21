@@ -13,6 +13,10 @@ mod icat;
 mod prefs;
 mod remote;
 mod session;
+// uQ's shared theme watcher, vendored as is (scripts/check-uq-theme.sh pins it).
+#[rustfmt::skip]
+#[allow(dead_code)]
+mod uq_theme;
 mod watch;
 
 /// kyko: a terminal for the uQ desktop.
@@ -340,7 +344,8 @@ fn main() -> ExitCode {
     if dropdown.is_some() {
         hotkey::start(appearance::load().hotkey);
     }
-    watch::spawn(appearance::watched_files(), move || {
+    let (config, tokens) = appearance::watched_files();
+    watch::spawn(config, tokens, move || {
         let look = appearance::load();
         if dropdown.is_some() {
             hotkey::apply(look.hotkey);

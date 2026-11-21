@@ -19,6 +19,8 @@ Window {
     property color bg: hex(ctl.setting("background"))
     property color fg: hex(ctl.setting("foreground"))
     property color accent: hex(ctl.setting("accent"))
+    // uQ's corner radius (ui.radius); rows take a share of it, as in the main window.
+    readonly property int radius: ctl.setting("radius")
     readonly property color dim: Qt.rgba(fg.r, fg.g, fg.b, 0.6)
     readonly property color panel: Qt.rgba(fg.r, fg.g, fg.b, 0.08)
     color: bg
@@ -74,7 +76,7 @@ Window {
                     required property int index
                     width: sidebar.width
                     height: 34
-                    radius: 6
+                    radius: Math.round(root.radius * 0.6)
                     color: root.page === index ? root.accent : "transparent"
                     Text {
                         anchors.verticalCenter: parent.verticalCenter

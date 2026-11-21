@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.kyko.Kyko</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>kyko</name>
+  <summary>Terminal emulator with a drop-down mode</summary>
+  <description>
+    <p>
+      kyko is a terminal for uQ and other Wayland desktops. It opens as a normal window or slides
+      down from the top of the screen on one key, and its shells keep running in a small background
+      service, so closing the window or restarting it loses nothing.
+    </p>
+    <ul>
+      <li>Tabs and splits, with sessions that survive a restart</li>
+      <li>Images in the terminal (the kitty graphics protocol and sixel)</li>
+      <li>Ligatures, emoji and the kitty keyboard protocol</li>
+      <li>Clickable links, link hints and search</li>
+      <li>Follows the uQ theme live, with built-in themes elsewhere</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">org.kyko.Kyko.desktop</launchable>
+  <icon type="stock">org.kyko.Kyko</icon>
+  <url type="homepage">https://github.com/asafelobotomy/kyko</url>
+  <url type="bugtracker">https://github.com/asafelobotomy/kyko/issues</url>
+  <developer id="io.github.asafelobotomy">
+    <name>asafelobotomy</name>
+  </developer>
+  <categories>
+    <category>System</category>
+    <category>TerminalEmulator</category>
+  </categories>
+  <provides>
+    <binary>kyko</binary>
+    <binary>kykod</binary>
+  </provides>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0.0~rc1" date="2026-11-20" type="development"/>
+    <release version="0.6.0" date="2026-11-20"/>
+  </releases>
+</component>

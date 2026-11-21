@@ -48,11 +48,8 @@ pub struct Look {
 }
 
 /// Where the config and uQ's tokens are, to watch them for changes.
-pub fn watched_files() -> Vec<std::path::PathBuf> {
-    paths::config_path(env)
-        .into_iter()
-        .chain(paths::uq_tokens_path(env))
-        .collect()
+pub fn watched_files() -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
+    (paths::config_path(env), paths::uq_tokens_path(env))
 }
 
 fn env(k: &str) -> Option<OsString> {
