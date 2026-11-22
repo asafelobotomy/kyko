@@ -1,7 +1,9 @@
 //! The colours and font the window draws with, from `config.toml` and uQ's theme.
 use std::ffi::OsString;
 
-use kyko_core::config::{Bell, Config, Cursor, Keys, NewTabDir, NotifyOnFinish, Shape, TabsAt};
+use kyko_core::config::{
+    Bell, Config, Cursor, Keys, NewTabDir, NotifyOnFinish, Position, Shape, TabsAt,
+};
 use kyko_core::keys::KeySeq;
 use kyko_core::paths;
 use kyko_core::theme::{self, Theme};
@@ -17,9 +19,16 @@ pub struct Look {
     pub gap_out: u32,
     pub border_width: u32,
     pub sheet: bool,
+    /// `window.position`: 0 top, 1 bottom, 2 left, 3 right, 4 center.
+    pub position: u8,
+    /// The drop-down's size where it is now, in percent of the screen's free area.
     pub height_pct: u32,
     pub opacity_pct: u32,
     pub width_pct: u32,
+    pub dim_pct: u32,
+    /// uQ's motion tokens in ms (fast, base, slow): all 0 under Reduce motion or with
+    /// `window.animations` off.
+    pub motion: (u32, u32, u32),
     pub above_fullscreen: bool,
     pub hide_on_focus_loss: bool,
     pub animations: bool,
@@ -62,6 +71,26 @@ fn uq_theme() -> Option<Theme> {
     Theme::from_tokens(&text).ok().map(|(t, _)| t)
 }
 
+/// uQ's motion tokens (`tokens.json` `motion`, uQ 0.3.36): fast, base and slow in ms, all 0
+/// when the user turned on Reduce motion. Without uQ, or from an older uQ, uQ's defaults.
+pub fn uq_motion(tokens: Option<&str>) -> (u32, u32, u32) {
+    let v: serde_json::Value = tokens
+        .and_then(|t| serde_json::from_str(t).ok())
+        .unwrap_or_default();
+    if v.pointer("/motion/reduce")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return (0, 0, 0);
+    }
+    let ms = |k: &str, def: u32| {
+        v.pointer(&format!("/motion/{k}"))
+            .and_then(serde_json::Value::as_u64)
+            .map_or(def, |n| n.min(1000) as u32)
+    };
+    (ms("fast", 100), ms("base", 140), ms("slow", 220))
+}
+
 /// What to draw with now. A config that does not load leaves the defaults; the window shows
 /// kyko's fallback theme when uQ's is not available.
 pub fn load() -> Look {
@@ -69,6 +98,7 @@ pub fn load() -> Look {
         .and_then(|p| Config::load(&p).ok())
         .map(|l| l.config)
         .unwrap_or_default();
+    let tokens = paths::uq_tokens_path(env).and_then(|p| std::fs::read_to_string(p).ok());
     let uq = uq_theme();
     let (look, warnings) = theme::resolve(&config, uq.is_some(), uq.as_ref());
     for w in warnings {
@@ -94,9 +124,22 @@ pub fn load() -> Look {
         gap_out: look.theme.metrics.gap_out,
         border_width: look.theme.metrics.border_width,
         sheet: w.shape == Shape::Sheet,
-        height_pct: w.height_pct,
+        position: match w.position {
+            Position::Top => 0,
+            Position::Bottom => 1,
+            Position::Left => 2,
+            Position::Right => 3,
+            Position::Center => 4,
+        },
+        height_pct: w.size_pct().1,
         opacity_pct: w.opacity_pct,
-        width_pct: w.width_pct,
+        width_pct: w.size_pct().0,
+        dim_pct: w.dim_pct,
+        motion: if w.animations {
+            uq_motion(tokens.as_deref())
+        } else {
+            (0, 0, 0)
+        },
         above_fullscreen: w.above_fullscreen,
         hide_on_focus_loss: w.hide_on_focus_loss,
         animations: w.animations,
@@ -126,5 +169,28 @@ pub fn load() -> Look {
         keys: config.keys.clone(),
         hotkey: config.hotkey,
         allow_run: config.advanced.allow_run,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::uq_motion;
+
+    #[test]
+    fn motion_follows_uq_and_reduce_motion() {
+        assert_eq!(uq_motion(None), (100, 140, 220));
+        assert_eq!(uq_motion(Some(r#"{"radius": 10}"#)), (100, 140, 220));
+        assert_eq!(
+            uq_motion(Some(
+                r#"{"motion": {"fast": 90, "base": 120, "slow": 99999, "reduce": false}}"#
+            )),
+            (90, 120, 1000)
+        );
+        assert_eq!(
+            uq_motion(Some(
+                r#"{"motion": {"fast": 100, "base": 140, "slow": 220, "reduce": true}}"#
+            )),
+            (0, 0, 0)
+        );
     }
 }

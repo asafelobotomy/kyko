@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The drop-down can come from any side.** `window.position` (Preferences › Window ›
+  Position) is `top` (the default, below uQ's bar), `bottom`, `left`, `right` or `center`.
+  From an edge it slides in; in the middle it fades in and grows from uQ's popup scale.
+- **Drag the drop-down's edge to resize it.** Its free edges (the bottom edge at the top, the
+  inner edge at a side, every edge in the middle) resize it, and the size is saved to
+  `config.toml` for that position: top and bottom share `window.width_pct`/`height_pct`, the
+  sides have `window.side_width_pct`/`side_height_pct` (40 by 100) and the middle
+  `window.center_width_pct`/`center_height_pct` (60 by 60).
+- **The screen behind dims while the drop-down shows.** `window.dim_pct` (40 by default, 0
+  turns it off) darkens everything but uQ's bar; a click on the dimmed part hides the
+  drop-down. Without the dim, clicks beside the drop-down reach the windows beneath.
+- **The drop-down moves at uQ's speeds and follows Reduce motion.** The slide and fade use
+  uQ's motion tokens (`tokens.json` `motion`, uQ 0.3.36): the panel comes in at the base speed,
+  the dim at the slow one, and both leave at the fast one. With Reduce motion on, or
+  `window.animations` off, it appears and goes at once.
+
+### Changed
+
+- **On uQ, the toggle key is uQ's.** When Hyprland's config already runs `kyko toggle` on a
+  key (uQ's Settings › Shortcuts binds F12), kyko binds nothing itself, so one press no longer
+  toggles twice. Elsewhere kyko still binds `hotkey.toggle` at runtime.
+- `window.width_pct` now goes down to 20.
+
 ## [1.0.0-rc.3] - 2026-11-22
 
 ### Fixed

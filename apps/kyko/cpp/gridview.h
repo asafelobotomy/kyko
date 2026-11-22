@@ -24,6 +24,9 @@ public:
     Q_INVOKABLE int setting(const QString& name) const;
     // The window's visibility, for the bus's Visible property.
     Q_INVOKABLE void setVisible(bool visible) const;
+    // Where `window` takes the pointer: clicks outside the rectangle reach what is beneath. An
+    // empty rectangle takes them everywhere.
+    Q_INVOKABLE void setInputRegion(QObject* window, int x, int y, int w, int h) const;
     // The tabs as JSON: {active, focused, title, notice, tabs: [{id, name, active, panes, dividers}]}.
     Q_INVOKABLE QString layout() const;
     // The tab bar's buttons and mouse: by the action's name in [keys], and by tab, pane and divider.

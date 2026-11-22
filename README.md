@@ -1,8 +1,9 @@
 # kyko
 
 kyko is a drop-down terminal for the uQ desktop, in the manner of Yakuake: one key slides a
-terminal down from the top of the screen, and the same key hides it again with its sessions still
-running. It has its own tabs and split panes, follows uQ's theme live, and can be sent commands
+terminal down from the top of the screen (or in from the bottom, either side, or up in the
+middle), and the same key hides it again with its sessions still running. Drag its edge to
+resize it, and the screen behind dims while it shows. It has its own tabs and split panes, follows uQ's theme live, and can be sent commands
 from uQ's Spotlight search.
 
 kyko runs as a window (`kyko`, `kyko -e CMD`) or as the drop-down (`kyko dropdown`, toggled with
