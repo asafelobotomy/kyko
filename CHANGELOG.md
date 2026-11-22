@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the dim at the slow one, and both leave at the fast one. With Reduce motion on, or
   `window.animations` off, it appears and goes at once.
 
+- **A kyko page in uQ Settings** (Apps › kyko): position, shape, size, dim and when it hides,
+  through the new `kyko config show --json` and `kyko config set KEY VALUE --json`.
+
 ### Changed
 
 - **On uQ, the toggle key is uQ's.** When Hyprland's config already runs `kyko toggle` on a
