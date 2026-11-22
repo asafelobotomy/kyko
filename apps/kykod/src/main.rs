@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -13,6 +12,7 @@ struct Cli {
 }
 
 fn main() {
+    kyko_diag::start("kykod");
     let cli = Cli::parse();
     let path = match cli.socket {
         Some(path) => path,
@@ -29,6 +29,10 @@ fn main() {
 
 /// Logs why kykod cannot run and exits 1; a closed stderr does not change the exit code.
 fn fail(why: &str) -> ! {
-    let _ = writeln!(std::io::stderr().lock(), "kykod: {why}");
+    kyko_diag::problem(
+        "kykod",
+        kyko_diag::Level::ERROR,
+        &format!("[KYKO-011] {why}"),
+    );
     std::process::exit(1);
 }

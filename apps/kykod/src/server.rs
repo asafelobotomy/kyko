@@ -245,7 +245,7 @@ pub fn run(path: &Path) -> Result<Infallible, String> {
         match listener.accept() {
             Ok((stream, _)) => server.accept(stream),
             Err(e) => {
-                log!("cannot accept a connection: {e}");
+                problem!(WARN, "[KYKO-015] cannot accept a connection: {e}");
                 // Out of descriptors or memory: accept would fail again at
                 // once, so give the system a moment. Only ever on this error.
                 let exhausted = [Errno::EMFILE, Errno::ENFILE, Errno::ENOBUFS, Errno::ENOMEM];
@@ -398,15 +398,19 @@ impl Server {
         match rustix::net::sockopt::socket_peercred(&stream) {
             Ok(cred) if peer_allowed(cred.uid.as_raw(), self.uid) => {}
             Ok(cred) => {
-                log!(
-                    "window {id}: refused: uid {} is not {}",
+                problem!(
+                    WARN,
+                    "[KYKO-012] window {id}: refused: uid {} is not {}",
                     cred.uid.as_raw(),
                     self.uid
                 );
                 return;
             }
             Err(e) => {
-                log!("window {id}: refused: cannot read its credentials: {e}");
+                problem!(
+                    WARN,
+                    "[KYKO-012] window {id}: refused: cannot read its credentials: {e}"
+                );
                 return;
             }
         }
@@ -417,8 +421,9 @@ impl Server {
             .is_err()
         {
             if self.refused.fetch_add(1, Ordering::Relaxed) == 0 {
-                log!(
-                    "window {id}: refused: another window is connected \
+                problem!(
+                    WARN,
+                    "[KYKO-012] window {id}: refused: another window is connected \
                      (further refusals are counted until it leaves)"
                 );
             }
@@ -431,7 +436,10 @@ impl Server {
             .name(format!("window-{id}"))
             .spawn(move || slot.0.clone().serve(id, stream, slot))
         {
-            log!("window {id}: refused: cannot start a thread: {e}");
+            problem!(
+                WARN,
+                "[KYKO-012] window {id}: refused: cannot start a thread: {e}"
+            );
         }
     }
 
@@ -442,7 +450,7 @@ impl Server {
         let window = match Window::new(id, &stream) {
             Ok(w) => Arc::new(w),
             Err(e) => {
-                log!("window {id}: refused: {e}");
+                problem!(WARN, "[KYKO-012] window {id}: refused: {e}");
                 return;
             }
         };
@@ -631,7 +639,11 @@ impl Server {
             closing.len()
         );
         if let Err(e) = fs::remove_file(&self.path) {
-            log!("cannot remove {}: {e}", self.path.display());
+            problem!(
+                WARN,
+                "[KYKO-015] cannot remove {}: {e}",
+                self.path.display()
+            );
         }
         for pane in &panes {
             pane.hangup();
@@ -643,15 +655,20 @@ impl Server {
             .filter_map(|p| match p.exit_fd() {
                 Ok(fd) => fd,
                 Err(e) => {
-                    log!("pane {}: cannot wait for its shell: {e}", p.id());
+                    problem!(
+                        WARN,
+                        "[KYKO-014] pane {}: cannot wait for its shell: {e}",
+                        p.id()
+                    );
                     None
                 }
             })
             .collect();
         let left = wait_for_exits(fds, end);
         if left > 0 {
-            log!(
-                "{left} shell(s) still running after {}s; exiting anyway",
+            problem!(
+                WARN,
+                "[KYKO-015] {left} shell(s) still running after {}s; exiting anyway",
                 END_GRACE.as_secs()
             );
         }
@@ -723,7 +740,7 @@ impl Server {
             }
             Err(message) => message,
         };
-        log!("pane {id} not started: {message}");
+        problem!(ERROR, "[KYKO-013] pane {id} not started: {message}");
         match window.send(&ToWindow::SpawnFailed { pane: id, message }) {
             Ok(()) => Flow::Go,
             Err(_) => Flow::Close("cannot write to the window".to_string()),
@@ -765,7 +782,7 @@ fn wait_for_exits(mut fds: Vec<OwnedFd>, end: Instant) -> usize {
             // A second signal, say: wait again for what is left of the grace.
             Err(rustix::io::Errno::INTR) => {}
             Err(e) => {
-                log!("cannot wait for the shells: {e}");
+                problem!(WARN, "[KYKO-015] cannot wait for the shells: {e}");
                 break;
             }
         }

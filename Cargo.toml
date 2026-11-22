@@ -1,16 +1,17 @@
 [workspace]
 resolver = "3"
-members = ["crates/kyko-core", "crates/kyko-hotkey", "crates/kyko-link", "crates/kyko-proto", "crates/kyko-term", "apps/kykod", "apps/kyko", "apps/kyko-prompt"]
+members = ["crates/kyko-core", "crates/kyko-diag", "crates/kyko-hotkey", "crates/kyko-link", "crates/kyko-proto", "crates/kyko-term", "apps/kykod", "apps/kyko", "apps/kyko-prompt"]
 
 [workspace.package]
 edition = "2024"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 license = "MIT"
 repository = "https://github.com/asafelobotomy/kyko"
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
 kyko-core = { path = "crates/kyko-core" }
+kyko-diag = { path = "crates/kyko-diag" }
 
 # kyko-core's random tests run a million session operations; unoptimised they take half a
 # minute.

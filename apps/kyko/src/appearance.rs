@@ -72,7 +72,11 @@ pub fn load() -> Look {
     let uq = uq_theme();
     let (look, warnings) = theme::resolve(&config, uq.is_some(), uq.as_ref());
     for w in warnings {
-        eprintln!("kyko: {}: {}", w.key, w.message);
+        kyko_diag::problem(
+            "kyko",
+            kyko_diag::Level::WARN,
+            &format!("[KYKO-001] {}: {}", w.key, w.message),
+        );
     }
     let p = &look.theme.term;
     let w = &config.window;
