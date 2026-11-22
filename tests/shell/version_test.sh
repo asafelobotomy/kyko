@@ -3,7 +3,8 @@
 #   - Cargo.toml's workspace version and packaging/kyko's pkgver agree ('-rc.N' is 'rcN' in pkgver);
 #   - every packaging/*/.SRCINFO matches `makepkg --printsrcinfo` of its PKGBUILD;
 #   - scripts/bump-version.sh maps and refuses versions correctly (run on a temporary copy), and
-#     after a bump no file under crates/ or apps/ still names the old version;
+#     after a bump no file under crates/ or apps/ still names the old version (uQ's vendored
+#     uq_theme.rs and uq_diag.rs carry their own versions and are left out);
 #   - scripts/changelog-section.sh extracts exactly one section.
 # No diff/cmp: CI's container has no diffutils.
 set -u
@@ -71,7 +72,7 @@ check_bump() { # version expected-pkgver
     # The bump only edits Cargo.toml and Cargo.lock, so the sources must take the version from
     # there (env!("CARGO_PKG_VERSION")) and never spell it out. -w: 0.0.1 does not match 10.0.1.
     local stale
-    stale=$(cd "$tmp/r" && grep -rlwF -- "$cv" crates apps)
+    stale=$(cd "$tmp/r" && grep -rlwF --exclude=uq_theme.rs --exclude=uq_diag.rs -- "$cv" crates apps)
     [ -z "$stale" ] || bad "bump $1: still names the old version $cv: ${stale//$'\n'/ }"
     if [ "$have_makepkg" = 1 ]; then
         grep -q "^	pkgver = $2\$" "$tmp/r/packaging/kyko/.SRCINFO" 2>/dev/null || bad "bump $1: .SRCINFO not regenerated with pkgver $2"
