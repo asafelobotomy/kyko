@@ -28,7 +28,8 @@ The package installs a desktop entry and icon, so kyko shows up as a terminal em
 - **Scrollback:** search it (Ctrl+Shift+F), open it in a pager (Ctrl+Shift+H), or drag the
   scrollbar.
 - **Remote control:** `kyko @ ls`, `kyko @ launch`, `kyko @ send-text` and more, like
-  `kitty @`, over a socket only you can open; `kyko --session FILE` opens a set of tabs.
+  `kitty @`, over a socket only you can open (`kyko --listen-on unix:PATH` names it, for
+  `kyko @ --to unix:PATH` from outside); `kyko --session FILE` opens a set of tabs.
 - **Also:** Unicode input by name (Ctrl+Shift+U), a see-through background, a bell that
   flashes, sounds or marks the window, colour queries, and a guard on multi-line pastes.
 - **On uQ:** follows uQ's theme live, lists its tabs in Spotlight, and runs commands that

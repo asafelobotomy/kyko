@@ -15,6 +15,8 @@ use std::sync::Arc;
 const QUOTA: usize = 256 << 20;
 /// The largest image side accepted, in pixels.
 const MAX_SIDE: u32 = 10_000;
+/// The most pixels one image may have (100 MiB as RGBA), however its sides are split.
+const MAX_PIXELS: u64 = 25 << 20;
 /// The longest payload gathered from chunks for one image (base64 text).
 const MAX_PAYLOAD: usize = 64 << 20;
 
@@ -175,24 +177,31 @@ fn reply(c: &Command, message: &str) -> Option<Vec<u8>> {
 }
 
 /// A file the program named, for `t=f` and `t=t`: a regular file only, never a device or a
-/// `/proc` or `/sys` entry; a temporary file must live in a temporary folder and have
-/// `tty-graphics-protocol` in its name, and it is removed after reading.
+/// `/proc` or `/sys` entry; a temporary file must sit directly in a temporary folder and have
+/// `tty-graphics-protocol` in its own name, and it is removed after reading. The checks are on
+/// the real path (symlinks and `..` resolved), so `/tmp/../home/...` or a link in `/tmp` can
+/// neither read a device nor have a file outside the temporary folders removed.
 fn read_named(path: &str, temporary: bool, c: &Command) -> Result<Vec<u8>, String> {
     use std::io::{Read, Seek, SeekFrom};
-    let p = std::path::Path::new(path);
-    if path.starts_with("/proc/") || path.starts_with("/sys/") || path.starts_with("/dev/") {
-        return Err("EINVAL:not a regular file".into());
-    }
+    let real = std::fs::canonicalize(path).map_err(|e| format!("EBADF:{e}"))?;
+    let p = real.as_path();
     let meta = std::fs::metadata(p).map_err(|e| format!("EBADF:{e}"))?;
     if !meta.is_file() {
         return Err("EINVAL:not a regular file".into());
     }
     if temporary {
-        let dir_ok = ["/tmp/", "/dev/shm/"].iter().any(|d| path.starts_with(d))
-            || std::env::var("TMPDIR").is_ok_and(|d| !d.is_empty() && path.starts_with(&d));
-        if !dir_ok || !path.contains("tty-graphics-protocol") {
+        let named = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.contains("tty-graphics-protocol"));
+        let in_tmp = p
+            .parent()
+            .is_some_and(|d| temp_dirs().iter().any(|t| t == d));
+        if !named || !in_tmp {
             return Err("EPERM:not a temporary file for the graphics protocol".into());
         }
+    } else if ["/proc", "/sys", "/dev"].iter().any(|d| p.starts_with(d)) {
+        return Err("EINVAL:not a regular file".into());
     }
     let mut f = std::fs::File::open(p).map_err(|e| format!("EBADF:{e}"))?;
     if c.offset_bytes > 0 {
@@ -214,6 +223,17 @@ fn read_named(path: &str, temporary: bool, c: &Command) -> Result<Vec<u8>, Strin
     Ok(out)
 }
 
+/// The folders a temporary file may be in, as real paths: `/tmp`, `/dev/shm` and `$TMPDIR`.
+fn temp_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = ["/tmp", "/dev/shm"].map(Into::into).to_vec();
+    if let Some(t) = std::env::var_os("TMPDIR").filter(|t| !t.is_empty()) {
+        dirs.push(t.into());
+    }
+    dirs.into_iter()
+        .filter_map(|d| std::fs::canonicalize(d).ok())
+        .collect()
+}
+
 /// The pixels of an image as RGBA, from the bytes the program sent.
 pub fn decode(c: &Command, data: Vec<u8>) -> Result<(u32, u32, Vec<u8>), String> {
     let data = if c.zlib {
@@ -229,6 +249,10 @@ pub fn decode(c: &Command, data: Vec<u8>) -> Result<(u32, u32, Vec<u8>), String>
             let mut reader = dec.read_info().map_err(|e| format!("EINVAL:{e}"))?;
             let (w, h) = (reader.info().width, reader.info().height);
             if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
+                return Err("EINVAL:image too large".into());
+            }
+            // Checked before the buffer is made: a few bytes of PNG can claim 10000x10000.
+            if u64::from(w) * u64::from(h) > MAX_PIXELS {
                 return Err("EINVAL:image too large".into());
             }
             let mut buf = vec![0; reader.output_buffer_size()];
@@ -259,6 +283,9 @@ pub fn decode(c: &Command, data: Vec<u8>) -> Result<(u32, u32, Vec<u8>), String>
             let (w, h) = (c.width, c.height);
             if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
                 return Err("EINVAL:bad size".into());
+            }
+            if u64::from(w) * u64::from(h) > MAX_PIXELS {
+                return Err("EINVAL:image too large".into());
             }
             let px = if c.format == 24 { 3 } else { 4 };
             let need = (w as usize) * (h as usize) * px;
@@ -497,18 +524,18 @@ impl Store {
                 let h = u64::from(n) * u64::from(ch);
                 ((h * sw1 / sh1) as u32, h as u32)
             }
-            (a, b) => (a * cw, b * ch),
+            (a, b) => (a.saturating_mul(cw), b.saturating_mul(ch)),
         };
         let cols = if c.cols > 0 {
             c.cols
         } else {
-            (size.0 + c.cell_x).div_ceil(cw)
+            size.0.saturating_add(c.cell_x).div_ceil(cw)
         }
         .clamp(1, 1000);
         let rows = if c.rows > 0 {
             c.rows
         } else {
-            (size.1 + c.cell_y).div_ceil(ch)
+            size.1.saturating_add(c.cell_y).div_ceil(ch)
         }
         .clamp(1, 1000);
         let placement = Placement {
@@ -734,6 +761,71 @@ mod tests {
         );
         assert_eq!(f.reply.as_deref(), Some(&b"\x1b_Gi=2;OK\x1b\\"[..]));
         assert!(plain.exists(), "a named file is left alone");
+    }
+
+    #[test]
+    fn a_temporary_name_cannot_reach_outside_the_temporary_folders() {
+        let mut s = Store::default();
+        // A file outside /tmp, named through /tmp with `..`, and through a link in /tmp.
+        let home = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let victim = home.path().join("keep-tty-graphics-protocol.rgba");
+        std::fs::write(&victim, [7u8; 4]).unwrap();
+        let sub = std::path::Path::new("/tmp").join(format!(
+            "kyko-test-{}-tty-graphics-protocol-dir",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&sub).unwrap();
+        let dotdot = format!("{}/../..{}", sub.display(), victim.display());
+        let link = std::path::Path::new("/tmp").join(format!(
+            "kyko-test-{}-tty-graphics-protocol",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        for path in [dotdot.as_str(), link.to_str().unwrap()] {
+            let r = s.command(
+                format!("a=t,t=t,f=32,s=1,v=1,i=3;{}", b64(path.as_bytes())).as_bytes(),
+                AT,
+            );
+            let r = String::from_utf8(r.reply.unwrap()).unwrap();
+            assert!(r.contains("EPERM") || r.contains("EBADF"), "{path}: {r}");
+            assert!(victim.exists(), "{path} removed a file outside /tmp");
+        }
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_dir(&sub);
+        // /proc through /tmp/..
+        let r = s.command(
+            format!(
+                "a=t,t=f,f=32,s=1,v=1,i=4;{}",
+                b64(b"/tmp/../proc/self/environ")
+            )
+            .as_bytes(),
+            AT,
+        );
+        assert!(
+            String::from_utf8(r.reply.unwrap())
+                .unwrap()
+                .contains("EINVAL")
+        );
+    }
+
+    #[test]
+    fn a_tiny_png_cannot_ask_for_a_huge_buffer() {
+        let mut png_bytes = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut png_bytes, 10_000, 10_000);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            // The header and a scrap of image data: decode must refuse before it makes the
+            // 400 MB buffer the header asks for.
+            let mut w = enc.write_header().unwrap();
+            w.write_chunk(png::chunk::IDAT, &[0x78, 0x9c, 0x03, 0x00])
+                .unwrap();
+            std::mem::forget(w);
+        }
+        let c = Command::parse("f=100");
+        let e = decode(&c, png_bytes).unwrap_err();
+        assert!(e.contains("too large"), "{e}");
     }
 
     #[test]

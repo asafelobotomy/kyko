@@ -12,8 +12,25 @@ use kyko_core::remote::{Reply, Request};
 /// The longest request read: `send-text` with a large paste.
 const MAX_REQUEST: u64 = 4 << 20;
 
+/// The socket asked for with `--listen-on`, set once at start.
+static LISTEN_ON: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// `--listen-on unix:PATH` (or a bare path): where this window listens instead of
+/// `rc-<pid>.sock`, so a launcher that opened it can reach it later with `kyko @ --to`.
+pub fn set_listen_on(spec: &str) -> Result<(), String> {
+    let path = spec.strip_prefix("unix:").unwrap_or(spec);
+    if path.is_empty() || !path.starts_with('/') {
+        return Err(format!("--listen-on {spec}: give unix:/absolute/path"));
+    }
+    let _ = LISTEN_ON.set(PathBuf::from(path));
+    Ok(())
+}
+
 /// Where this window listens.
 pub fn socket_path() -> PathBuf {
+    if let Some(p) = LISTEN_ON.get() {
+        return p.clone();
+    }
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .filter(|d| !d.is_empty())
         .map(PathBuf::from)
@@ -95,6 +112,14 @@ pub fn call(to: &str, request: &Request) -> Result<Reply, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listen_on_takes_an_absolute_unix_path() {
+        assert!(set_listen_on("unix:relative.sock").is_err());
+        assert!(set_listen_on("").is_err());
+        set_listen_on("unix:/run/user/1000/uq-dock.sock").unwrap();
+        assert_eq!(socket_path(), PathBuf::from("/run/user/1000/uq-dock.sock"));
+    }
     use kyko_core::remote::Match;
 
     #[test]

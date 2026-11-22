@@ -14,6 +14,9 @@ use kyko_proto::{
 };
 use kyko_term::Emulator;
 
+/// The most input bytes sent in one frame, well under `kyko_proto::MAX_FRAME`.
+const INPUT_CHUNK: usize = 256 * 1024;
+
 /// Why a link could not be made or has ended.
 #[derive(Debug)]
 pub enum LinkError {
@@ -265,14 +268,17 @@ impl Link {
         self.send(&ToHolder::Attach { pane })
     }
 
+    /// Bytes for a pane's program. A long paste goes in several frames: kykod refuses a frame
+    /// past `MAX_FRAME` and drops the connection, so one frame of a 2 MB paste would cut the
+    /// window off from its shells.
     pub fn input(&mut self, pane: PaneId, bytes: &[u8]) -> Result<(), LinkError> {
-        if bytes.is_empty() {
-            return Ok(());
+        for piece in bytes.chunks(INPUT_CHUNK) {
+            self.send(&ToHolder::Input {
+                pane,
+                bytes: piece.to_vec(),
+            })?;
         }
-        self.send(&ToHolder::Input {
-            pane,
-            bytes: bytes.to_vec(),
-        })
+        Ok(())
     }
 
     pub fn resize(&mut self, pane: PaneId, cols: u16, rows: u16) -> Result<(), LinkError> {

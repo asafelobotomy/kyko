@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.3] - 2026-11-22
+
+### Fixed
+
+- **Images can no longer reach outside the temporary folders.** A graphics-protocol temporary
+  file named through `..` or a symlink (`/tmp/x-tty-graphics-protocol/../../home/…`) could have
+  any of your files that had `tty-graphics-protocol` in its path read and then deleted by
+  printing an escape sequence (a `cat` of a crafted file was enough). The checks now run on the
+  real path: a temporary file must sit directly in `/tmp`, `/dev/shm` or `$TMPDIR` with the
+  marker in its own name, and `/proc`, `/sys` and `/dev` stay out of reach for named files.
+- **A long paste no longer cuts the window off from its shells.** Input of more than 1 MiB
+  (a big paste, or `kyko @ send-text --stdin`) went to kykod in one frame, which kykod refuses,
+  and it dropped the connection. Input now goes in 256 KiB pieces.
+- **A notification flood is cut short.** A program printing OSC 9/777/99 in a loop started a
+  thread and a D-Bus connection per notification; now at most 5 are shown in 10 seconds.
+- **Huge images are refused before memory is taken.** A few bytes of PNG claiming 10000×10000
+  made kyko allocate 400 MB before finding the data missing; images are now capped at 25
+  megapixels up front, as sixel already was. Very large `c=`/`r=`/`X=`/`Y=` values and sixel
+  HLS hues no longer overflow.
+
+### Added
+
+- **`kyko --listen-on unix:PATH`** names the window's `kyko @` socket, so the program that
+  opened it can open tabs in it later with `kyko @ --to unix:PATH launch --type tab …` (what
+  uQ's docked look=see>do_ terminal needs, as kitty's `--listen-on` does).
+
 ## [1.0.0-rc.2] - 2026-11-22
 
 ### Changed
