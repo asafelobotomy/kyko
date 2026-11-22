@@ -18,6 +18,8 @@ pub struct Row {
     pub end: Option<bool>,
     /// The exit status of the command whose prompt is on this row.
     pub status: Option<u8>,
+    /// The prompt on this row said the shell moves its cursor to a click (`click_events=1`).
+    pub click_events: bool,
 }
 
 /// The marks, by row number.
@@ -26,12 +28,15 @@ pub type Table = BTreeMap<u64, Row>;
 /// What the shell reported.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// OSC 133;A
-    Prompt,
+    /// OSC 133;A. `click_events` is fish's and kitty's `click_events=1`: the shell moves its
+    /// cursor to a mouse click on its command line. A secondary prompt (`k=s`, a continuation
+    /// line) is not reported.
+    Prompt { click_events: bool },
     /// OSC 133;B
     Input,
-    /// OSC 133;C
-    Output,
+    /// OSC 133;C, with the command line when the shell sent it (`cmdline_url=`, percent-encoded,
+    /// as fish and kyko's scripts do, or kitty's plain `cmdline=`).
+    Output { command: Option<String> },
     /// OSC 133;D, with the exit status when there was one.
     Done(Option<u8>),
     /// A desktop notification a program asked for: OSC 9 (text), OSC 777 (`notify;title;body`)
@@ -43,13 +48,22 @@ pub enum Event {
     CellSizeRequest,
     /// A sixel image (`ESC P ... q DATA ESC \`): the data after the `q`.
     Sixel(Vec<u8>),
+    /// XTGETTCAP (`ESC P + q NAME;NAME ESC \`): the capability names asked for, hex-decoded.
+    Termcap(Vec<String>),
+    /// XTVERSION (`CSI > 0 q`): the terminal's name and version.
+    VersionRequest,
 }
 
 /// Longest OSC body that is looked at: room for a notification. Only bodies that start like
 /// one of the sequences here are kept; anything else is dropped after a few bytes.
 const LIMIT: usize = 4096;
-/// Longest OSC 133 body: a longer one is not a mark.
+/// Longest OSC 133 body: a longer one is not a mark, except a `C` carrying a command line, which
+/// is kept up to `LIMIT` and cut there (the mark still counts).
 const MARK_LIMIT: usize = 48;
+/// The longest command line passed on, in characters.
+const COMMAND_SHOWN: usize = 1024;
+/// The longest XTGETTCAP query looked at.
+const TCAP_LIMIT: usize = 512;
 /// The longest notification title and body passed on, in characters.
 const SHOWN: usize = 512;
 const PREFIXES: [&[u8]; 4] = [b"133;", b"9;", b"777;", b"99;"];
@@ -74,6 +88,10 @@ enum State {
     Dcs,
     /// Inside a DCS, saw ESC.
     DcsEsc,
+    /// Inside `ESC P +`: an XTGETTCAP query once `q` follows.
+    Tcap,
+    /// Inside an XTGETTCAP query, saw ESC.
+    TcapEsc,
 }
 
 /// The longest graphics command kept; programs send big images in chunks of 4096.
@@ -203,10 +221,32 @@ fn parse_mark(body: &[u8]) -> Option<Event> {
         Some(i) => (&rest[..i], &rest[i + 1..]),
         None => (rest, &rest[rest.len()..]),
     };
+    let pairs = || {
+        params.split(|&b| b == b';').filter_map(|kv| {
+            let i = kv.iter().position(|&b| b == b'=')?;
+            Some((&kv[..i], &kv[i + 1..]))
+        })
+    };
     match kind {
-        b"A" => Some(Event::Prompt),
+        b"A" => {
+            if pairs().any(|(k, v)| k == b"k" && v != b"i") {
+                // A secondary or right-side prompt: the same command goes on.
+                return None;
+            }
+            let click_events = pairs().any(|(k, v)| k == b"click_events" && v == b"1");
+            Some(Event::Prompt { click_events })
+        }
         b"B" => Some(Event::Input),
-        b"C" => Some(Event::Output),
+        b"C" => {
+            let command = pairs().find_map(|(k, v)| match k {
+                b"cmdline_url" => Some(command_text(&percent_decode(v))),
+                b"cmdline" => Some(command_text(v)),
+                _ => None,
+            });
+            Some(Event::Output {
+                command: command.filter(|c| !c.is_empty()),
+            })
+        }
         b"D" => {
             // Extra `key=value` parameters may follow the status.
             let first = params.split(|&b| b == b';').next().unwrap_or(&[]);
@@ -218,6 +258,63 @@ fn parse_mark(body: &[u8]) -> Option<Event> {
         }
         _ => None,
     }
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// `%XX` escapes decoded; a broken one (the text was cut short) is kept as it is.
+fn percent_decode(text: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        if text[i] == b'%'
+            && let (Some(h), Some(l)) = (
+                text.get(i + 1).copied().and_then(hex_digit),
+                text.get(i + 2).copied().and_then(hex_digit),
+            )
+        {
+            out.push(h << 4 | l);
+            i += 3;
+            continue;
+        }
+        out.push(text[i]);
+        i += 1;
+    }
+    out
+}
+
+/// A command line as one line of text: line breaks become spaces, other control characters go.
+fn command_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .trim()
+        .chars()
+        .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
+        .filter(|c| !c.is_control())
+        .take(COMMAND_SHOWN)
+        .collect()
+}
+
+/// The names in an XTGETTCAP query (`NAME;NAME`, each hex-encoded); `None` if any is not hex.
+fn termcap_names(body: &[u8]) -> Option<Vec<String>> {
+    body.split(|&b| b == b';')
+        .map(|hex| {
+            if hex.len() % 2 != 0 {
+                return None;
+            }
+            let bytes = hex
+                .chunks(2)
+                .map(|p| Some(hex_digit(p[0])? << 4 | hex_digit(p[1])?))
+                .collect::<Option<Vec<u8>>>()?;
+            String::from_utf8(bytes).ok()
+        })
+        .collect()
 }
 
 impl Scanner {
@@ -251,8 +348,12 @@ impl Scanner {
                 State::Osc => match b {
                     0x07 => self.end(i + 1, &mut found),
                     0x1b => self.state = State::OscEsc,
+                    // A command line past the limit is cut, and the mark kept.
+                    _ if self.body.len() >= LIMIT && self.body.starts_with(b"133;C;") => {}
                     _ if self.body.len() >= LIMIT
-                        || (self.body.len() >= MARK_LIMIT && self.body.starts_with(b"133;")) =>
+                        || (self.body.len() >= MARK_LIMIT
+                            && self.body.starts_with(b"133;")
+                            && !self.body.starts_with(b"133;C;")) =>
                     {
                         self.state = State::Idle
                     }
@@ -271,8 +372,13 @@ impl Scanner {
                 },
                 State::Csi => match b {
                     b'0'..=b'9' | b';' if self.body.len() < 4 => self.body.push(b),
+                    b'>' if self.body.is_empty() => self.body.push(b),
                     b't' if self.body == b"16" => {
                         found.push((i + 1, Event::CellSizeRequest));
+                        self.state = State::Idle;
+                    }
+                    b'q' if self.body == b">" || self.body == b">0" => {
+                        found.push((i + 1, Event::VersionRequest));
                         self.state = State::Idle;
                     }
                     0x1b => self.state = State::Esc,
@@ -280,6 +386,7 @@ impl Scanner {
                 },
                 State::Dcs => match b {
                     0x1b => self.state = State::DcsEsc,
+                    b'+' if self.body.is_empty() => self.state = State::Tcap,
                     _ if self.body.len() >= APC_LIMIT => self.state = State::Idle,
                     _ => {
                         // Before the `q`, only a sixel's numeric parameters may come.
@@ -290,6 +397,27 @@ impl Scanner {
                         }
                     }
                 },
+                State::Tcap => match b {
+                    0x1b => self.state = State::TcapEsc,
+                    _ if self.body.len() >= TCAP_LIMIT => self.state = State::Idle,
+                    _ => self.body.push(b),
+                },
+                State::TcapEsc => {
+                    let body = std::mem::take(&mut self.body);
+                    if b == b'\\'
+                        && let Some(names) = body.strip_prefix(b"q").and_then(termcap_names)
+                    {
+                        found.push((i + 1, Event::Termcap(names)));
+                    }
+                    // Otherwise a new escape sequence began: this one never ended.
+                    self.state = match b {
+                        b']' => State::Osc,
+                        b'_' => State::Apc,
+                        b'P' => State::Dcs,
+                        b'[' => State::Csi,
+                        _ => State::Idle,
+                    };
+                }
                 State::DcsEsc => {
                     if b == b'\\' {
                         let body = std::mem::take(&mut self.body);
@@ -395,7 +523,12 @@ mod tests {
         let mut long = b"\x1b]52;c;".to_vec();
         long.extend(std::iter::repeat_n(b'A', 10_000));
         long.extend(b"\x07\x1b]133;A\x07");
-        assert_eq!(notes(&long), [Event::Prompt]);
+        assert_eq!(
+            notes(&long),
+            [Event::Prompt {
+                click_events: false
+            }]
+        );
     }
 
     #[test]
@@ -405,9 +538,14 @@ mod tests {
         assert_eq!(
             got,
             [
-                (9, Event::Prompt),
+                (
+                    9,
+                    Event::Prompt {
+                        click_events: false
+                    }
+                ),
                 (22, Event::Done(Some(3))),
-                (31, Event::Output)
+                (31, Event::Output { command: None })
             ]
         );
     }
@@ -434,7 +572,15 @@ mod tests {
         long.extend(std::iter::repeat_n(b'1', 100));
         long.push(0x07);
         assert!(s.scan(&long).is_empty());
-        assert_eq!(s.scan(b"\x1b]133;A\x07"), [(8, Event::Prompt)]);
+        assert_eq!(
+            s.scan(b"\x1b]133;A\x07"),
+            [(
+                8,
+                Event::Prompt {
+                    click_events: false
+                }
+            )]
+        );
     }
 
     #[test]
@@ -450,5 +596,62 @@ mod tests {
             s.scan(b"\x1b]133;D;0;aid=1\x07"),
             [(16, Event::Done(Some(0)))]
         );
+    }
+
+    #[test]
+    fn fish_prompt_options_and_command_lines() {
+        assert_eq!(
+            notes(b"\x1b]133;A;click_events=1\x1b\\"),
+            [Event::Prompt { click_events: true }]
+        );
+        // A continuation prompt is not a new command.
+        assert_eq!(notes(b"\x1b]133;A;k=s\x07"), []);
+        assert_eq!(
+            notes(b"\x1b]133;C;cmdline_url=echo%20hi%3B%20ls\x1b\\"),
+            [Event::Output {
+                command: Some("echo hi; ls".into())
+            }]
+        );
+        assert_eq!(
+            notes(b"\x1b]133;C;cmdline=make -j8\x07"),
+            [Event::Output {
+                command: Some("make -j8".into())
+            }]
+        );
+        // Line breaks in a multi-line command become spaces; escapes are dropped.
+        assert_eq!(
+            notes(b"\x1b]133;C;cmdline_url=for%20x%0Aend%1B\x07"),
+            [Event::Output {
+                command: Some("for x end".into())
+            }]
+        );
+    }
+
+    #[test]
+    fn a_long_command_line_is_cut_and_the_mark_kept() {
+        let mut long = b"\x1b]133;C;cmdline_url=".to_vec();
+        long.extend(std::iter::repeat_n(b'x', 20_000));
+        long.push(0x07);
+        let got = notes(&long);
+        let [Event::Output { command: Some(c) }] = got.as_slice() else {
+            panic!("{got:?}")
+        };
+        assert!(c.len() <= COMMAND_SHOWN && c.len() > 1000);
+    }
+
+    #[test]
+    fn termcap_and_version_queries() {
+        // fish asks for `indn` and `query-os-name`, then XTVERSION.
+        assert_eq!(
+            notes(b"\x1bP+q696e646e;71756572792d6f732d6e616d65\x1b\\\x1b[>0q\x1b[>q"),
+            [
+                Event::Termcap(vec!["indn".into(), "query-os-name".into()]),
+                Event::VersionRequest,
+                Event::VersionRequest
+            ]
+        );
+        assert_eq!(notes(b"\x1bP+qzz\x1b\\"), []);
+        // Sixel still works next to it.
+        assert_eq!(notes(b"\x1bPq#0\x1b\\"), [Event::Sixel(b"#0".to_vec())]);
     }
 }

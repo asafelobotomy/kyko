@@ -211,10 +211,51 @@ fn a_resize_before_anything_wraps_keeps_the_marks_and_a_rewrap_drops_them() {
 fn finished_commands_are_reported_with_their_status() {
     let mut e = Emulator::new(20, 12, 100);
     e.feed(session().as_bytes());
-    let done: Vec<u8> = e.take_finished().into_iter().map(|(_, s)| s).collect();
+    let done: Vec<u8> = e.take_finished().into_iter().map(|f| f.status).collect();
     assert_eq!(done, [0, 1]);
     assert!(e.take_finished().is_empty());
     // A D with no C before it (an empty command line) is not a finished command.
     e.feed(format!("{}{A}$ ", d(0)).as_bytes());
     assert!(e.take_finished().is_empty());
+}
+
+#[test]
+fn a_shell_that_marks_twice_reports_one_command_with_its_line() {
+    // fish 4 marks on its own and kyko's script marks too: each sequence comes twice.
+    let mut e = Emulator::new(40, 12, 100);
+    let a = "\x1b]133;A;click_events=1\x1b\\";
+    let c = "\x1b]133;C;cmdline_url=cargo%20build\x1b\\";
+    e.feed(
+        format!(
+            "{A}{a}$ cargo build\r\n{c}{C}done\r\n{}{}{A}{a}$ ",
+            d(2),
+            d(2)
+        )
+        .as_bytes(),
+    );
+    let f = e.take_finished();
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].status, 2);
+    assert_eq!(f[0].command.as_deref(), Some("cargo build"));
+    assert_eq!(e.command_at(0), Some("cargo build"));
+    assert_eq!(e.command_at(1), Some("cargo build"));
+    assert_eq!(e.command_at(2), None);
+    assert_eq!(gutter(&e)[0], GUTTER_FAILED);
+}
+
+#[test]
+fn termcap_and_version_queries_are_answered() {
+    let mut e = Emulator::new(40, 12, 100);
+    e.feed(b"\x1bP+q696e646e;6e6f7065\x1b\\\x1b[>0q");
+    let r = String::from_utf8(e.take_replies()).unwrap();
+    // indn = ESC [ %p1%d S; `nope` is unknown.
+    assert!(
+        r.starts_with("\x1bP1+r696E646E=1B5B257031256453\x1b\\"),
+        "{r:?}"
+    );
+    assert!(r.contains("\x1bP0+r6E6F7065\x1b\\"), "{r:?}");
+    assert!(
+        r.contains(&format!("\x1bP>|kyko {}\x1b\\", env!("CARGO_PKG_VERSION"))),
+        "{r:?}"
+    );
 }

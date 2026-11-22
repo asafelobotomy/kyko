@@ -95,6 +95,9 @@ pub struct TerminalConfig {
     pub ligatures: bool,
     /// Marks, folder reports and kyko's prompt in bash, zsh and fish.
     pub shell_integration: bool,
+    /// With shell integration: kyko's shell defaults (completion, history, suggestions, the
+    /// command-not-found hint, zoxide and fzf keys) where the user's own files set none.
+    pub shell_extras: bool,
     pub confirm_multiline_paste: bool,
     pub scrollback: u32,
     /// Unset: `$SHELL`. An absolute path.
@@ -346,6 +349,7 @@ impl Default for Config {
                 copy_on_select: false,
                 ligatures: true,
                 shell_integration: true,
+                shell_extras: true,
                 confirm_multiline_paste: true,
                 scrollback: 10_000,
                 shell: None,
@@ -792,6 +796,7 @@ impl Reader {
                 "copy_on_select",
                 "ligatures",
                 "shell_integration",
+                "shell_extras",
                 "confirm_multiline_paste",
                 "scrollback",
                 "shell",
@@ -862,6 +867,7 @@ impl Reader {
             copy_on_select: self.bool(&s, "copy_on_select", dt.copy_on_select),
             ligatures: self.bool(&s, "ligatures", dt.ligatures),
             shell_integration: self.bool(&s, "shell_integration", dt.shell_integration),
+            shell_extras: self.bool(&s, "shell_extras", dt.shell_extras),
             confirm_multiline_paste: self.bool(
                 &s,
                 "confirm_multiline_paste",
