@@ -120,6 +120,24 @@ fn spawn_type_and_see_the_screen() {
 }
 
 #[test]
+fn a_paste_longer_than_a_frame_arrives_whole() {
+    let h = Holder::start();
+    let mut link = Link::connect(&h.socket, 100).unwrap();
+    // Raw mode: no line length limit, no echo of the 3 MB.
+    link.spawn(spec(
+        1,
+        "/bin/sh",
+        &["-c", "stty raw -echo; head -c 3000000 | wc -c; sleep 5"],
+    ))
+    .unwrap();
+    link.attach(1).unwrap();
+    pump_until(&mut link, "raw mode", |_| true);
+    std::thread::sleep(Duration::from_millis(300));
+    link.input(1, &vec![b'a'; 3_000_000]).unwrap();
+    pump_until(&mut link, "the count", |l| screen(l, 1).contains("3000000"));
+}
+
+#[test]
 fn a_new_window_finds_the_pane_and_its_screen() {
     let h = Holder::start();
     {

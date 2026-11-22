@@ -68,7 +68,7 @@ impl Canvas {
 
 /// HLS as sixel gives it (hue 0 is blue, lightness and saturation in percent) to RGB.
 fn hls(h: u32, l: u32, s: u32) -> (u8, u8, u8) {
-    let h = ((h + 240) % 360) as f32;
+    let h = ((h % 360 + 240) % 360) as f32;
     let (l, s) = (l.min(100) as f32 / 100.0, s.min(100) as f32 / 100.0);
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());

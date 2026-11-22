@@ -469,7 +469,33 @@ fn finished_text(ran: Duration, status: u8) -> String {
     }
 }
 
+/// At most this many program notifications in [`NOTIFY_WINDOW`]; a program that prints them in
+/// a loop gets the first few shown and the rest dropped, instead of a thread and a bus
+/// connection each.
+const NOTIFY_BURST: usize = 5;
+const NOTIFY_WINDOW: Duration = Duration::from_secs(10);
+
+/// Whether one more notification may go out now, given when the recent ones went (kept here).
+fn notify_allowed(sent: &mut std::collections::VecDeque<Instant>, now: Instant) -> bool {
+    while sent
+        .front()
+        .is_some_and(|t| now.duration_since(*t) >= NOTIFY_WINDOW)
+    {
+        sent.pop_front();
+    }
+    if sent.len() >= NOTIFY_BURST {
+        return false;
+    }
+    sent.push_back(now);
+    true
+}
+
 fn notify(title: String, body: String) {
+    static SENT: std::sync::Mutex<std::collections::VecDeque<Instant>> =
+        std::sync::Mutex::new(std::collections::VecDeque::new());
+    if !notify_allowed(&mut SENT.lock().unwrap(), Instant::now()) {
+        return;
+    }
     std::thread::spawn(move || {
         let summary = if title.is_empty() {
             "kyko".to_string()
@@ -1543,6 +1569,26 @@ mod paste_tests {
         );
         assert!(!needs_paste_confirm("a\nb", false, false), "setting off");
         assert!(needs_paste_confirm("a\r\nb", false, true));
+    }
+}
+
+#[cfg(test)]
+mod notify_tests {
+    use super::{Duration, Instant, NOTIFY_BURST, NOTIFY_WINDOW, notify_allowed};
+
+    #[test]
+    fn a_flood_of_notifications_is_cut_to_a_few() {
+        let mut sent = std::collections::VecDeque::new();
+        let t0 = Instant::now();
+        let shown = (0..1000)
+            .filter(|i| notify_allowed(&mut sent, t0 + Duration::from_micros(*i)))
+            .count();
+        assert_eq!(shown, NOTIFY_BURST);
+        // Once the window has passed, they are shown again.
+        assert!(notify_allowed(
+            &mut sent,
+            t0 + NOTIFY_WINDOW + Duration::from_secs(1)
+        ));
     }
 }
 

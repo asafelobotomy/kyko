@@ -34,6 +34,10 @@ struct Cli {
     /// Start in this folder
     #[arg(long, short = 'd', alias = "directory", value_name = "DIR")]
     working_directory: Option<PathBuf>,
+    /// Listen for `kyko @` here (unix:PATH) instead of a socket named after the process, so the
+    /// program that opened the window can open tabs in it later with `kyko @ --to unix:PATH`
+    #[arg(long, value_name = "unix:PATH")]
+    listen_on: Option<String>,
     /// Open the tabs a session file describes: one `kyko @` command per line (launch, set-tab-title...)
     #[arg(long, value_name = "FILE")]
     session: Option<PathBuf>,
@@ -264,6 +268,12 @@ fn main() -> ExitCode {
     }
     if matches!(cli.command, Some(Sub::Preferences)) {
         return preferences_window();
+    }
+    if let Some(spec) = &cli.listen_on
+        && let Err(e) = remote::set_listen_on(spec)
+    {
+        eprintln!("kyko: {e}");
+        return ExitCode::from(2);
     }
     let dropdown = match cli.command {
         Some(Sub::Dropdown { show }) => Some(show),
