@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The shell integration scripts, run for real in a pty: each of bash, zsh and fish must emit the
-# prompt-start, input-start, command-start, exit-status (0 and 1) and folder marks. A shell that is
+# prompt-start, input-start, command-start (with the command line), exit-status (0 and 1) and
+# folder marks, each once. A shell that is
 # not installed, or no python3, is skipped (exit 0).
 set -u
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -41,9 +42,17 @@ def rd(t):
 rd(4)
 for c in (b"true\r", b"false\r", b"exit\r"):
     os.write(fd, c); rd(1.5)
-missing = [n for n, m in [("prompt start", b"\x1b]133;A\x07"), ("input start", b"\x1b]133;B\x07"),
-           ("command start", b"\x1b]133;C\x07"), ("status 0", b"\x1b]133;D;0\x07"),
-           ("status 1", b"\x1b]133;D;1\x07"), ("folder", b"\x1b]7;file://")] if m not in buf]
+# A mark may carry parameters and end with BEL or ST (fish 4 marks on its own, with ST). Each
+# shell sends the command line with the command start.
+import re
+end = rb"(;[^\x07\x1b]*)?(\x07|\x1b\\)"
+missing = [n for n, m in [("prompt start", rb"\x1b\]133;A" + end), ("input start", rb"\x1b\]133;B" + end),
+           ("command start", rb"\x1b\]133;C;cmdline_url=false(\x07|\x1b\\)"),
+           ("status 0", rb"\x1b\]133;D;0" + end), ("status 1", rb"\x1b\]133;D;1" + end),
+           ("folder", rb"\x1b\]7;file://")] if not re.search(m, buf)]
+# Each mark once: fish 4's own marks and kyko's are not both sent.
+twice = [k for k in (b"A", b"C", b"D") if len(re.findall(rb"\x1b\]133;" + k, buf)) > 4]
+missing += [f"{k.decode()} sent twice" for k in twice]
 print(",".join(missing))
 if missing: print("output: " + repr(buf[-600:]), file=sys.stderr)
 PY

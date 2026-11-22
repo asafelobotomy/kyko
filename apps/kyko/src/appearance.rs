@@ -30,6 +30,7 @@ pub struct Look {
     /// Programs may set the clipboard with OSC 52.
     pub programs_write_clipboard: bool,
     pub shell_integration: bool,
+    pub shell_extras: bool,
     pub ligatures: bool,
     pub confirm_multiline_paste: bool,
     /// Line height in percent of the font's (80 to 200).
@@ -106,6 +107,7 @@ pub fn load() -> Look {
         copy_on_select: config.terminal.copy_on_select,
         programs_write_clipboard: config.advanced.programs_write_clipboard,
         shell_integration: config.terminal.shell_integration,
+        shell_extras: config.terminal.shell_extras,
         ligatures: config.terminal.ligatures,
         confirm_multiline_paste: config.terminal.confirm_multiline_paste,
         line_height_pct: (config.terminal.line_height * 100.0).round() as u32,
