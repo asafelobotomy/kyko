@@ -4,6 +4,13 @@ Written on 2026-11-13 from a review of `main` at `e7b325a` (v0.0.2) against the 
 (`docs/superpowers/specs/2026-11-10-kyko-design.md`, §7 milestones). Tick items as they land; each
 milestone ends in a version bump through `docs/releasing.md`.
 
+## Released on 2026-11-22 (1.0.0)
+
+The owner chose to cut 1.0.0 after rc.3 (which fixed what an audit found: a graphics-protocol
+path check, frames past kykod's limit on long pastes, a notification flood) rather than wait for
+their real-hardware pass on the rc. That pass and an AUR install now happen on 1.0.0; anything they
+find goes into 1.0.x.
+
 ## Status on 2026-11-20 (1.0.0-rc.1)
 
 Milestones 1 to 4 are built and released (0.1.0 to 0.2.2), and 0.3 to 0.6 brought kyko to kitty's
