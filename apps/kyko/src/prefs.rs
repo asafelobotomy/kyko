@@ -72,6 +72,56 @@ pub fn reset(page: &str) -> String {
     edit(|text| prefs::reset_page(text, page))
 }
 
+/// The keys uQ Settings' kyko page may change with `kyko config set`.
+const CLI_KEYS: &[&str] = &[
+    "window.position",
+    "window.shape",
+    "window.dim_pct",
+    "window.width_pct",
+    "window.height_pct",
+    "window.side_width_pct",
+    "window.side_height_pct",
+    "window.center_width_pct",
+    "window.center_height_pct",
+    "window.above_fullscreen",
+    "window.hide_on_focus_loss",
+    "window.animations",
+];
+
+/// `kyko config show --json`: `{values, error}` as Preferences reads them, for uQ Settings.
+pub fn cli_show() -> String {
+    let loaded = config_path().and_then(|p| read(&p)).and_then(|t| {
+        Config::parse(&t).map_err(|e| format!("config.toml line {}: {}", e.line, e.message))
+    });
+    match loaded {
+        Ok(l) => json!({"values": prefs::values_json(&l.config), "error": ""}),
+        Err(e) => json!({"values": prefs::values_json(&Config::default()), "error": e}),
+    }
+    .to_string()
+}
+
+/// `kyko config set KEY VALUE --json`: VALUE is `true`, `false`, a whole number, or a word.
+/// Answers `{"ok": true}` or `{"ok": false, "error": ...}`.
+pub fn cli_set(key: &str, value: &str) -> (bool, String) {
+    let err = if !CLI_KEYS.contains(&key) {
+        format!("{key} cannot be set from the command line")
+    } else {
+        let v = match value {
+            "true" => json!(true),
+            "false" => json!(false),
+            _ => value.parse::<i64>().map_or_else(|_| json!(value), |n| json!(n)),
+        };
+        edit(|text| prefs::change(text, key, &v))
+    };
+    let ok = err.is_empty();
+    let out = if ok {
+        json!({"ok": true})
+    } else {
+        json!({"ok": false, "error": err})
+    };
+    (ok, out.to_string())
+}
+
 /// Opens the Preferences window as its own process.
 pub fn open() {
     if let Ok(exe) = std::env::current_exe()

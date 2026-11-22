@@ -64,6 +64,8 @@ package() {
   install -Dm644 packaging/kyko.provider "$pkgdir/usr/share/uq/launcher/kyko.provider"
   # What each of kyko's problem codes means, for `uqctl explain` and Settings › Problems.
   install -Dm644 uq/diag/kyko.toml "$pkgdir/usr/share/uq/diag/kyko.toml"
+  # The drop-down's page in uQ Settings (Apps > kyko).
+  install -Dm644 -t "$pkgdir/usr/share/uq/settings/pages/kyko/" uq/pages/kyko/*
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   # The built-in themes are uQ's; their credits and licences.
   install -Dm644 crates/kyko-core/themes/CREDITS.md "$pkgdir/usr/share/licenses/$pkgname/THEMES.md"
