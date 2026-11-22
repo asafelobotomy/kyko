@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   toggles twice. Elsewhere kyko still binds `hotkey.toggle` at runtime.
 - `window.width_pct` now goes down to 20.
 
+## [1.0.0] - 2026-11-22
+
+kyko's first stable release: the 1.0.0 release candidates (rc.1 to rc.3) with nothing added.
+kyko is uQ's default terminal from here, in place of kitty. See the release candidates below for
+what changed since 0.6.0.
+
 ## [1.0.0-rc.3] - 2026-11-22
 
 ### Fixed
