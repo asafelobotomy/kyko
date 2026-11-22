@@ -109,7 +109,9 @@ pub fn cli_set(key: &str, value: &str) -> (bool, String) {
         let v = match value {
             "true" => json!(true),
             "false" => json!(false),
-            _ => value.parse::<i64>().map_or_else(|_| json!(value), |n| json!(n)),
+            _ => value
+                .parse::<i64>()
+                .map_or_else(|_| json!(value), |n| json!(n)),
         };
         edit(|text| prefs::change(text, key, &v))
     };
