@@ -40,7 +40,11 @@ pub fn serve(path: &Path, handle: impl Fn(Request) -> Reply + Send + 'static) ->
     let listener = match made {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("kyko: remote control is off: {}: {e}", path.display());
+            kyko_diag::problem(
+                "kyko",
+                kyko_diag::Level::WARN,
+                &format!("[KYKO-002] remote control is off: {}: {e}", path.display()),
+            );
             return None;
         }
     };

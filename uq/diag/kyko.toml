@@ -1,0 +1,110 @@
+# kyko's problem codes for uQ (`uqctl log`, `uqctl explain`, Settings › Problems). Installed as
+# /usr/share/uq/diag/kyko.toml. A code never changes meaning: set `retired = true` on one nothing
+# logs any more, and give a new problem the next number.
+app = "kyko"
+units = ["kyko.service", "kykod.service"]
+
+[[code]]
+id = "KYKO-001"
+severity = "warn"
+title = "A kyko setting was ignored"
+means = "A setting in kyko's config file has a value kyko doesn't understand, so it used the default for that one setting. The message names the setting."
+fix = "Fix or remove that setting in ~/.config/kyko/config.toml, or change it on kyko's settings page."
+
+[[code]]
+id = "KYKO-002"
+severity = "warn"
+title = "kyko's remote control is off"
+means = "kyko couldn't open its control socket, so `kyko @` commands and kittens can't reach this window. The terminal itself works."
+fix = "Check that $XDG_RUNTIME_DIR/kyko exists and belongs to you, then reopen kyko."
+
+[[code]]
+id = "KYKO-003"
+severity = "warn"
+title = "kyko's hotkey couldn't be set"
+means = "kyko couldn't register the key that shows and hides the drop-down, so the key does nothing. `kyko toggle` still works."
+fix = "Check that no other program has taken that key, or pick another in kyko's settings. On uQ the key is bound by Hyprland; run `uqctl doctor`."
+
+[[code]]
+id = "KYKO-004"
+severity = "error"
+title = "kyko couldn't start its session holder"
+means = "kyko couldn't start or reach kykod, the helper that keeps your shells running, so the window couldn't open."
+fix = "Run `systemctl --user status kykod` and `journalctl --user -u kykod` to see why kykod stopped."
+
+[[code]]
+id = "KYKO-005"
+severity = "error"
+title = "The kyko drop-down is already running"
+means = "A second drop-down couldn't take kyko's name on the session bus, usually because one is already running."
+fix = "Use the running one (`kyko toggle`), or restart it with `systemctl --user restart kyko`."
+
+[[code]]
+id = "KYKO-006"
+severity = "warn"
+title = "kyko couldn't open a link"
+means = "kyko couldn't run xdg-open for a link you clicked, so nothing opened."
+fix = "Install xdg-utils, and check that a default browser is set."
+
+[[code]]
+id = "KYKO-007"
+severity = "warn"
+title = "A kyko notification wasn't shown"
+means = "A program in the terminal asked for a desktop notification and kyko couldn't send it."
+fix = "Check that a notification daemon (noti-fi on uQ) is running."
+
+[[code]]
+id = "KYKO-008"
+severity = "warn"
+title = "kyko's shell integration is off"
+means = "kyko couldn't write its shell integration files, so prompt marks, jumping between commands and copying the last output don't work."
+fix = "Check that $XDG_RUNTIME_DIR/kyko/shell can be written and belongs to you, then reopen kyko."
+
+[[code]]
+id = "KYKO-009"
+severity = "warn"
+title = "A kyko session file had a problem"
+means = "kyko couldn't apply a line of the session file it started with, so that tab or pane was skipped."
+fix = "Check the session file the message names."
+
+[[code]]
+id = "KYKO-010"
+severity = "warn"
+title = "kyko couldn't save the scrollback"
+means = "kyko couldn't write the scrollback to a file, so it couldn't be shown in a pager or saved."
+fix = "Check that $XDG_RUNTIME_DIR/kyko can be written and belongs to you."
+
+[[code]]
+id = "KYKO-011"
+severity = "error"
+title = "kyko's session holder stopped"
+means = "kykod couldn't run: its socket couldn't be made or another kykod already serves it. kyko windows can't open until it runs."
+fix = "Read the message for the reason. If another kykod is running, `systemctl --user restart kykod`; check that $XDG_RUNTIME_DIR is set."
+
+[[code]]
+id = "KYKO-012"
+severity = "warn"
+title = "kykod refused a window"
+means = "kykod turned away a connection: another window was already attached, or it came from another user, or it couldn't be checked."
+fix = "Usually harmless when two kyko windows start at once. If it repeats, restart the drop-down with `systemctl --user restart kyko`."
+
+[[code]]
+id = "KYKO-013"
+severity = "error"
+title = "A kyko tab couldn't start its shell"
+means = "kykod couldn't start the shell or command for a new tab or pane, so it closed at once."
+fix = "Check the shell or command named in the message and in kyko's settings (terminal.shell)."
+
+[[code]]
+id = "KYKO-014"
+severity = "warn"
+title = "kykod had trouble with a shell"
+means = "kykod couldn't watch, feed or end one shell properly (the message says which), so that tab may not notice its shell ending or may drop typed input."
+fix = "Close that tab. If it keeps happening, restart kykod with `systemctl --user restart kykod` (this ends your shells)."
+
+[[code]]
+id = "KYKO-015"
+severity = "warn"
+title = "kykod hit a system error"
+means = "kykod couldn't accept a connection, wait for its shells or clean up its socket. Your shells keep running."
+fix = "If kyko windows can't attach, restart kykod with `systemctl --user restart kykod` (this ends your shells)."

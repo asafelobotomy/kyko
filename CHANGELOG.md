@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.2] - 2026-11-22
+
 ### Changed
 
 - **Corners follow uQ's radius.** The tab pills, buttons, pane borders, the Unicode picker, the
@@ -19,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Problem codes and crash records for uQ.** kyko's and kykod's warnings and errors start with
+  a code, `[KYKO-003] hotkey …`, listed with what each means and how to fix it in
+  `/usr/share/uq/diag/kyko.toml`, so `uqctl log`, `uqctl explain KYKO-003` and uQ's
+  Settings › Problems can say what went wrong. Under systemd the lines carry their level, so the
+  journal files them as warnings and errors. A panic in kyko or kykod leaves a crash record that
+  uQ notices and lists. This uses uQ's `uq-diag` (1.0.1, vendored in `crates/kyko-diag` and
+  pinned by `tests/shell/uq_diag_pin.sh`).
 - AppStream metainfo (`/usr/share/metainfo/org.kyko.Kyko.metainfo.xml`), so software centres
   list kyko with its description.
 

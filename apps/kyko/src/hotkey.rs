@@ -16,7 +16,11 @@ pub fn start(key: Option<KeySeq>) {
     let (backend, events) = kyko_hotkey::pick(&env, "kyko toggle");
     let mut hotkeys = Hotkeys::new(backend);
     if let Err(e) = hotkeys.set(key) {
-        eprintln!("kyko: hotkey ({}): {e}", hotkeys.backend_name());
+        kyko_diag::problem(
+            "kyko",
+            kyko_diag::Level::WARN,
+            &format!("[KYKO-003] hotkey ({}): {e}", hotkeys.backend_name()),
+        );
     }
     *HOTKEYS.lock().unwrap() = Some(hotkeys);
     if let Some(events) = events {
@@ -24,7 +28,11 @@ pub fn start(key: Option<KeySeq>) {
             if let Some(h) = HOTKEYS.lock().unwrap().as_mut()
                 && let Err(e) = h.rebind()
             {
-                eprintln!("kyko: hotkey ({}): {e}", h.backend_name());
+                kyko_diag::problem(
+                    "kyko",
+                    kyko_diag::Level::WARN,
+                    &format!("[KYKO-003] hotkey ({}): {e}", h.backend_name()),
+                );
             }
         });
     }
@@ -36,6 +44,10 @@ pub fn apply(key: Option<KeySeq>) {
         && h.key() != key
         && let Err(e) = h.set(key)
     {
-        eprintln!("kyko: hotkey ({}): {e}", h.backend_name());
+        kyko_diag::problem(
+            "kyko",
+            kyko_diag::Level::WARN,
+            &format!("[KYKO-003] hotkey ({}): {e}", h.backend_name()),
+        );
     }
 }

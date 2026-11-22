@@ -9,6 +9,14 @@ macro_rules! log {
     }};
 }
 
+/// A problem, with its code from `uq/diag/kyko.toml` first: `problem!(WARN, "[KYKO-014] …")`.
+/// Under systemd the journal files it at that level.
+macro_rules! problem {
+    ($level:ident, $($arg:tt)*) => {
+        kyko_diag::problem("kykod", kyko_diag::Level::$level, &format!($($arg)*))
+    };
+}
+
 pub mod modes;
 pub mod pane;
 pub mod pty;

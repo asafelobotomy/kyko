@@ -661,7 +661,11 @@ fn open_url(url: &str) -> bool {
             true
         }
         Err(e) => {
-            eprintln!("kyko: cannot open {url}: xdg-open: {e}");
+            kyko_diag::problem(
+                "kyko",
+                kyko_diag::Level::WARN,
+                &format!("[KYKO-006] cannot open {url}: xdg-open: {e}"),
+            );
             false
         }
     }

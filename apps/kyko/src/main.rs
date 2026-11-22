@@ -229,6 +229,7 @@ fn remote_cli(words: &[String]) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    kyko_diag::start("kyko");
     let cli = Cli::parse();
     if let Some(Sub::Remote { words }) = &cli.command {
         return remote_cli(words);
@@ -300,7 +301,11 @@ fn main() -> ExitCode {
     let (socket, holder) = if dropdown.is_some() {
         let socket = runtime_dir().join("kyko").join("hold.sock");
         if let Err(e) = session::ensure_shared_holder(&socket) {
-            eprintln!("kyko: cannot start kykod: {e}");
+            kyko_diag::problem(
+                "kyko",
+                kyko_diag::Level::ERROR,
+                &format!("[KYKO-004] cannot start kykod: {e}"),
+            );
             return ExitCode::from(1);
         }
         (socket, None)
@@ -311,7 +316,11 @@ fn main() -> ExitCode {
         match session::start_private_holder(&socket) {
             Ok(h) => (socket, Some(h)),
             Err(e) => {
-                eprintln!("kyko: cannot start kykod: {e}");
+                kyko_diag::problem(
+                    "kyko",
+                    kyko_diag::Level::ERROR,
+                    &format!("[KYKO-004] cannot start kykod: {e}"),
+                );
                 return ExitCode::from(1);
             }
         }
@@ -334,9 +343,13 @@ fn main() -> ExitCode {
     if dropdown.is_some()
         && let Err(e) = bridge::serve_bus()
     {
-        eprintln!(
-            "kyko: cannot serve {}: {e} (is the drop-down already running?)",
-            control::NAME
+        kyko_diag::problem(
+            "kyko",
+            kyko_diag::Level::ERROR,
+            &format!(
+                "[KYKO-005] cannot serve {}: {e} (is the drop-down already running?)",
+                control::NAME
+            ),
         );
         return ExitCode::from(1);
     }

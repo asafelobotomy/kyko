@@ -500,7 +500,11 @@ fn notify(title: String, body: String) {
             .map(|_| ())
         });
         if let Err(e) = result {
-            eprintln!("kyko: notification not shown: {e}");
+            kyko_diag::problem(
+                "kyko",
+                kyko_diag::Level::WARN,
+                &format!("[KYKO-007] notification not shown: {e}"),
+            );
         }
     });
 }
@@ -870,7 +874,14 @@ fn integration_dir() -> Option<PathBuf> {
         match kyko_core::integration::install(&dir) {
             Ok(()) => Some(dir),
             Err(e) => {
-                eprintln!("kyko: shell integration is off: {}: {e}", dir.display());
+                kyko_diag::problem(
+                    "kyko",
+                    kyko_diag::Level::WARN,
+                    &format!(
+                        "[KYKO-008] shell integration is off: {}: {e}",
+                        dir.display()
+                    ),
+                );
                 None
             }
         }
@@ -1114,7 +1125,11 @@ fn run(
         for req in startup {
             let (reply, effects) = remote_request(req, session, &mut link, &login)?;
             if let Some(e) = reply.error {
-                eprintln!("kyko: session file: {e}");
+                kyko_diag::problem(
+                    "kyko",
+                    kyko_diag::Level::WARN,
+                    &format!("[KYKO-009] session file: {e}"),
+                );
             }
             more.extend(effects);
         }
@@ -1198,7 +1213,11 @@ fn run(
                             effects.extend(session.new_tab(req, &login).unwrap_or_default());
                             layout_changed = true;
                         }
-                        Err(e) => eprintln!("kyko: cannot write the scrollback: {e}"),
+                        Err(e) => kyko_diag::problem(
+                            "kyko",
+                            kyko_diag::Level::WARN,
+                            &format!("[KYKO-010] cannot write the scrollback: {e}"),
+                        ),
                     }
                 }
                 Cmd::CopyLastOutput(p) => {

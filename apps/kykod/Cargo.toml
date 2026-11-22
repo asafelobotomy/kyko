@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 clap.workspace = true
+kyko-diag.workspace = true
 kyko-proto = { path = "../../crates/kyko-proto" }
 memchr = "2.8.3"
 nix = { version = "0.31", default-features = false, features = ["term", "process", "signal", "fs"] }

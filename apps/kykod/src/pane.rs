@@ -144,8 +144,9 @@ impl Pane {
         let exit = match pty.exit_fd() {
             Ok(fd) => fd,
             Err(e) => {
-                log!(
-                    "pane {}: cannot watch the shell ({e}); its end is seen only when its terminal closes",
+                problem!(
+                    WARN,
+                    "[KYKO-014] pane {}: cannot watch the shell ({e}); its end is seen only when its terminal closes",
                     spec.pane
                 );
                 None
@@ -361,8 +362,9 @@ impl Pane {
         }
         if pending + len > INPUT_LIMIT {
             input.overflowing = true;
-            log!(
-                "pane {}: input queue full ({INPUT_LIMIT} bytes waiting); dropping input until it empties",
+            problem!(
+                WARN,
+                "[KYKO-014] pane {}: input queue full ({INPUT_LIMIT} bytes waiting); dropping input until it empties",
                 self.id
             );
             return;
@@ -445,8 +447,9 @@ impl Pane {
                 done();
             })
         {
-            log!(
-                "pane {}: cannot start a thread to end it ({e}); hung up only",
+            problem!(
+                WARN,
+                "[KYKO-014] pane {}: cannot start a thread to end it ({e}); hung up only",
                 self.id
             );
             self.pty.hangup();
