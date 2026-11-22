@@ -127,6 +127,22 @@ impl Snapshot {
         Some((url, spans))
     }
 
+    /// The file named at a cell (see [`links::path_at`]), and the cells it covers on that row.
+    /// Whether the file exists is for the caller, which knows the shell's folder.
+    pub fn path_at(&self, col: u16, row: u16) -> Option<(links::FileTarget, LinkSpans)> {
+        let cols = usize::from(self.cols);
+        let (col, row) = (usize::from(col), usize::from(row));
+        if col >= cols || row >= usize::from(self.rows) {
+            return None;
+        }
+        let line: Vec<char> = self.cells[row * cols..(row + 1) * cols]
+            .iter()
+            .map(|c| c.ch)
+            .collect();
+        let (a, b, t) = links::path_at(&line, col)?;
+        Some((t, vec![(row as u16, a as u16, b as u16)]))
+    }
+
     /// Every openable link on screen, top to bottom, each once.
     pub fn all_links(&self) -> Vec<(String, LinkSpans)> {
         let mut found: Vec<(String, LinkSpans)> = Vec::new();
@@ -390,6 +406,9 @@ pub struct Emulator {
     running: Option<String>,
     /// Command lines by the row number of their prompt.
     commands: BTreeMap<u64, String>,
+    /// Where the shell said its command line starts (OSC 133;B): row number and column. Cleared
+    /// when the command runs (133;C) or a new prompt begins.
+    input: Option<(u64, usize)>,
     /// Images and where they are placed.
     graphics: graphics::Store,
     /// A cell's size in pixels, as the window draws it.
@@ -426,6 +445,7 @@ impl Emulator {
             finished: Vec::new(),
             running: None,
             commands: BTreeMap::new(),
+            input: None,
             graphics: graphics::Store::default(),
             cell_px: (8, 16),
             theme: Mutex::new(None),
@@ -1140,6 +1160,19 @@ pub struct Finished {
     pub command: Option<String>,
 }
 
+/// One command and its output, as the shell marked them, in view rows (negative: above the view).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Block {
+    /// The row its prompt is on.
+    pub prompt: i32,
+    /// The first and last rows of its output, when it printed any and it is not lost.
+    pub output: Option<(i32, i32)>,
+    /// `None` while it runs, or when the shell never said.
+    pub status: Option<u8>,
+    /// Its command line, when the shell sent it.
+    pub command: Option<String>,
+}
+
 /// The answer to an XTGETTCAP query: `DCS 1 + r NAME=VALUE ST` (hex-encoded) for each capability
 /// kyko knows, `DCS 0 + r NAME ST` for the rest. fish asks for `indn` to keep the screen in the
 /// scrollback on Ctrl+L, and `query-os-name` (kitty's) for its key bindings.
@@ -1195,9 +1228,11 @@ impl Emulator {
                 let row = self.marks.entry(id).or_default();
                 row.prompt = true;
                 row.click_events |= click_events;
+                self.input = None;
             }
-            marks::Event::Input => {}
+            marks::Event::Input => self.input = Some((id, cursor.column.0)),
             marks::Event::Output { command } => {
+                self.input = None;
                 self.marks.entry(id).or_default().output = true;
                 // A shell that marks twice (fish 4 and kyko's script) sends C twice for one
                 // command: the first start, and any command line, stand.
@@ -1335,6 +1370,214 @@ impl Emulator {
         true
     }
 
+    /// The view row of row number `id`.
+    fn view_row(&self, id: u64) -> i32 {
+        self.line_of(id) + self.display_offset() as i32
+    }
+
+    /// The row numbers a command's output covers: from its output mark to its end, for the
+    /// command whose prompt is on row `prompt`. `None` when it printed nothing or is lost.
+    fn output_rows(&self, prompt: u64) -> Option<(u64, u64)> {
+        let next = self.prompt_after(prompt);
+        let within = |id: u64| next.is_none_or(|n| id < n);
+        let begin = self
+            .marks
+            .range(prompt..)
+            .take_while(|(id, _)| within(**id))
+            .find(|(_, m)| m.output)
+            .map(|(&b, _)| b)?;
+        let end = self
+            .marks
+            .range(begin..)
+            .take_while(|(id, _)| within(**id))
+            .find_map(|(&id, m)| m.end.map(|inc| if inc { id } else { id.saturating_sub(1) }));
+        // Still running: its output so far, to the cursor.
+        let last = match end {
+            Some(e) => e,
+            None if next.is_none() => self.row_id(self.term.grid().cursor.point.line.0),
+            None => next?.saturating_sub(1),
+        };
+        (last >= begin).then_some((begin, last))
+    }
+
+    /// The command at view row `row`: the one whose prompt is on it or the nearest above.
+    pub fn block_at(&self, row: u16) -> Option<Block> {
+        if self.in_alt_screen() {
+            return None;
+        }
+        let id = self.row_id(i32::from(row) - self.display_offset() as i32);
+        let p = self.prompt_before(id + 1)?;
+        let m = self.marks.get(&p).copied().unwrap_or_default();
+        Some(Block {
+            prompt: self.view_row(p),
+            output: self
+                .output_rows(p)
+                .map(|(a, b)| (self.view_row(a), self.view_row(b))),
+            status: m.status,
+            command: self.commands.get(&p).cloned(),
+        })
+    }
+
+    /// Selects the output of the command at view row `row`. False when it printed nothing.
+    pub fn select_output_at(&mut self, row: u16) -> bool {
+        if self.in_alt_screen() {
+            return false;
+        }
+        let id = self.row_id(i32::from(row) - self.display_offset() as i32);
+        let Some((begin, last)) = self.prompt_before(id + 1).and_then(|p| self.output_rows(p))
+        else {
+            return false;
+        };
+        self.select_rows(begin, last);
+        true
+    }
+
+    fn select_rows(&mut self, begin: u64, last: u64) {
+        let cols = self.term.columns();
+        let mut sel = Selection::new(
+            SelectionType::Lines,
+            Point::new(Line(self.line_of(begin)), Column(0)),
+            Side::Left,
+        );
+        sel.update(
+            Point::new(Line(self.line_of(last)), Column(cols.saturating_sub(1))),
+            Side::Right,
+        );
+        self.term.selection = Some(sel);
+    }
+
+    /// Scrolls to the previous (`dir < 0`) or next failed command's prompt. False when none.
+    pub fn jump_failed(&mut self, dir: i32) -> bool {
+        if self.in_alt_screen() {
+            return false;
+        }
+        let top = self.row_id(-(self.display_offset() as i32));
+        let failed = |m: &marks::Row| m.prompt && m.status.is_some_and(|s| s != 0);
+        let target = if dir < 0 {
+            self.marks.range(..top).rev().find(|(_, m)| failed(m))
+        } else {
+            self.marks.range(top + 1..).find(|(_, m)| failed(m))
+        }
+        .map(|(&id, _)| id);
+        let Some(id) = target else { return false };
+        let want = (-self.line_of(id)).clamp(0, self.history_len() as i32);
+        let now = self.display_offset() as i32;
+        if want == now {
+            return false;
+        }
+        self.term.scroll_display(Scroll::Delta(want - now));
+        true
+    }
+
+    /// What to pin at the top of the view while it shows the middle of a command's output whose
+    /// prompt has scrolled above it: the command line, else the prompt row's text.
+    pub fn sticky_header(&self) -> Option<String> {
+        if self.in_alt_screen() || self.marks.is_empty() {
+            return None;
+        }
+        let top = self.row_id(-(self.display_offset() as i32));
+        let p = self.prompt_before(top + 1)?;
+        if p >= top {
+            return None;
+        }
+        let (begin, last) = self.output_rows(p)?;
+        if top < begin || top > last {
+            return None;
+        }
+        if let Some(c) = self.commands.get(&p) {
+            return Some(c.clone());
+        }
+        let grid = self.term.grid();
+        let row = &grid[Line(self.line_of(p))];
+        let text: String = (0..grid.columns())
+            .filter(|&c| !row[Column(c)].flags.contains(Flags::WIDE_CHAR_SPACER))
+            .map(|c| row[Column(c)].c)
+            .collect();
+        let text = text.trim().to_string();
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// What to send the shell so its cursor goes to a click at view `col`, `row` on the command
+    /// line being typed: an SGR mouse click when the prompt asked for clicks (`click_events=1`),
+    /// else Left or Right arrows. `None` when the click is not on that command line (a command
+    /// runs, the view is scrolled back, a full-screen program has the screen).
+    pub fn click_to_cursor(&self, col: u16, row: u16) -> Option<Vec<u8>> {
+        if self.in_alt_screen() || self.display_offset() != 0 {
+            return None;
+        }
+        let (start_id, start_col) = self.input?;
+        let grid = self.term.grid();
+        let cursor = grid.cursor.point;
+        let cols = grid.columns();
+        let col = usize::from(col).min(cols - 1);
+        let line = i32::from(row);
+        let click_id = self.row_id(line);
+        // The command line runs from its start to the last row with text at or below the cursor.
+        let screen_last = grid.screen_lines() as i32 - 1;
+        let blank = |l: i32| {
+            let r = &grid[Line(l)];
+            (0..cols).all(|c| r[Column(c)].c == ' ')
+        };
+        let mut last_line = cursor.line.0;
+        while last_line < screen_last && !blank(last_line + 1) {
+            last_line += 1;
+        }
+        let last_id = self.row_id(last_line);
+        if click_id < start_id || click_id > last_id || (click_id == start_id && col < start_col) {
+            return None;
+        }
+        let p = self.prompt_before(start_id + 1)?;
+        if self.marks.get(&p).is_some_and(|m| m.click_events) {
+            let (x, y) = (col + 1, line + 1);
+            return Some(format!("\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m").into_bytes());
+        }
+        // A click past the end of a row's text goes to the end of the text, for the last row.
+        let end_of_text = |l: i32| {
+            let r = &grid[Line(l)];
+            (0..cols)
+                .rev()
+                .find(|&c| r[Column(c)].c != ' ')
+                .map_or(0, |c| c + 1)
+        };
+        let mut target = (line, col);
+        if line == last_line {
+            let end = end_of_text(line).max(if line == cursor.line.0 {
+                cursor.column.0
+            } else {
+                0
+            });
+            target.1 = target.1.min(end);
+        }
+        let here = (cursor.line.0, cursor.column.0);
+        if target == here {
+            return Some(Vec::new());
+        }
+        let (from, to, right) = if target > here {
+            (here, target, true)
+        } else {
+            (target, here, false)
+        };
+        // One arrow per character between them; the second half of a wide one is no character.
+        let mut n = 0usize;
+        let (mut l, mut c) = from;
+        while (l, c) < to {
+            if !grid[Line(l)][Column(c)]
+                .flags
+                .contains(Flags::WIDE_CHAR_SPACER)
+            {
+                n += 1;
+            }
+            c += 1;
+            if c == cols {
+                c = 0;
+                l += 1;
+            }
+        }
+        let app = self.term.mode().contains(TermMode::APP_CURSOR);
+        let arrow = keys::arrow(right, app);
+        Some(arrow.repeat(n))
+    }
+
     /// Selects the output of the last command that finished, from the line its output began on to
     /// the line it ended on. False when there is none, or it printed nothing.
     pub fn select_last_output(&mut self) -> bool {
@@ -1370,17 +1613,7 @@ impl Emulator {
         if last < begin {
             return false;
         }
-        let cols = self.term.columns();
-        let mut sel = Selection::new(
-            SelectionType::Lines,
-            Point::new(Line(self.line_of(begin)), Column(0)),
-            Side::Left,
-        );
-        sel.update(
-            Point::new(Line(self.line_of(last)), Column(cols.saturating_sub(1))),
-            Side::Right,
-        );
-        self.term.selection = Some(sel);
+        self.select_rows(begin, last);
         true
     }
 }
