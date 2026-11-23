@@ -88,6 +88,9 @@ pub mod ffi {
         fn kyko_confirm(yes: bool);
         fn kyko_unicode_search(query: &str) -> String;
         fn kyko_unicode_done(text: &str, typed: bool);
+        fn kyko_palette_items(query: &str) -> String;
+        fn kyko_palette_done(id: &str);
+        fn kyko_sticky_header(pane: u32) -> String;
         fn kyko_search(op: u8, text: &str);
         fn kyko_fixed_title() -> String;
         fn kyko_exit_status() -> i32;
@@ -516,29 +519,7 @@ fn kyko_key(pane: u32, key: u32, mods: u8, text: &str, event: u8) -> bool {
                 taken.push(key);
             }
         }
-        match action {
-            Action::Copy => w.copy(pane),
-            Action::PrevPrompt => w.jump_prompt(pane, -1),
-            Action::NextPrompt => w.jump_prompt(pane, 1),
-            Action::CopyLastOutput => w.copy_last_output(pane),
-            Action::ShowScrollback => w.show_scrollback(pane),
-            Action::OpenLink => {
-                let mut shared = w.shared.lock().unwrap();
-                let hints = shared
-                    .frames
-                    .get(&pane)
-                    .and_then(|f| f.snapshot.as_ref())
-                    .and_then(kyko_term::hints::Hints::new);
-                shared.hints = hints.map(|h| (pane, h));
-                drop(shared);
-                ffi::grid_request_repaint();
-            }
-            Action::Paste => ffi::controller_paste(pane),
-            Action::FontBigger => zoom(1),
-            Action::FontSmaller => zoom(-1),
-            Action::FontReset => zoom(0),
-            other => w.act(Act::Key(other)),
-        }
+        run_action(w, pane, action);
         return true;
     }
     let (app_cursor, kitty) = w
@@ -554,6 +535,36 @@ fn kyko_key(pane: u32, key: u32, mods: u8, text: &str, event: u8) -> bool {
     }
     w.typed(pane, bytes);
     true
+}
+
+/// Does what a key bound to `action` does, in `pane`.
+fn run_action(w: &Workspace, pane: u32, action: Action) {
+    match action {
+        Action::Copy => w.copy(pane),
+        Action::PrevPrompt => w.jump_prompt(pane, -1),
+        Action::NextPrompt => w.jump_prompt(pane, 1),
+        Action::PrevFailed => w.jump_failed(pane, -1),
+        Action::NextFailed => w.jump_failed(pane, 1),
+        Action::CopyLastOutput => w.copy_last_output(pane),
+        Action::CopyLastCommand => w.copy_last_command(pane),
+        Action::ShowScrollback => w.show_scrollback(pane),
+        Action::OpenLink => {
+            let mut shared = w.shared.lock().unwrap();
+            let hints = shared
+                .frames
+                .get(&pane)
+                .and_then(|f| f.snapshot.as_ref())
+                .and_then(kyko_term::hints::Hints::new);
+            shared.hints = hints.map(|h| (pane, h));
+            drop(shared);
+            ffi::grid_request_repaint();
+        }
+        Action::Paste => ffi::controller_paste(pane),
+        Action::FontBigger => zoom(1),
+        Action::FontSmaller => zoom(-1),
+        Action::FontReset => zoom(0),
+        other => w.act(Act::Key(other)),
+    }
 }
 
 /// While links are labelled in `pane`, keys pick a label instead of reaching the program:
@@ -613,12 +624,14 @@ fn kyko_link_spans(pane: u32, col: u16, row: u16, out: &mut Vec<u16>) -> bool {
     let Some(snap) = shared.frames.get(&pane).and_then(|f| f.snapshot.as_ref()) else {
         return false;
     };
-    let Some((url, spans)) = snap.link_at(col, row) else {
-        return false;
+    let spans = match snap.link_at(col, row) {
+        Some((url, spans)) if kyko_term::links::openable(&url) => spans,
+        Some(_) => return false,
+        None => match snap.path_at(col, row) {
+            Some((t, spans)) if existing_file(&t, shared.cwds.get(&pane)).is_some() => spans,
+            _ => return false,
+        },
     };
-    if !kyko_term::links::openable(&url) {
-        return false;
-    }
     for (r, a, b) in spans {
         out.extend([r, a, b]);
     }
@@ -645,10 +658,102 @@ fn kyko_open_link(pane: u32, col: u16, row: u16, mods: u8) -> bool {
         };
         match snap.link_at(col, row) {
             Some((url, _)) if kyko_term::links::openable(&url) => url,
-            _ => return false,
+            Some(_) => return false,
+            None => {
+                let Some((t, _)) = snap.path_at(col, row) else {
+                    return false;
+                };
+                let Some(path) = existing_file(&t, shared.cwds.get(&pane)) else {
+                    return false;
+                };
+                drop(shared);
+                return open_file(w, &path, t.line, t.column);
+            }
         }
     };
     open_url(&url)
+}
+
+/// The file a path on screen names, if it exists: `~/` from the home folder, a relative one
+/// from the pane's folder.
+fn existing_file(t: &kyko_term::links::FileTarget, cwd: Option<&String>) -> Option<PathBuf> {
+    let p = if let Some(rest) = t.path.strip_prefix("~/") {
+        PathBuf::from(std::env::var_os("HOME")?).join(rest)
+    } else if t.path.starts_with('/') {
+        PathBuf::from(&t.path)
+    } else {
+        PathBuf::from(cwd.filter(|c| !c.is_empty())?).join(&t.path)
+    };
+    p.exists().then_some(p)
+}
+
+/// Opens a file from the screen. With a line number and a terminal editor in `$VISUAL` or
+/// `$EDITOR`, the editor opens at that line in a new tab; anything else goes to the desktop's
+/// handler.
+fn open_file(
+    w: &Workspace,
+    path: &std::path::Path,
+    line: Option<u32>,
+    column: Option<u32>,
+) -> bool {
+    let editor = std::env::var("VISUAL")
+        .ok()
+        .or_else(|| std::env::var("EDITOR").ok())
+        .filter(|e| !e.trim().is_empty());
+    if path.is_file()
+        && let Some(cmd) = editor.and_then(|e| editor_command(&e, path, line, column))
+    {
+        w.act(Act::Run {
+            command: Some(cmd),
+            cwd: path.parent().map(|d| d.to_string_lossy().into_owned()),
+        });
+        return true;
+    }
+    open_url(&format!("file://{}", path.display()))
+}
+
+/// The command line that opens `path` at `line` in a terminal editor kyko knows how to place
+/// (vi-likes, helix, nano, micro, kak, emacs -nw); `None` for others (a GUI editor gets the
+/// file through `xdg-open`).
+fn editor_command(
+    editor: &str,
+    path: &std::path::Path,
+    line: Option<u32>,
+    column: Option<u32>,
+) -> Option<String> {
+    let prog = editor.split_whitespace().next()?;
+    let name = prog.rsplit('/').next().unwrap_or(prog);
+    let q = shell_quote(&path.to_string_lossy());
+    let (l, c) = (line.unwrap_or(1), column.unwrap_or(1));
+    let at = match name {
+        "vi" | "vim" | "nvim" | "nano" | "micro" | "kak" => {
+            if line.is_some() {
+                format!("+{l} {q}")
+            } else {
+                q
+            }
+        }
+        "hx" | "helix" => {
+            if line.is_some() {
+                format!("{q}:{l}:{c}")
+            } else {
+                q
+            }
+        }
+        "emacs" if editor.contains("-nw") => {
+            if line.is_some() {
+                format!("+{l}:{c} {q}")
+            } else {
+                q
+            }
+        }
+        _ => return None,
+    };
+    Some(format!("{editor} {at}"))
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Opens `url` with the desktop's handler (`xdg-open`), without waiting for it.
@@ -809,6 +914,111 @@ fn kyko_unicode_search(query: &str) -> String {
 /// The Unicode input box closed; `typed` when `text` should go to the pane.
 fn kyko_unicode_done(text: &str, typed: bool) {
     act(Act::Unicode(typed.then(|| text.to_string())));
+}
+
+/// The command palette's entries for `query`, best first, as JSON:
+/// `[{"id", "label", "hint", "kind"}]`. An id is `key:NAME` (an action), `tab:ID`, `cmd:TEXT`
+/// (a recent command line, typed at the prompt without Enter) or `prefs`.
+fn kyko_palette_items(query: &str) -> String {
+    let Some(w) = WORKSPACE.get() else {
+        return "[]".into();
+    };
+    let l = look();
+    let mut items: Vec<(String, String, String, &str)> = Vec::new();
+    for page in kyko_core::prefs::PAGES {
+        for item in page.items {
+            let Some(name) = item.key.strip_prefix("keys.") else {
+                continue;
+            };
+            let Some(action) = Action::all().find(|a| a.key_name() == name) else {
+                continue;
+            };
+            let hint = l
+                .keys
+                .get(action)
+                .map(|k| k.to_string())
+                .unwrap_or_default();
+            items.push((
+                format!("key:{name}"),
+                item.label.to_string(),
+                hint,
+                "action",
+            ));
+        }
+    }
+    items.push((
+        "prefs".into(),
+        "Preferences".into(),
+        String::new(),
+        "action",
+    ));
+    let (layout, recent) = {
+        let sh = w.shared.lock().unwrap();
+        (sh.layout.clone(), sh.recent.clone())
+    };
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&layout) {
+        for t in v["tabs"].as_array().into_iter().flatten() {
+            let name = t["name"].as_str().filter(|n| !n.is_empty());
+            let label = name.or(t["program"].as_str()).unwrap_or("Tab").to_string();
+            items.push((format!("tab:{}", t["id"]), label, "Tab".into(), "tab"));
+        }
+    }
+    for c in recent {
+        items.push((format!("cmd:{c}"), c, "Recent".into(), "command"));
+    }
+    let mut scored: Vec<_> = items
+        .into_iter()
+        .filter_map(|(id, label, hint, kind)| {
+            kyko_core::fuzzy::score(query, &label).map(|s| (s, id, label, hint, kind))
+        })
+        .collect();
+    // Stable: equal scores keep actions, then tabs, then the newest commands first.
+    scored.sort_by_key(|a| std::cmp::Reverse(a.0));
+    let out: Vec<_> = scored
+        .into_iter()
+        .take(30)
+        .map(|(_, id, label, hint, kind)| {
+            serde_json::json!({"id": id, "label": label, "hint": hint, "kind": kind})
+        })
+        .collect();
+    serde_json::Value::Array(out).to_string()
+}
+
+/// The palette closed: on `id` (see [`kyko_palette_items`]), or on nothing (empty, Escape).
+fn kyko_palette_done(id: &str) {
+    let Some(w) = WORKSPACE.get() else {
+        return;
+    };
+    w.act(Act::PaletteClosed);
+    let pane = w.shared.lock().unwrap().focused;
+    if let Some(name) = id.strip_prefix("key:") {
+        if let Some(action) = Action::all().find(|a| a.key_name() == name)
+            && action != Action::CommandPalette
+        {
+            run_action(w, pane, action);
+        }
+    } else if let Some(tab) = id.strip_prefix("tab:").and_then(|t| t.parse().ok()) {
+        w.act(Act::FocusTab(tab));
+    } else if let Some(text) = id.strip_prefix("cmd:") {
+        w.typed(pane, text.as_bytes().to_vec());
+    } else if id == "prefs" {
+        crate::prefs::open();
+    }
+}
+
+/// The command pinned at the top of `pane`, or "" for none.
+fn kyko_sticky_header(pane: u32) -> String {
+    WORKSPACE
+        .get()
+        .and_then(|w| {
+            w.shared
+                .lock()
+                .unwrap()
+                .frames
+                .get(&pane)
+                .and_then(|f| f.header.clone())
+        })
+        .unwrap_or_default()
 }
 
 fn kyko_text(pane: u32, text: &str) {

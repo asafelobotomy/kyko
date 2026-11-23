@@ -1285,6 +1285,11 @@ impl Emulator {
         self.commands = self.commands.split_off(&keep);
     }
 
+    /// The newest command line the shell sent.
+    pub fn last_command(&self) -> Option<&str> {
+        self.commands.values().next_back().map(String::as_str)
+    }
+
     /// The command line run at the prompt on screen line `line` (or the nearest prompt above
     /// it), when the shell sent one.
     pub fn command_at(&self, line: i32) -> Option<&str> {

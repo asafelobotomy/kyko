@@ -44,6 +44,8 @@ public:
     // The Unicode input box: matches for what is typed, and closing it (typing `text` or not).
     Q_INVOKABLE QString unicodeSearch(const QString& query) const;
     Q_INVOKABLE void unicodeDone(const QString& text, bool typed) const;
+    Q_INVOKABLE QString paletteItems(const QString& query) const;
+    Q_INVOKABLE void paletteDone(const QString& id) const;
     // The find bar: 0 look for text, 1 next, 2 previous, 3 close.
     Q_INVOKABLE void search(int op, const QString& text) const;
     // Preferences (spec 2.6): the pages and values as JSON; a change or reset returns "" when it
@@ -76,6 +78,8 @@ class GridView : public QQuickItem {
     Q_PROPERTY(int pane READ pane WRITE setPane NOTIFY paneChanged)
     Q_PROPERTY(QString shot READ shot CONSTANT)
     Q_PROPERTY(int shotDelay READ shotDelay CONSTANT)
+    // The command whose output the view is inside, pinned at the top ("" for none).
+    Q_PROPERTY(QString stickyHeader READ stickyHeader NOTIFY stickyHeaderChanged)
 
 public:
     explicit GridView(QQuickItem* parent = nullptr);
@@ -84,6 +88,8 @@ public:
     int rows() const { return m_rows; }
     int pane() const { return m_pane; }
     void setPane(int pane);
+    QString stickyHeader() const { return m_header; }
+    void refreshHeader();
     QString shot() const;
     int shotDelay() const { return qEnvironmentVariableIntValue("KYKO_TEST_MS") > 0 ? qEnvironmentVariableIntValue("KYKO_TEST_MS") : 1500; }
     // The cell size in pixels, for sizing a window to a number of columns and rows.
@@ -93,6 +99,7 @@ public:
 Q_SIGNALS:
     void gridChanged();
     void paneChanged();
+    void stickyHeaderChanged();
 
 protected:
     QSGNode* updatePaintNode(QSGNode* old, UpdatePaintNodeData*) override;
@@ -164,6 +171,7 @@ private:
     int m_cols = 0, m_rows = 0;
     int m_curX = -1, m_curY = -1;
     int m_pane = 0;
+    QString m_header;
     // For counting clicks: when and where the last press was, and how many in a row.
     qint64 m_lastPress = 0;
     QPoint m_lastCell;
