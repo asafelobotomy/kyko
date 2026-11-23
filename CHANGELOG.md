@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-11-23
+
+### Fixed
+
+- **Building the package from a terminal no longer stops it.** The bash integration tests,
+  which `makepkg` runs in `check()`, started interactive bashes that took over the terminal the
+  build ran in, so an AUR helper upgrade (`paru`, `bindleup`) was suspended as a stopped job
+  partway through. Each test bash now runs in a session of its own, with no terminal to take.
+
 ## [1.3.1] - 2026-11-23
 
 ### Changed
