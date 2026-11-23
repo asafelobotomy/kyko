@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-23
+
 ### Added
 
 - **The drop-down can come from any side.** `window.position` (Preferences › Window ›
@@ -34,6 +36,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key (uQ's Settings › Shortcuts binds F12), kyko binds nothing itself, so one press no longer
   toggles twice. Elsewhere kyko still binds `hotkey.toggle` at runtime.
 - `window.width_pct` now goes down to 20.
+
+## [1.1.0] - 2026-11-22
+
+### Added
+
+- **Shell extras** (Preferences › Terminal › Shell extras, `terminal.shell_extras`, on by
+  default): where your own shell files set none, kyko's bash and zsh keep a long history shared
+  between tabs, complete in a menu (case-insensitive), and bind Home, End, Delete and
+  Ctrl+arrows. Up and Down search history by what is typed (bash; zsh with
+  `zsh-history-substring-search`). zsh gets fzf-tab when it is installed, and a missing command
+  names the package it is in when `pkgfile` is installed (fish does this on its own). Plugins
+  your own files already loaded are not loaded twice.
+- **Command lines in the marks.** bash, zsh and fish send the command line with each command
+  (`OSC 133;C;cmdline_url=`), and kyko keeps it: a long command's finish notification is now
+  titled with the command instead of the tab. Groundwork for command blocks.
+- **XTGETTCAP and XTVERSION answers**, so fish 4's Ctrl+L keeps the screen in the scrollback
+  instead of erasing it.
+
+### Fixed
+
+- **fish 4 no longer gets every mark twice.** fish 4 marks prompts and commands itself; kyko's
+  fish script now leaves that to it, and kyko reads fish's own marks, command lines and
+  `click_events`.
+- **bash marks were wrong on Arch.** Arch's `bash.bashrc` (and zoxide) add commands to
+  `PROMPT_COMMAND` as an array; those ran under kyko's command hook, so every prompt was marked
+  as a command that started and never ended. The gutter, "copy last output" and finish
+  notifications were off by one command.
+- **zsh printed `__kyko_precmd:4: unknown function: int`** after every command and skipped the
+  folder report and prompt mark.
+- **fish without `hostname` installed** (it is not in Arch's `base`) printed an error at every
+  prompt.
+- A command line longer than 48 bytes no longer drops the whole command-start mark.
 
 ## [1.0.0] - 2026-11-22
 

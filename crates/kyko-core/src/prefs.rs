@@ -194,6 +194,12 @@ pub const PAGES: &[Page] = &[
                 help: "The same prompt marks, folder tracking and prompt in bash, zsh and fish. Your own prompt is kept. Applies to new tabs.",
                 kind: Kind::Bool,
             },
+            Item {
+                key: "terminal.shell_extras",
+                label: "Shell extras",
+                help: "With shell integration: saved history, a completion menu, suggestions as you type, Up and Down searching history, and a hint naming the package of a missing command. Only where your own shell files set none. Applies to new tabs.",
+                kind: Kind::Bool,
+            },
         ],
     },
     Page {
@@ -460,6 +466,7 @@ pub fn values_json(c: &Config) -> Json {
         "terminal.copy_on_select": t.copy_on_select,
         "terminal.ligatures": t.ligatures,
         "terminal.shell_integration": t.shell_integration,
+        "terminal.shell_extras": t.shell_extras,
         "advanced.programs_write_clipboard": a.programs_write_clipboard,
         "advanced.allow_run": a.allow_run,
         "theme.source": match &c.theme {

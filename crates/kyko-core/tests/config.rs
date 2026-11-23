@@ -62,6 +62,7 @@ notify_after = 30
 copy_on_select = true
 ligatures = false
 shell_integration = false
+shell_extras = false
 confirm_multiline_paste = false
 scrollback = 50000
 shell = "/usr/bin/fish"
@@ -128,6 +129,7 @@ fn default_is_the_table_in_the_spec() {
     assert!(!t.copy_on_select);
     assert!(t.ligatures);
     assert!(t.shell_integration);
+    assert!(t.shell_extras);
     assert!(t.confirm_multiline_paste);
     assert_eq!(t.scrollback, 10_000);
     assert_eq!(t.shell, None);
@@ -240,6 +242,7 @@ fn every_key_set() {
             copy_on_select: true,
             ligatures: false,
             shell_integration: false,
+            shell_extras: false,
             confirm_multiline_paste: false,
             scrollback: 50_000,
             shell: Some("/usr/bin/fish".into()),

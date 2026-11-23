@@ -25,7 +25,9 @@ The package installs a desktop entry and icon, so kyko shows up as a terminal em
 - **Links:** URLs and OSC 8 links open on Ctrl+click; Ctrl+Shift+L labels every link on screen
   to open or copy it from the keyboard.
 - **Shell integration:** jump between prompts, copy the last command's output, and get a
-  desktop notification when a long command finishes while you look elsewhere.
+  desktop notification when a long command finishes while you look elsewhere. Where your own
+  shell files set none, bash and zsh also get saved history, a completion menu, history search
+  on Up and Down and package hints for missing commands (Shell extras in Preferences).
 - **Scrollback:** search it (Ctrl+Shift+F), open it in a pager (Ctrl+Shift+H), or drag the
   scrollbar.
 - **Remote control:** `kyko @ ls`, `kyko @ launch`, `kyko @ send-text` and more, like

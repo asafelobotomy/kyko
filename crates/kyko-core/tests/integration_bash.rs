@@ -52,7 +52,12 @@ fn run(input: &str, bashrc: &str) -> String {
 fn bash_marks_prompt_command_and_status() {
     let out = run("true\nfalse\nexit\n", "");
     assert!(out.contains("\x1b]133;A\x07"), "prompt mark: {out:?}");
-    assert!(out.contains("\x1b]133;C\x07"), "command mark: {out:?}");
+    assert!(
+        out.contains("\x1b]133;C;cmdline_url=false\x07"),
+        "command mark with its line: {out:?}"
+    );
+    // Arch's bash.bashrc adds to PROMPT_COMMAND; only the user's commands are marked.
+    assert_eq!(out.matches("\x1b]133;C").count(), 3, "{out:?}");
     assert!(out.contains("\x1b]133;D;0\x07"), "success status: {out:?}");
     assert!(out.contains("\x1b]133;D;1\x07"), "failure status: {out:?}");
     assert!(out.contains("\x1b]7;file://"), "folder report: {out:?}");
@@ -77,4 +82,12 @@ fn bash_keeps_a_prompt_the_user_set() {
         out.contains("\x1b]133;A\x07"),
         "marks still emitted: {out:?}"
     );
+}
+
+#[test]
+fn bash_does_not_mark_the_users_own_prompt_commands() {
+    // Prompt commands added as an array (bash 5.1), as Arch's bash.bashrc and zoxide do.
+    let out = run("true\nexit\n", "PROMPT_COMMAND+=('printf \"\"' 'true')\n");
+    assert_eq!(out.matches("\x1b]133;C").count(), 2, "{out:?}");
+    assert_eq!(out.matches("\x1b]133;D").count(), 1, "{out:?}");
 }
