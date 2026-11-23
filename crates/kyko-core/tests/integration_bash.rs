@@ -1,6 +1,7 @@
 //! The bash script, run for real: an interactive bash prints the prompt, command and status marks.
 
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
 use kyko_core::integration::{Host, install, plan};
@@ -19,7 +20,20 @@ fn run(input: &str, bashrc: &str) -> String {
     std::fs::write(&stub, "#!/bin/sh\nprintf 'KP[%s]' \"$*\"\n").unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let p = plan("bash", &[], &scripts, &Host { zdotdir: None });
-    let mut child = Command::new("bash")
+    let mut cmd = Command::new("bash");
+    // An interactive bash takes the terminal it finds for job control. Run from a terminal
+    // (makepkg's check() in an AUR helper), the tests' bashes would take the user's terminal
+    // and stop the whole build. In a session of its own, bash has no terminal to take.
+    // SAFETY: setsid is async-signal-safe and touches no memory of the parent.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = cmd
         .args(&p.args)
         .arg("-i")
         .envs(p.env.iter().map(|(k, v)| (k, v)))

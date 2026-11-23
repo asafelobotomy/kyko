@@ -13,4 +13,5 @@ toml = "1"
 toml_edit = "0.25.19"
 
 [dev-dependencies]
+libc = "0.2"
 tempfile = "3.27.0"
