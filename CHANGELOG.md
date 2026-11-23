@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-23
+
+### Added
+
+- **Click to move the cursor in the command line.** A plain click on the line being typed
+  moves the shell's cursor there, in bash, zsh and fish (fish 4.1+ gets the click itself
+  through `click_events`, the others get arrow keys).
+- **Command blocks.** A click on a command's gutter selects its output; Ctrl+Alt+Shift+Up and
+  Down jump to the previous and next failed command; Ctrl+Shift+K copies the last command.
+- **The command stays pinned at the top** while you scroll through its long output.
+- **Clickable file paths.** `path`, `path:line` and `path:line:col` (compiler, grep and test
+  output) underline when the file exists, relative to the pane's folder, and open in
+  `$EDITOR` at that line (vi, vim, nvim, nano, micro, kak, hx, emacs) or the default app.
+- **Command palette** (Ctrl+Shift+P): fuzzy search over every action with its keys, and the
+  last 50 commands run in any pane; picking one types it in the focused pane.
+
 ## [1.2.0] - 2026-11-23
 
 ### Added
