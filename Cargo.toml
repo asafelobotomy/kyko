@@ -4,7 +4,7 @@ members = ["crates/kyko-core", "crates/kyko-diag", "crates/kyko-hotkey", "crates
 
 [workspace.package]
 edition = "2024"
-version = "1.1.0"
+version = "1.2.0"
 license = "MIT"
 repository = "https://github.com/asafelobotomy/kyko"
 
