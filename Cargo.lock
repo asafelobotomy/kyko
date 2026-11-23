@@ -635,7 +635,7 @@ dependencies = [
 
 [[package]]
 name = "kyko"
-version = "1.0.0-rc.3"
+version = "1.0.0-rc.4"
 dependencies = [
  "clap",
  "cxx",
@@ -656,7 +656,7 @@ dependencies = [
 
 [[package]]
 name = "kyko-core"
-version = "1.0.0-rc.3"
+version = "1.0.0-rc.4"
 dependencies = [
  "kyko-proto",
  "serde",
@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "kyko-diag"
-version = "1.0.0-rc.3"
+version = "1.0.0-rc.4"
 dependencies = [
  "serde_json",
  "tracing",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "kyko-hotkey"
-version = "1.0.0-rc.3"
+version = "1.0.0-rc.4"
 dependencies = [
  "kyko-core",
  "tempfile",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "kyko-link"
-version = "1.0.0-rc.3"
+version = "1.0.0-rc.4"
 dependencies = [
  "kyko-proto",
  "kyko-term",
@@ -694,15 +694,15 @@ dependencies = [
 
 [[package]]
 name = "kyko-prompt"
-version = "1.0.0-rc.3"
+version = "1.0.0-rc.4"
 
 [[package]]
 name = "kyko-proto"
-version = "1.0.0-rc.3"
+version = "1.0.0-rc.4"
 
 [[package]]
 name = "kyko-term"
-version = "1.0.0-rc.3"
+version = "1.0.0-rc.4"
 dependencies = [
  "alacritty_terminal",
  "miniz_oxide 0.8.9",
@@ -712,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "kykod"
-version = "1.0.0-rc.3"
+version = "1.0.0-rc.4"
 dependencies = [
  "clap",
  "kyko-diag",

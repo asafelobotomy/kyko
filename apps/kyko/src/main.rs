@@ -13,7 +13,7 @@ mod icat;
 mod prefs;
 mod remote;
 mod session;
-// uQ's shared theme watcher, vendored as is (scripts/check-uq-theme.sh pins it).
+// uQ's shared theme watcher, vendored as is (uq/native.toml pins it).
 #[rustfmt::skip]
 #[allow(dead_code)]
 mod uq_theme;
