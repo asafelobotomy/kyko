@@ -1,4 +1,4 @@
-//! uq-theme 1.0.0
+//! uq-theme 1.1.0
 //!
 //! uQ's theme tokens (`$XDG_STATE_HOME/uq/theme/tokens.json`, written by uqd) for a Rust app,
 //! and a live follow of that file. Vendor this file unchanged (see uQ's `native/uq-theme/README.md`);
@@ -8,7 +8,10 @@
 //! singleton reads:
 //!
 //! `{present, name, variant, colors{bg, surface, ...}, radius, gapIn, gapOut, borderWidth,
-//!   fontUi, fontMono, fontSize, iconTheme}`
+//!   fontUi, fontMono, fontSize, iconTheme, motion{fast, base, slow, reduce}}`
+//!
+//! `motion` (1.1.0) is in ms and all 0 when the user turned on Reduce motion; a uQ older than
+//! 0.3.36 writes none, so it is uQ's defaults (100, 140, 220) then.
 //!
 //! or `{present: false}` when uQ isn't there, the file doesn't parse, or a colour is missing or
 //! not `#rrggbb`/`#rrggbbaa` (half a theme looks worse than the desktop's own).
@@ -24,7 +27,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 /// The version of this file; `check-uq-theme.sh` compares it with the one a repo pins.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "1.1.0";
 
 /// The colour tokens every uQ theme defines (see uq-core's `theme.rs`).
 pub const COLORS: [&str; 12] = [
@@ -90,6 +93,14 @@ pub fn parse(text: &str) -> Value {
             .unwrap_or("")
             .to_string()
     };
+    let reduce = t.pointer("/motion/reduce").and_then(Value::as_bool) == Some(true);
+    let ms = |k: &str, def: u64| {
+        let v = t
+            .pointer(&format!("/motion/{k}"))
+            .and_then(Value::as_u64)
+            .unwrap_or(def);
+        if reduce { 0 } else { v.min(1000) }
+    };
     let variant = if t["variant"].as_str() == Some("light") {
         "light"
     } else {
@@ -108,6 +119,12 @@ pub fn parse(text: &str) -> Value {
         "fontMono": text_at("/fonts/mono"),
         "fontSize": num("/fonts/size", 0, 32),
         "iconTheme": text_at("/icons/theme"),
+        "motion": {
+            "fast": ms("fast", 100),
+            "base": ms("base", 140),
+            "slow": ms("slow", 220),
+            "reduce": reduce,
+        },
     })
 }
 
@@ -296,6 +313,28 @@ mod tests {
     fn silly_numbers_are_clamped() {
         let t = parse(&tokens("#ffffff").replace("\"radius\":10", "\"radius\":500"));
         assert_eq!(t["radius"], 32);
+    }
+
+    #[test]
+    fn motion_defaults_follows_and_reduces() {
+        let old = parse(&tokens("#ffffff"));
+        assert_eq!(
+            old["motion"],
+            json!({"fast": 100, "base": 140, "slow": 220, "reduce": false})
+        );
+        let with = |m: &str| {
+            let mut v: Value = serde_json::from_str(&tokens("#ffffff")).unwrap();
+            v["motion"] = serde_json::from_str(m).unwrap();
+            parse(&v.to_string())["motion"].clone()
+        };
+        assert_eq!(
+            with(r#"{"fast": 90, "base": 120, "slow": 99999, "reduce": false}"#),
+            json!({"fast": 90, "base": 120, "slow": 1000, "reduce": false})
+        );
+        assert_eq!(
+            with(r#"{"fast": 100, "base": 140, "slow": 220, "reduce": true}"#),
+            json!({"fast": 0, "base": 0, "slow": 0, "reduce": true})
+        );
     }
 
     #[test]

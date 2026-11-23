@@ -17,9 +17,11 @@ pub fn config_path(env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     base(&env, "XDG_CONFIG_HOME", ".config").map(|d| d.join("kyko/config.toml"))
 }
 
-/// `<state>/uq/theme/tokens.json`: `$XDG_STATE_HOME`, else `$HOME/.local/state`.
+/// `<state>/uq/theme/tokens.json`: `$XDG_STATE_HOME` (only an absolute one, as uQ), else
+/// `$HOME/.local/state`. uQ's own rule, from the vendored uq-consts.
 pub fn uq_tokens_path(env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
-    base(&env, "XDG_STATE_HOME", ".local/state").map(|d| d.join("uq/theme/tokens.json"))
+    use crate::uq_consts::paths;
+    paths::state_home_from(&env).map(|d| d.join(paths::TOKENS))
 }
 
 #[cfg(test)]
@@ -73,5 +75,10 @@ mod tests {
             Some("/s/uq/theme/tokens.json".into())
         );
         assert_eq!(p(&[("XDG_CONFIG_HOME", "/x")]), None);
+        // uQ ignores a relative XDG_STATE_HOME, so kyko does too.
+        assert_eq!(
+            p(&[("HOME", "/home/a"), ("XDG_STATE_HOME", "s")]),
+            Some("/home/a/.local/state/uq/theme/tokens.json".into())
+        );
     }
 }

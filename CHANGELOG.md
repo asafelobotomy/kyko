@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-23
+
+### Changed
+
+- **uQ's paths and names come from uQ.** Where kyko finds uQ's `tokens.json` and the launcher provider's `/org/uq/Launcher1` path now come from uQ's shared uq-consts 1.0.0 (`crates/kyko-core/src/uq_consts.rs`, vendored unchanged). Like uQ, a relative `XDG_STATE_HOME` is now ignored. The theme watcher moves to uq-theme 1.1.0, and one `tests/shell/uq_native_pin.sh` (uQ's `scripts/check-uq-native.sh` with `uq/native.toml`) replaces the two pin tests and their three scripts.
+
 ## [1.3.0] - 2026-11-23
 
 ### Added

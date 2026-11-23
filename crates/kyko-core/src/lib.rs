@@ -14,6 +14,9 @@ pub mod session;
 pub mod tabsearch;
 pub mod theme;
 pub mod unicode;
+/// uQ's shared values (uQ's native/uq-consts), vendored unchanged.
+#[rustfmt::skip]
+pub mod uq_consts;
 
 /// A problem with one setting or one field, which fell back to its default. The window logs
 /// each distinct warning once and shows it on the settings page.

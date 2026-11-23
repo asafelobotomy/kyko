@@ -1,0 +1,15 @@
+# uQ kits this repo vendors unchanged (uQ's native/README.md). Checked by tests/shell/uq_native_pin.sh
+
+[uq-theme]
+version = "1.1.0"
+files = ["apps/kyko/src/uq_theme.rs"]
+
+[uq-diag]
+version = "1.0.1"
+files = ["crates/kyko-diag/src/uq_diag.rs"]
+codes = "uq/diag/kyko.toml"
+sources = ["apps", "crates"]
+
+[uq-consts]
+version = "1.0.0"
+files = ["crates/kyko-core/src/uq_consts.rs"]

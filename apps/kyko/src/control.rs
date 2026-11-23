@@ -12,7 +12,7 @@ use zbus::{
 
 pub const NAME: &str = "org.kyko.Terminal1";
 pub const PATH: &str = "/org/kyko/Terminal1";
-pub const LAUNCHER_PATH: &str = "/org/uq/Launcher1";
+pub const LAUNCHER_PATH: &str = kyko_core::uq_consts::dbus::LAUNCHER_PROVIDER_PATH;
 
 /// What the bus asks of the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,5 +263,15 @@ fn explain(e: zbus::Error) -> String {
             _ => NOT_RUNNING.to_string(),
         },
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod uq_name {
+    #[test]
+    fn the_launcher_interface_is_uqs() {
+        let src = include_str!("control.rs");
+        let iface = kyko_core::uq_consts::dbus::LAUNCHER_PROVIDER_INTERFACE;
+        assert!(src.contains(&format!("#[zbus::interface(name = \"{iface}\")]")));
     }
 }
