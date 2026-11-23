@@ -300,6 +300,37 @@ Item {
                     onActiveFocusChanged: if (activeFocus && !cell.isFocused) ws.ctl.focusPane(cell.modelData)
                     Component.onCompleted: if (cell.isFocused) forceActiveFocus()
                 }
+                // Scrolled into a long output: the command that printed it stays at the top.
+                Rectangle {
+                    id: pinned
+                    visible: grid.stickyHeader.length > 0
+                    anchors.left: grid.left
+                    anchors.right: grid.right
+                    anchors.top: grid.top
+                    anchors.rightMargin: 8
+                    height: grid.cellHeight() + 6
+                    color: Qt.rgba(ws.bg.r, ws.bg.g, ws.bg.b, 0.94)
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: 1
+                        color: ws.dim
+                    }
+                    Text {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: ws.fg
+                        opacity: 0.85
+                        elide: Text.ElideRight
+                        font.family: "monospace"
+                        font.pixelSize: Math.max(10, grid.cellHeight() * 0.72)
+                        text: "❯ " + grid.stickyHeader
+                    }
+                }
                 // A pane that ended while held open, or never started.
                 Rectangle {
                     visible: cell.info !== null && cell.info.state !== "running"
@@ -519,6 +550,114 @@ Item {
             }
             Text {
                 visible: pickerField.text.length > 0 && picker.found.length === 0
+                color: ws.fg
+                opacity: 0.6
+                font.pixelSize: 12
+                text: "Nothing found"
+            }
+        }
+    }
+
+    // Ctrl+Shift+P: every action, tab and recent command, found by typing.
+    Rectangle {
+        id: palette
+        readonly property bool open: ws.layout.palette === true
+        property var found: []
+        property int current: 0
+        visible: open
+        z: 9
+        anchors.horizontalCenter: area.horizontalCenter
+        anchors.top: area.top
+        anchors.topMargin: 24
+        width: Math.min(area.width - 32, 560)
+        height: paletteColumn.implicitHeight + 16
+        radius: ws.radius
+        color: ws.bg
+        border.width: 1
+        border.color: ws.accent
+        onOpenChanged: {
+            if (open) {
+                paletteField.text = ""
+                refresh()
+                paletteField.forceActiveFocus()
+            } else ws.focusPane()
+        }
+        function refresh() {
+            found = JSON.parse(ws.ctl.paletteItems(paletteField.text))
+            current = 0
+        }
+        function finish(chosen) {
+            ws.ctl.paletteDone(chosen && found.length > 0 ? found[current].id : "")
+        }
+        MouseArea { anchors.fill: parent }
+        Column {
+            id: paletteColumn
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 8
+            spacing: 2
+            TextInput {
+                id: paletteField
+                width: parent.width
+                color: ws.fg
+                font.pixelSize: 14
+                clip: true
+                Text {
+                    visible: paletteField.text.length === 0
+                    color: ws.fg
+                    opacity: 0.5
+                    font.pixelSize: 14
+                    text: "Type an action, a tab or a command you ran"
+                }
+                onTextEdited: palette.refresh()
+                Keys.onReturnPressed: palette.finish(true)
+                Keys.onEnterPressed: palette.finish(true)
+                Keys.onEscapePressed: palette.finish(false)
+                Keys.onUpPressed: palette.current = Math.max(0, palette.current - 1)
+                Keys.onDownPressed: palette.current = Math.min(palette.found.length - 1, palette.current + 1)
+            }
+            Item { width: 1; height: 4 }
+            Repeater {
+                model: palette.found.slice(0, 12)
+                Rectangle {
+                    required property var modelData
+                    required property int index
+                    readonly property bool picked: index === palette.current
+                    width: paletteColumn.width
+                    height: 28
+                    radius: ws.r(0.6)
+                    color: picked ? ws.accent : "transparent"
+                    Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 8
+                        anchors.right: hint.left
+                        anchors.rightMargin: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        elide: Text.ElideRight
+                        color: parent.picked ? ws.bg : ws.fg
+                        font.pixelSize: 13
+                        font.family: parent.modelData.kind === "command" ? "monospace" : ""
+                        text: parent.modelData.label
+                    }
+                    Text {
+                        id: hint
+                        anchors.right: parent.right
+                        anchors.rightMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: parent.picked ? ws.bg : ws.fg
+                        opacity: 0.7
+                        font.pixelSize: 12
+                        text: parent.modelData.hint
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: { palette.current = parent.index; palette.finish(true) }
+                    }
+                }
+            }
+            Text {
+                visible: palette.found.length === 0
                 color: ws.fg
                 opacity: 0.6
                 font.pixelSize: 12

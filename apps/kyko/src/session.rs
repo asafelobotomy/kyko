@@ -37,6 +37,8 @@ pub struct Frame {
     pub mouse_tracking: bool,
     /// Lines the view is above the live screen, and lines of history there are.
     pub scroll: (u32, u32),
+    /// The command to pin at the top while the view is inside its output.
+    pub header: Option<String>,
 }
 
 /// What the window reads: the panes' frames and the tab layout.
@@ -56,6 +58,10 @@ pub struct Shared {
     pub looking_at: Option<PaneId>,
     /// The size of a cell in pixels, as the window last measured it (images are sized by it).
     pub cell_px: Option<(u16, u16)>,
+    /// Each pane's folder, as kykod last reported it (relative paths on screen are opened from it).
+    pub cwds: HashMap<PaneId, String>,
+    /// Command lines the shells ran, newest first, each once (the command palette lists them).
+    pub recent: Vec<String>,
 }
 
 /// What the find bar asks of the focused pane's scrollback.
@@ -106,6 +112,9 @@ enum Cmd {
     Copy(PaneId),
     /// Scroll to the previous (-1) or next (1) prompt.
     PromptJump(PaneId, i32),
+    /// Scroll to the previous (< 0) or next failed command.
+    FailedJump(PaneId, i32),
+    CopyLastCommand(PaneId),
     /// Select the last command's output and copy it.
     CopyLastOutput(PaneId),
     ShowScrollback(PaneId),
@@ -138,6 +147,8 @@ pub enum Act {
     Confirm(bool),
     /// The Unicode input box closed: with the text to type, or without (Escape).
     Unicode(Option<String>),
+    /// The command palette closed.
+    PaletteClosed,
     /// A new tab that runs a command (held open after it ends), or a plain one.
     Run {
         command: Option<String>,
@@ -281,6 +292,15 @@ impl Workspace {
 
     pub fn copy_last_output(&self, pane: PaneId) {
         let _ = self.tx.send(Cmd::CopyLastOutput(pane));
+    }
+
+    /// Scrolls the pane to the previous (`dir < 0`) or next command that failed.
+    pub fn jump_failed(&self, pane: PaneId, dir: i32) {
+        let _ = self.tx.send(Cmd::FailedJump(pane, dir));
+    }
+
+    pub fn copy_last_command(&self, pane: PaneId) {
+        let _ = self.tx.send(Cmd::CopyLastCommand(pane));
     }
 
     pub fn paste(&self, pane: PaneId, text: String) {
@@ -469,6 +489,9 @@ fn finished_text(ran: Duration, status: u8) -> String {
     }
 }
 
+/// How many recent command lines the command palette keeps.
+const RECENT: usize = 50;
+
 /// At most this many program notifications in [`NOTIFY_WINDOW`]; a program that prints them in
 /// a loop gets the first few shown and the rest dropped, instead of a thread and a bus
 /// connection each.
@@ -634,6 +657,18 @@ fn mouse(
                     on_copy(t.clone(), false);
                 }
                 on_copy(t, true);
+                return Ok(false);
+            }
+            // A plain click (no drag) on the command line being typed moves the shell's cursor
+            // there, as kitty and fish do.
+            if ev.clicks == 1
+                && ev.mods == 0
+                && let Some(bytes) = p.emulator().click_to_cursor(ev.col, ev.row)
+            {
+                if !bytes.is_empty() {
+                    link.input(pane, &bytes)?;
+                }
+                return Ok(false);
             }
             Ok(false)
         }
@@ -706,7 +741,7 @@ fn handle(act: Act, s: &mut Session, look: &Look, login: &str) -> Vec<Effect> {
             Vec::new()
         }
         Act::Dismiss(p) => s.dismiss(p, login),
-        Act::Confirm(_) | Act::Unicode(_) => Vec::new(),
+        Act::Confirm(_) | Act::Unicode(_) | Act::PaletteClosed => Vec::new(),
         Act::Run { command, cwd } => {
             let (args, hold) = match command {
                 Some(c) => (kyko_core::runq::shell_args(&c), true),
@@ -1009,6 +1044,7 @@ fn publish(link: &Link, pane: PaneId, colors: &Mutex<Colors>, shared: &Mutex<Sha
                 u32::try_from(p.emulator().display_offset()).unwrap_or(u32::MAX),
                 u32::try_from(p.emulator().history_len()).unwrap_or(u32::MAX),
             ),
+            header: p.emulator().sticky_header(),
         };
         shared.lock().unwrap().frames.insert(pane, frame);
     }
@@ -1023,6 +1059,7 @@ pub fn layout_json(
     confirm: Option<&(Pending, Vec<String>)>,
     find: Find,
     unicode: bool,
+    palette: bool,
 ) -> String {
     use serde_json::json;
     let mut title = String::new();
@@ -1070,6 +1107,7 @@ pub fn layout_json(
                "notice": notice.unwrap_or(""), "tabs": tabs,
                "find": {"open": find.open, "pos": find.pos + 1, "total": find.total},
                "unicode": unicode,
+               "palette": palette,
                "confirm": confirm.map(|(what, programs)| json!({
                    "what": match what {
                        Pending::Pane(_) => "pane",
@@ -1180,6 +1218,7 @@ fn run(
     let mut held_paste = String::new();
     let mut find = Find::default();
     let mut unicode = false;
+    let mut palette = false;
     let mut dirty: HashSet<PaneId> = session.pane_ids().into_iter().collect();
     let mut layout_changed = true;
     'main: loop {
@@ -1218,6 +1257,22 @@ fn run(
                         && pn.emulator_mut().jump_prompt(dir)
                     {
                         dirty.insert(p);
+                    }
+                }
+                Cmd::FailedJump(p, dir) => {
+                    if let Some(pn) = link.pane_mut(p)
+                        && pn.emulator_mut().jump_failed(dir)
+                    {
+                        dirty.insert(p);
+                    }
+                }
+                Cmd::CopyLastCommand(p) => {
+                    let last = ctx.shared.lock().unwrap().recent.first().cloned();
+                    let here = link
+                        .pane(p)
+                        .and_then(|pn| pn.emulator().last_command().map(str::to_string));
+                    if let Some(c) = here.or(last) {
+                        (ctx.on_copy)(c, false);
                     }
                 }
                 Cmd::ScrollTo(p, offset) => {
@@ -1324,6 +1379,14 @@ fn run(
                         unicode = true;
                         continue;
                     }
+                    if matches!(act, Act::Key(Action::CommandPalette)) {
+                        palette = true;
+                        continue;
+                    }
+                    if matches!(act, Act::PaletteClosed) {
+                        palette = false;
+                        continue;
+                    }
                     if let Act::Unicode(text) = act {
                         unicode = false;
                         if let Some(t) = text {
@@ -1410,6 +1473,14 @@ fn run(
                             let l = look();
                             let seen = ctx.shared.lock().unwrap().looking_at == Some(p);
                             let title = pn.emulator().title().unwrap_or("kyko").to_string();
+                            {
+                                let mut sh = ctx.shared.lock().unwrap();
+                                for c in finished.iter().filter_map(|f| f.command.clone()) {
+                                    sh.recent.retain(|r| *r != c);
+                                    sh.recent.insert(0, c);
+                                }
+                                sh.recent.truncate(RECENT);
+                            }
                             for f in finished {
                                 if finish_worth_telling(
                                     l.notify_on_finish,
@@ -1426,6 +1497,7 @@ fn run(
                     }
                 }
                 Event::Info { pane, program, cwd } => {
+                    ctx.shared.lock().unwrap().cwds.insert(pane, cwd.clone());
                     layout_changed |= session.apply_info(pane, &program, &cwd);
                     dirty.insert(pane);
                 }
@@ -1469,6 +1541,7 @@ fn run(
                     pending.as_ref(),
                     find,
                     unicode,
+                    palette,
                 )
             };
             ctx.shared.lock().unwrap().layout = json;
