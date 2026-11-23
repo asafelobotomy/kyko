@@ -71,6 +71,9 @@ enum Sub {
     },
     /// Open the Preferences window
     Preferences,
+    /// Read or change the drop-down's settings as JSON (for uQ Settings' kyko page)
+    #[command(subcommand)]
+    Config(ConfigCmd),
     /// Control a running kyko window: `kyko @ ls`, `kyko @ send-text`, `kyko @ launch`... (`kyko @ help`)
     #[command(name = "@", alias = "remote", disable_help_flag = true)]
     Remote {
@@ -87,6 +90,22 @@ enum Sub {
         /// Start in this folder
         #[arg(long, short = 'd', value_name = "DIR")]
         working_directory: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCmd {
+    /// Print the settings as JSON: {values, error}
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Change one drop-down setting (window.position, window.dim_pct...); prints {ok, error}
+    Set {
+        key: String,
+        value: String,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -240,6 +259,22 @@ fn main() -> ExitCode {
     }
     if let Some(Sub::Icat { files }) = &cli.command {
         return icat::run(files);
+    }
+    match &cli.command {
+        Some(Sub::Config(ConfigCmd::Show { .. })) => {
+            println!("{}", prefs::cli_show());
+            return ExitCode::SUCCESS;
+        }
+        Some(Sub::Config(ConfigCmd::Set { key, value, .. })) => {
+            let (ok, out) = prefs::cli_set(key, value);
+            println!("{out}");
+            return if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            };
+        }
+        _ => {}
     }
     match cli.command {
         Some(Sub::Toggle) => return control(control::Command::Toggle),

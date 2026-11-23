@@ -17,6 +17,43 @@ pub enum Shape {
     Sheet,
 }
 
+/// Where the drop-down comes from: the edge it slides in from, or the middle of the screen,
+/// where it fades in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Position {
+    Top,
+    Bottom,
+    Left,
+    Right,
+    Center,
+}
+
+impl Position {
+    pub const NAMES: [&'static str; 5] = ["top", "bottom", "left", "right", "center"];
+    const ALL: [Position; 5] = [
+        Position::Top,
+        Position::Bottom,
+        Position::Left,
+        Position::Right,
+        Position::Center,
+    ];
+
+    pub fn name(self) -> &'static str {
+        Self::NAMES[Self::ALL.iter().position(|p| *p == self).unwrap_or(0)]
+    }
+
+    /// The `window.*` keys that hold this position's size, width then height: top and bottom
+    /// share one pair, the sides another, and the middle its own, so each keeps the size it was
+    /// last dragged to.
+    pub fn size_keys(self) -> (&'static str, &'static str) {
+        match self {
+            Position::Top | Position::Bottom => ("width_pct", "height_pct"),
+            Position::Left | Position::Right => ("side_width_pct", "side_height_pct"),
+            Position::Center => ("center_width_pct", "center_height_pct"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabsAt {
     Top,
@@ -62,9 +99,19 @@ pub enum NotifyOnFinish {
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowConfig {
     pub shape: Shape,
+    pub position: Position,
     pub tabs: TabsAt,
+    /// The size at the top and bottom, in percent of the screen's free area.
     pub height_pct: u32,
     pub width_pct: u32,
+    /// The size at the left and right edges.
+    pub side_width_pct: u32,
+    pub side_height_pct: u32,
+    /// The size in the middle of the screen.
+    pub center_width_pct: u32,
+    pub center_height_pct: u32,
+    /// How much the drop-down darkens the screen behind it while shown, in percent; 0 is off.
+    pub dim_pct: u32,
     /// How opaque the terminal's background is, in percent: below 100 the desktop (and its blur)
     /// shows through. Cells a program coloured stay opaque.
     pub opacity_pct: u32,
@@ -73,6 +120,17 @@ pub struct WindowConfig {
     pub hide_on_focus_loss: bool,
     pub animations: bool,
     pub opacity: f64,
+}
+
+impl WindowConfig {
+    /// The drop-down's size where it is now, width and height in percent.
+    pub fn size_pct(&self) -> (u32, u32) {
+        match self.position {
+            Position::Top | Position::Bottom => (self.width_pct, self.height_pct),
+            Position::Left | Position::Right => (self.side_width_pct, self.side_height_pct),
+            Position::Center => (self.center_width_pct, self.center_height_pct),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -95,6 +153,9 @@ pub struct TerminalConfig {
     pub ligatures: bool,
     /// Marks, folder reports and kyko's prompt in bash, zsh and fish.
     pub shell_integration: bool,
+    /// With shell integration: kyko's shell defaults (completion, history, suggestions, the
+    /// command-not-found hint, zoxide and fzf keys) where the user's own files set none.
+    pub shell_extras: bool,
     pub confirm_multiline_paste: bool,
     pub scrollback: u32,
     /// Unset: `$SHELL`. An absolute path.
@@ -320,9 +381,15 @@ impl Default for Config {
             hotkey: Some(KeySeq::new(Mods::default(), Key::F(12))),
             window: WindowConfig {
                 shape: Shape::Island,
+                position: Position::Top,
                 tabs: TabsAt::Top,
                 height_pct: 45,
                 width_pct: 88,
+                side_width_pct: 40,
+                side_height_pct: 100,
+                center_width_pct: 60,
+                center_height_pct: 60,
+                dim_pct: 40,
                 opacity_pct: 100,
                 monitor: Monitor::Focused,
                 above_fullscreen: true,
@@ -346,6 +413,7 @@ impl Default for Config {
                 copy_on_select: false,
                 ligatures: true,
                 shell_integration: true,
+                shell_extras: true,
                 confirm_multiline_paste: true,
                 scrollback: 10_000,
                 shell: None,
@@ -708,9 +776,15 @@ impl Reader {
             "window",
             &[
                 "shape",
+                "position",
                 "tabs",
                 "height_pct",
                 "width_pct",
+                "side_width_pct",
+                "side_height_pct",
+                "center_width_pct",
+                "center_height_pct",
+                "dim_pct",
                 "opacity_pct",
                 "monitor",
                 "above_fullscreen",
@@ -737,6 +811,18 @@ impl Reader {
                 &[("island", Shape::Island), ("sheet", Shape::Sheet)],
                 dw.shape,
             ),
+            position: self.choice(
+                &s,
+                "position",
+                &[
+                    ("top", Position::Top),
+                    ("bottom", Position::Bottom),
+                    ("left", Position::Left),
+                    ("right", Position::Right),
+                    ("center", Position::Center),
+                ],
+                dw.position,
+            ),
             tabs: self.choice(
                 &s,
                 "tabs",
@@ -744,7 +830,12 @@ impl Reader {
                 dw.tabs,
             ),
             height_pct: self.int(&s, "height_pct", 20..=100, dw.height_pct),
-            width_pct: self.int(&s, "width_pct", 40..=100, dw.width_pct),
+            width_pct: self.int(&s, "width_pct", 20..=100, dw.width_pct),
+            side_width_pct: self.int(&s, "side_width_pct", 20..=100, dw.side_width_pct),
+            side_height_pct: self.int(&s, "side_height_pct", 20..=100, dw.side_height_pct),
+            center_width_pct: self.int(&s, "center_width_pct", 20..=100, dw.center_width_pct),
+            center_height_pct: self.int(&s, "center_height_pct", 20..=100, dw.center_height_pct),
+            dim_pct: self.int(&s, "dim_pct", 0..=80, dw.dim_pct),
             opacity_pct: self.int(&s, "opacity_pct", 30..=100, dw.opacity_pct),
             monitor,
             above_fullscreen: self.bool(&s, "above_fullscreen", dw.above_fullscreen),
@@ -792,6 +883,7 @@ impl Reader {
                 "copy_on_select",
                 "ligatures",
                 "shell_integration",
+                "shell_extras",
                 "confirm_multiline_paste",
                 "scrollback",
                 "shell",
@@ -862,6 +954,7 @@ impl Reader {
             copy_on_select: self.bool(&s, "copy_on_select", dt.copy_on_select),
             ligatures: self.bool(&s, "ligatures", dt.ligatures),
             shell_integration: self.bool(&s, "shell_integration", dt.shell_integration),
+            shell_extras: self.bool(&s, "shell_extras", dt.shell_extras),
             confirm_multiline_paste: self.bool(
                 &s,
                 "confirm_multiline_paste",

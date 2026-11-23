@@ -7,11 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0-rc.4] - 2026-11-22
+## [1.2.1] - 2026-11-23
 
 ### Changed
 
 - **uQ's paths and names come from uQ.** Where kyko finds uQ's `tokens.json` and the launcher provider's `/org/uq/Launcher1` path now come from uQ's shared uq-consts 1.0.0 (`crates/kyko-core/src/uq_consts.rs`, vendored unchanged). Like uQ, a relative `XDG_STATE_HOME` is now ignored. The theme watcher moves to uq-theme 1.1.0, and one `tests/shell/uq_native_pin.sh` (uQ's `scripts/check-uq-native.sh` with `uq/native.toml`) replaces the two pin tests and their three scripts.
+
+## [1.2.0] - 2026-11-23
+
+### Added
+
+- **The drop-down can come from any side.** `window.position` (Preferences › Window ›
+  Position) is `top` (the default, below uQ's bar), `bottom`, `left`, `right` or `center`.
+  From an edge it slides in; in the middle it fades in and grows from uQ's popup scale.
+- **Drag the drop-down's edge to resize it.** Its free edges (the bottom edge at the top, the
+  inner edge at a side, every edge in the middle) resize it, and the size is saved to
+  `config.toml` for that position: top and bottom share `window.width_pct`/`height_pct`, the
+  sides have `window.side_width_pct`/`side_height_pct` (40 by 100) and the middle
+  `window.center_width_pct`/`center_height_pct` (60 by 60).
+- **The screen behind dims while the drop-down shows.** `window.dim_pct` (40 by default, 0
+  turns it off) darkens everything but uQ's bar; a click on the dimmed part hides the
+  drop-down. Without the dim, clicks beside the drop-down reach the windows beneath.
+- **The drop-down moves at uQ's speeds and follows Reduce motion.** The slide and fade use
+  uQ's motion tokens (`tokens.json` `motion`, uQ 0.3.36): the panel comes in at the base speed,
+  the dim at the slow one, and both leave at the fast one. With Reduce motion on, or
+  `window.animations` off, it appears and goes at once.
+
+- **A kyko page in uQ Settings** (Apps › kyko): position, shape, size, dim and when it hides,
+  through the new `kyko config show --json` and `kyko config set KEY VALUE --json`.
+
+### Changed
+
+- **On uQ, the toggle key is uQ's.** When Hyprland's config already runs `kyko toggle` on a
+  key (uQ's Settings › Shortcuts binds F12), kyko binds nothing itself, so one press no longer
+  toggles twice. Elsewhere kyko still binds `hotkey.toggle` at runtime.
+- `window.width_pct` now goes down to 20.
+
+## [1.1.0] - 2026-11-22
+
+### Added
+
+- **Shell extras** (Preferences › Terminal › Shell extras, `terminal.shell_extras`, on by
+  default): where your own shell files set none, kyko's bash and zsh keep a long history shared
+  between tabs, complete in a menu (case-insensitive), and bind Home, End, Delete and
+  Ctrl+arrows. Up and Down search history by what is typed (bash; zsh with
+  `zsh-history-substring-search`). zsh gets fzf-tab when it is installed, and a missing command
+  names the package it is in when `pkgfile` is installed (fish does this on its own). Plugins
+  your own files already loaded are not loaded twice.
+- **Command lines in the marks.** bash, zsh and fish send the command line with each command
+  (`OSC 133;C;cmdline_url=`), and kyko keeps it: a long command's finish notification is now
+  titled with the command instead of the tab. Groundwork for command blocks.
+- **XTGETTCAP and XTVERSION answers**, so fish 4's Ctrl+L keeps the screen in the scrollback
+  instead of erasing it.
+
+### Fixed
+
+- **fish 4 no longer gets every mark twice.** fish 4 marks prompts and commands itself; kyko's
+  fish script now leaves that to it, and kyko reads fish's own marks, command lines and
+  `click_events`.
+- **bash marks were wrong on Arch.** Arch's `bash.bashrc` (and zoxide) add commands to
+  `PROMPT_COMMAND` as an array; those ran under kyko's command hook, so every prompt was marked
+  as a command that started and never ended. The gutter, "copy last output" and finish
+  notifications were off by one command.
+- **zsh printed `__kyko_precmd:4: unknown function: int`** after every command and skipped the
+  folder report and prompt mark.
+- **fish without `hostname` installed** (it is not in Arch's `base`) printed an error at every
+  prompt.
+- A command line longer than 48 bytes no longer drops the whole command-start mark.
+
+## [1.0.0] - 2026-11-22
+
+kyko's first stable release: the 1.0.0 release candidates (rc.1 to rc.3) with nothing added.
+kyko is uQ's default terminal from here, in place of kitty. See the release candidates below for
+what changed since 0.6.0.
 
 ## [1.0.0-rc.3] - 2026-11-22
 

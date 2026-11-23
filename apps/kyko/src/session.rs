@@ -954,15 +954,24 @@ fn apply(
                     ));
                 }
                 let mut args = args;
-                if ctx.look.lock().unwrap().shell_integration
-                    && let Some(dir) = integration_dir()
-                {
-                    let plan = kyko_core::integration::plan(
+                let (integrate, extras) = {
+                    let l = ctx.look.lock().unwrap();
+                    (l.shell_integration, l.shell_extras)
+                };
+                if integrate && let Some(dir) = integration_dir() {
+                    let mut plan = kyko_core::integration::plan(
                         &shell,
                         &args,
                         &dir,
                         &kyko_core::integration::Host::current(),
                     );
+                    if !extras {
+                        for (k, v) in &mut plan.env {
+                            if k == "KYKO_EXTRAS" {
+                                *v = "0".into();
+                            }
+                        }
+                    }
                     // The flags go first: `bash --rcfile f`, `fish --init-command c`.
                     args.splice(0..0, plan.args);
                     env.extend(plan.env);
@@ -1401,14 +1410,16 @@ fn run(
                             let l = look();
                             let seen = ctx.shared.lock().unwrap().looking_at == Some(p);
                             let title = pn.emulator().title().unwrap_or("kyko").to_string();
-                            for (ran, status) in finished {
+                            for f in finished {
                                 if finish_worth_telling(
                                     l.notify_on_finish,
                                     l.notify_after,
-                                    ran,
+                                    f.ran,
                                     seen,
                                 ) {
-                                    notify(title.clone(), finished_text(ran, status));
+                                    // The command itself says more than the tab's title.
+                                    let head = f.command.unwrap_or_else(|| title.clone());
+                                    notify(head, finished_text(f.ran, f.status));
                                 }
                             }
                         }

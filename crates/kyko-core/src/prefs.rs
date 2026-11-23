@@ -3,7 +3,7 @@
 //! that can be tested without Qt lives here.
 use serde_json::{Value as Json, json};
 
-use crate::config::{Action, Bell, Config, NewTabDir, NotifyOnFinish, Shape, TabsAt};
+use crate::config::{Action, Bell, Config, NewTabDir, NotifyOnFinish, Position, Shape, TabsAt};
 use crate::configedit::{self, Value};
 use crate::keys::KeySeq;
 use crate::theme::{ThemeSource, builtin_keys};
@@ -51,6 +51,12 @@ pub const PAGES: &[Page] = &[
                 kind: Kind::Choice(&["island", "sheet"]),
             },
             Item {
+                key: "window.position",
+                label: "Position",
+                help: "Where the drop-down comes from: an edge of the screen, below uQ's bar at the top, or the middle.",
+                kind: Kind::Choice(&Position::NAMES),
+            },
+            Item {
                 key: "window.tabs",
                 label: "Tab bar",
                 help: "Where the tabs sit.",
@@ -58,15 +64,45 @@ pub const PAGES: &[Page] = &[
             },
             Item {
                 key: "window.height_pct",
-                label: "Height (%)",
-                help: "Of the screen.",
+                label: "Height at the top or bottom (%)",
+                help: "Of the screen. Drag the drop-down's edge to change it.",
                 kind: Kind::Int(20, 100),
             },
             Item {
                 key: "window.width_pct",
-                label: "Width (%)",
+                label: "Width at the top or bottom (%)",
                 help: "Of the screen; the island shape only.",
-                kind: Kind::Int(40, 100),
+                kind: Kind::Int(20, 100),
+            },
+            Item {
+                key: "window.side_width_pct",
+                label: "Width at the left or right (%)",
+                help: "Of the screen. Drag the drop-down's edge to change it.",
+                kind: Kind::Int(20, 100),
+            },
+            Item {
+                key: "window.side_height_pct",
+                label: "Height at the left or right (%)",
+                help: "Of the screen; the island shape only.",
+                kind: Kind::Int(20, 100),
+            },
+            Item {
+                key: "window.center_width_pct",
+                label: "Width in the middle (%)",
+                help: "Of the screen.",
+                kind: Kind::Int(20, 100),
+            },
+            Item {
+                key: "window.center_height_pct",
+                label: "Height in the middle (%)",
+                help: "Of the screen.",
+                kind: Kind::Int(20, 100),
+            },
+            Item {
+                key: "window.dim_pct",
+                label: "Dim the screen behind (%)",
+                help: "How much the rest of the screen darkens while the drop-down shows; 0 is off. A click on the dimmed part hides it.",
+                kind: Kind::Int(0, 80),
             },
             Item {
                 key: "window.opacity_pct",
@@ -156,6 +192,12 @@ pub const PAGES: &[Page] = &[
                 key: "terminal.shell_integration",
                 label: "Shell integration",
                 help: "The same prompt marks, folder tracking and prompt in bash, zsh and fish. Your own prompt is kept. Applies to new tabs.",
+                kind: Kind::Bool,
+            },
+            Item {
+                key: "terminal.shell_extras",
+                label: "Shell extras",
+                help: "With shell integration: saved history, a completion menu, suggestions as you type, Up and Down searching history, and a hint naming the package of a missing command. Only where your own shell files set none. Applies to new tabs.",
                 kind: Kind::Bool,
             },
         ],
@@ -393,9 +435,15 @@ pub fn values_json(c: &Config) -> Json {
     let (w, t, a) = (&c.window, &c.terminal, &c.advanced);
     let mut v = json!({
         "window.shape": if w.shape == Shape::Island { "island" } else { "sheet" },
+        "window.position": w.position.name(),
         "window.tabs": if w.tabs == TabsAt::Top { "top" } else { "bottom" },
         "window.height_pct": w.height_pct,
         "window.width_pct": w.width_pct,
+        "window.side_width_pct": w.side_width_pct,
+        "window.side_height_pct": w.side_height_pct,
+        "window.center_width_pct": w.center_width_pct,
+        "window.center_height_pct": w.center_height_pct,
+        "window.dim_pct": w.dim_pct,
         "window.opacity_pct": w.opacity_pct,
         "window.above_fullscreen": w.above_fullscreen,
         "window.hide_on_focus_loss": w.hide_on_focus_loss,
@@ -418,6 +466,7 @@ pub fn values_json(c: &Config) -> Json {
         "terminal.copy_on_select": t.copy_on_select,
         "terminal.ligatures": t.ligatures,
         "terminal.shell_integration": t.shell_integration,
+        "terminal.shell_extras": t.shell_extras,
         "advanced.programs_write_clipboard": a.programs_write_clipboard,
         "advanced.allow_run": a.allow_run,
         "theme.source": match &c.theme {
@@ -682,6 +731,7 @@ mod tests {
         let pages = pages_json();
         assert_eq!(pages[0]["id"], "window");
         assert_eq!(pages[0]["items"][0]["type"], "choice");
-        assert_eq!(pages[0]["items"][2]["max"], 100);
+        assert_eq!(pages[0]["items"][1]["key"], "window.position");
+        assert_eq!(pages[0]["items"][3]["max"], 100);
     }
 }

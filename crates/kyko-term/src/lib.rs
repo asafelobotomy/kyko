@@ -10,6 +10,7 @@ pub mod links;
 pub mod marks;
 pub mod sixel;
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
@@ -383,8 +384,12 @@ pub struct Emulator {
     notifications: Vec<(String, String)>,
     /// When the running command's output began (OSC 133;C).
     started: Option<std::time::Instant>,
-    /// Commands that ended since the last look: how long each ran and its exit status.
-    finished: Vec<(std::time::Duration, u8)>,
+    /// Commands that ended since the last look.
+    finished: Vec<Finished>,
+    /// The command line of the command now running, when the shell sent it (OSC 133;C).
+    running: Option<String>,
+    /// Command lines by the row number of their prompt.
+    commands: BTreeMap<u64, String>,
     /// Images and where they are placed.
     graphics: graphics::Store,
     /// A cell's size in pixels, as the window draws it.
@@ -419,6 +424,8 @@ impl Emulator {
             notifications: Vec::new(),
             started: None,
             finished: Vec::new(),
+            running: None,
+            commands: BTreeMap::new(),
             graphics: graphics::Store::default(),
             cell_px: (8, 16),
             theme: Mutex::new(None),
@@ -523,6 +530,20 @@ impl Emulator {
                 marks::Event::CellSizeRequest => {
                     let (w, h) = self.cell_px;
                     let reply = format!("\x1b[6;{h};{w}t");
+                    self.shared
+                        .lock()
+                        .replies
+                        .extend_from_slice(reply.as_bytes());
+                }
+                marks::Event::Termcap(names) => {
+                    let reply = termcap_reply(&names);
+                    self.shared
+                        .lock()
+                        .replies
+                        .extend_from_slice(reply.as_bytes());
+                }
+                marks::Event::VersionRequest => {
+                    let reply = format!("\x1bP>|kyko {}\x1b\\", env!("CARGO_PKG_VERSION"));
                     self.shared
                         .lock()
                         .replies
@@ -830,9 +851,8 @@ impl Emulator {
         std::mem::take(&mut self.notifications)
     }
 
-    /// Commands the shell said ended (OSC 133;D after 133;C) since the last call: how long each
-    /// ran and its exit status.
-    pub fn take_finished(&mut self) -> Vec<(std::time::Duration, u8)> {
+    /// Commands the shell said ended (OSC 133;D after 133;C) since the last call.
+    pub fn take_finished(&mut self) -> Vec<Finished> {
         std::mem::take(&mut self.finished)
     }
 
@@ -1110,6 +1130,41 @@ impl Emulator {
     }
 }
 
+/// A command the shell said ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Finished {
+    /// From its output's start (OSC 133;C) to its end (OSC 133;D).
+    pub ran: std::time::Duration,
+    pub status: u8,
+    /// Its command line, when the shell sent it.
+    pub command: Option<String>,
+}
+
+/// The answer to an XTGETTCAP query: `DCS 1 + r NAME=VALUE ST` (hex-encoded) for each capability
+/// kyko knows, `DCS 0 + r NAME ST` for the rest. fish asks for `indn` to keep the screen in the
+/// scrollback on Ctrl+L, and `query-os-name` (kitty's) for its key bindings.
+fn termcap_reply(names: &[String]) -> String {
+    fn hex(s: &str) -> String {
+        s.bytes().map(|b| format!("{b:02X}")).collect()
+    }
+    let mut out = String::new();
+    for name in names {
+        let value = match name.as_str() {
+            "TN" | "name" => Some("xterm-256color"),
+            "Co" | "colors" => Some("256"),
+            "RGB" => Some("8/8/8"),
+            "indn" => Some("\x1b[%p1%dS"),
+            "query-os-name" => Some(std::env::consts::OS),
+            _ => None,
+        };
+        match value {
+            Some(v) => out.push_str(&format!("\x1bP1+r{}={}\x1b\\", hex(name), hex(v))),
+            None => out.push_str(&format!("\x1bP0+r{}\x1b\\", hex(name))),
+        }
+    }
+    out
+}
+
 /// Prompt marks (see [`marks`]): what the shell's OSC 133 sequences let the window do.
 impl Emulator {
     /// The number of the row at screen line `line` (negative lines are the history): it stays the
@@ -1136,19 +1191,40 @@ impl Emulator {
         let cursor = self.term.grid().cursor.point;
         let id = self.row_id(cursor.line.0);
         match event {
-            marks::Event::Prompt => self.marks.entry(id).or_default().prompt = true,
+            marks::Event::Prompt { click_events } => {
+                let row = self.marks.entry(id).or_default();
+                row.prompt = true;
+                row.click_events |= click_events;
+            }
             marks::Event::Input => {}
-            marks::Event::Output => {
+            marks::Event::Output { command } => {
                 self.marks.entry(id).or_default().output = true;
-                self.started = Some(std::time::Instant::now());
+                // A shell that marks twice (fish 4 and kyko's script) sends C twice for one
+                // command: the first start, and any command line, stand.
+                if self.started.is_none() {
+                    self.started = Some(std::time::Instant::now());
+                }
+                if let Some(c) = command {
+                    if let Some(p) = self.prompt_before(id + 1) {
+                        self.commands.entry(p).or_insert_with(|| c.clone());
+                    }
+                    self.running.get_or_insert(c);
+                }
             }
             marks::Event::Notify(..)
             | marks::Event::Graphics(_)
             | marks::Event::CellSizeRequest
-            | marks::Event::Sixel(_) => unreachable!("handled in feed"),
+            | marks::Event::Sixel(_)
+            | marks::Event::Termcap(_)
+            | marks::Event::VersionRequest => unreachable!("handled in feed"),
             marks::Event::Done(code) => {
+                let command = self.running.take();
                 if let Some(t) = self.started.take() {
-                    self.finished.push((t.elapsed(), code.unwrap_or(0)));
+                    self.finished.push(Finished {
+                        ran: t.elapsed(),
+                        status: code.unwrap_or(0),
+                        command,
+                    });
                 }
                 self.marks.entry(id).or_default().end = Some(cursor.column.0 > 0);
                 // The status belongs to the prompt the command began at: the nearest above.
@@ -1171,6 +1247,14 @@ impl Emulator {
     fn forget_lost_marks(&mut self) {
         let keep = self.gone;
         self.marks = self.marks.split_off(&keep);
+        self.commands = self.commands.split_off(&keep);
+    }
+
+    /// The command line run at the prompt on screen line `line` (or the nearest prompt above
+    /// it), when the shell sent one.
+    pub fn command_at(&self, line: i32) -> Option<&str> {
+        let p = self.prompt_before(self.row_id(line) + 1)?;
+        self.commands.get(&p).map(String::as_str)
     }
 
     /// The nearest prompt row number before `id`.
