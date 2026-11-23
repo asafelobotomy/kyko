@@ -3,7 +3,9 @@
 //! hold for all of them, with no Qt and no window:
 //!
 //! - [`Hyprland`]: a runtime `bind` through Hyprland's control socket, put back after a config
-//!   reload (the reload forgets runtime binds);
+//!   reload (the reload forgets runtime binds). When the compositor's own config already runs
+//!   kyko's command on a key (uQ binds F12 in Settings › Shortcuts), kyko leaves the key to it:
+//!   two binds would toggle twice;
 //! - [`Manual`]: nothing can be bound, so it says which line to put in the compositor's config.
 //!
 //! Further backends (`uq`, `kde`, the desktop portal) implement the same [`Backend`].
@@ -134,6 +136,8 @@ pub struct Hyprland {
     socket: PathBuf,
     /// What the key runs, as a shell command.
     command: String,
+    /// The compositor's config runs `command` itself, so kyko binds nothing.
+    deferred: bool,
 }
 
 impl Hyprland {
@@ -141,6 +145,7 @@ impl Hyprland {
         Hyprland {
             socket,
             command: command.to_string(),
+            deferred: false,
         }
     }
 
@@ -158,6 +163,12 @@ impl Hyprland {
         Ok(answer.trim().to_string())
     }
 
+    /// Whether a bind in the compositor's config already runs our command.
+    fn bound_elsewhere(&self) -> bool {
+        self.send("j/binds")
+            .is_ok_and(|binds| binds.contains(&self.command))
+    }
+
     fn keyword(&self, text: &str) -> Result<(), String> {
         match self.send(&format!("/keyword {text}"))?.as_str() {
             "ok" => Ok(()),
@@ -172,10 +183,19 @@ impl Backend for Hyprland {
     }
 
     fn bind(&mut self, key: &KeySeq) -> Result<(), String> {
+        // Asked before each bind: kyko's own runtime bind is gone by then (unbound, or forgotten
+        // by a reload), so a match is the config's.
+        self.deferred = self.bound_elsewhere();
+        if self.deferred {
+            return Ok(());
+        }
         self.keyword(&format!("bind {},exec,{}", hypr_keyspec(key), self.command))
     }
 
     fn unbind(&mut self, key: &KeySeq) -> Result<(), String> {
+        if self.deferred {
+            return Ok(());
+        }
         self.keyword(&format!("unbind {}", hypr_keyspec(key)))
     }
 }
@@ -268,6 +288,12 @@ mod tests {
     /// A Hyprland control socket that records what it is told and answers `ok`, or an error
     /// for any line containing `refuse`.
     fn fake_control(dir: &Path) -> (PathBuf, Arc<Mutex<Vec<String>>>) {
+        fake_control_with(dir, "[]")
+    }
+
+    /// [`fake_control`] that answers `j/binds` with `binds`, and leaves that question out of
+    /// what it records.
+    fn fake_control_with(dir: &Path, binds: &'static str) -> (PathBuf, Arc<Mutex<Vec<String>>>) {
         let path = dir.join(".socket.sock");
         let listener = UnixListener::bind(&path).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -279,6 +305,10 @@ mod tests {
                 let mut buf = [0u8; 512];
                 let n = s.read(&mut buf).unwrap_or(0);
                 line.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if line == "j/binds" {
+                    let _ = s.write_all(binds.as_bytes());
+                    continue;
+                }
                 let answer = if line.contains("refuse") {
                     "bad key"
                 } else {
@@ -319,6 +349,21 @@ mod tests {
             ]
         );
         assert_eq!(h.key(), None);
+    }
+
+    #[test]
+    fn a_key_the_config_already_binds_is_left_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // uQ's Settings › Shortcuts binds F12 to the toggle.
+        let (sock, seen) = fake_control_with(
+            dir.path(),
+            r#"[{"key": "F12", "dispatcher": "exec", "arg": "sh -c 'command -v kyko >/dev/null && exec kyko toggle'"}]"#,
+        );
+        let mut h = Hotkeys::new(Box::new(Hyprland::new(sock, "kyko toggle")));
+        h.set(Some(key("F12"))).unwrap();
+        h.rebind().unwrap();
+        h.set(None).unwrap();
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[test]

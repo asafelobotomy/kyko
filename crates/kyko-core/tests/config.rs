@@ -20,9 +20,15 @@ toggle = "Ctrl+Alt+T"
 
 [window]
 shape = "sheet"
+position = "left"
 tabs = "bottom"
 height_pct = 60
 width_pct = 70
+side_width_pct = 35
+side_height_pct = 90
+center_width_pct = 50
+center_height_pct = 55
+dim_pct = 0
 opacity_pct = 85
 monitor = "DP-1"
 above_fullscreen = false
@@ -98,6 +104,11 @@ fn default_is_the_table_in_the_spec() {
     assert_eq!(w.tabs, TabsAt::Top);
     assert_eq!(w.height_pct, 45);
     assert_eq!(w.width_pct, 88);
+    assert_eq!(w.position, Position::Top);
+    assert_eq!(w.size_pct(), (88, 45));
+    assert_eq!((w.side_width_pct, w.side_height_pct), (40, 100));
+    assert_eq!((w.center_width_pct, w.center_height_pct), (60, 60));
+    assert_eq!(w.dim_pct, 40);
     assert_eq!(w.monitor, Monitor::Focused);
     assert!(w.above_fullscreen);
     assert!(w.hide_on_focus_loss);
@@ -182,9 +193,15 @@ fn every_key_set() {
         c.window,
         WindowConfig {
             shape: Shape::Sheet,
+            position: Position::Left,
             tabs: TabsAt::Bottom,
             height_pct: 60,
             width_pct: 70,
+            side_width_pct: 35,
+            side_height_pct: 90,
+            center_width_pct: 50,
+            center_height_pct: 55,
+            dim_pct: 0,
             opacity_pct: 85,
             monitor: Monitor::Output("DP-1".into()),
             above_fullscreen: false,
@@ -264,7 +281,9 @@ const BAD: &[(&str, &str, &str)] = &[
     ("window", "height_pct", "101"),
     ("window", "height_pct", "45.0"),
     ("window", "height_pct", "\"45\""),
-    ("window", "width_pct", "39"),
+    ("window", "width_pct", "19"),
+    ("window", "position", "\"middle\""),
+    ("window", "dim_pct", "81"),
     ("window", "opacity_pct", "29"),
     ("window", "width_pct", "-1"),
     ("window", "monitor", "\"\""),
@@ -593,5 +612,22 @@ fn structured_mutations_cost_one_key() {
         };
         let l = parse(&text);
         assert_eq!(l.warnings.len(), 1, "{section}.{key}");
+    }
+}
+
+#[test]
+fn each_position_keeps_its_own_size() {
+    let mut w = Config::default().window;
+    for (p, size) in [
+        (Position::Top, (88, 45)),
+        (Position::Bottom, (88, 45)),
+        (Position::Left, (40, 100)),
+        (Position::Right, (40, 100)),
+        (Position::Center, (60, 60)),
+    ] {
+        w.position = p;
+        assert_eq!(w.size_pct(), size, "{}", p.name());
+        let (wk, hk) = p.size_keys();
+        assert!(wk.ends_with("width_pct") && hk.ends_with("height_pct"));
     }
 }

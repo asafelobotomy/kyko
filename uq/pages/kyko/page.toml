@@ -1,0 +1,57 @@
+# kyko's page for uQ Settings (Apps > kyko): where the drop-down comes from, how big it is and
+# how much the screen behind dims. Installed to /usr/share/uq/settings/pages/kyko/ by kyko's
+# package; inert without uQ. Reference: docs/settings-pages.md in the uQ repository. Everything
+# goes through `kyko config`, which reads and edits ~/.config/kyko/config.toml the way kyko's
+# own Preferences does; a running drop-down picks a change up at once.
+uq_api = 2
+id = "kyko"
+name = "kyko"
+icon = "org.kyko.Kyko"
+qml = "Page.qml"
+keywords = ["terminal", "drop-down", "dropdown", "quake", "f12", "console", "shell"]
+
+[requires]
+bins = ["kyko"]
+
+[[setting]]
+id = "position"
+label = "Where the drop-down comes from"
+keywords = ["top", "bottom", "left", "right", "center", "middle", "side", "edge", "slide"]
+
+[[setting]]
+id = "size"
+label = "Drop-down size"
+keywords = ["width", "height", "resize", "tall", "wide"]
+
+[[setting]]
+id = "dim"
+label = "Dim the screen behind"
+keywords = ["dim", "darken", "backdrop", "scrim", "focus"]
+
+[[setting]]
+id = "shape"
+label = "Shape"
+keywords = ["island", "sheet", "edge", "gap"]
+
+[[setting]]
+id = "behaviour"
+label = "Hide when it loses focus"
+keywords = ["focus", "click", "full-screen", "fullscreen", "animation", "slide"]
+
+[[command]]
+id = "config"
+argv = ["/usr/bin/kyko", "config", "show", "--json"]
+output = "json"
+timeout_ms = 5000
+watch = { files = ["~/.config/kyko/config.toml"] }
+
+# Settings that are easy to change back: no question. `kyko config set` refuses any other key.
+[[command]]
+id = "set"
+argv = ["/usr/bin/kyko", "config", "set", "--json"]
+output = "json"
+timeout_ms = 5000
+args = [
+  { name = "key", pattern = '^window\.(position|shape|dim_pct|width_pct|height_pct|side_width_pct|side_height_pct|center_width_pct|center_height_pct|above_fullscreen|hide_on_focus_loss|animations)$' },
+  { name = "value", pattern = '^(top|bottom|left|right|center|island|sheet|true|false|[0-9]{1,3})$' },
+]

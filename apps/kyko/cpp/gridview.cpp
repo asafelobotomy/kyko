@@ -1,5 +1,8 @@
 #include "gridview.h"
 
+#include <QtGui/QRegion>
+#include <QtGui/QWindow>
+
 #include <QtCore/QPointer>
 #include <QtCore/QProcess>
 #include <QtCore/QTimer>
@@ -264,6 +267,12 @@ int Controller::setting(const QString& name) const {
 }
 
 void Controller::setVisible(bool visible) const { kyko_set_visible(visible); }
+
+void Controller::setInputRegion(QObject* window, int x, int y, int w, int h) const {
+    // On Wayland a window's mask is its surface's input region.
+    if (auto* win = qobject_cast<QWindow*>(window))
+        win->setMask(w > 0 && h > 0 ? QRegion(x, y, w, h) : QRegion());
+}
 
 namespace {
 QString str(const rust::String& s) { return QString::fromUtf8(s.data(), int(s.size())); }
