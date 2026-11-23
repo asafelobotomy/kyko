@@ -7,11 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.2.1] - 2026-11-23
+## [1.3.1] - 2026-11-23
 
 ### Changed
 
 - **uQ's paths and names come from uQ.** Where kyko finds uQ's `tokens.json` and the launcher provider's `/org/uq/Launcher1` path now come from uQ's shared uq-consts 1.0.0 (`crates/kyko-core/src/uq_consts.rs`, vendored unchanged). Like uQ, a relative `XDG_STATE_HOME` is now ignored. The theme watcher moves to uq-theme 1.1.0, and one `tests/shell/uq_native_pin.sh` (uQ's `scripts/check-uq-native.sh` with `uq/native.toml`) replaces the two pin tests and their three scripts.
+
+## [1.3.0] - 2026-11-23
+
+### Added
+
+- **Click to move the cursor in the command line.** A plain click on the line being typed
+  moves the shell's cursor there, in bash, zsh and fish (fish 4.1+ gets the click itself
+  through `click_events`, the others get arrow keys).
+- **Command blocks.** A click on a command's gutter selects its output; Ctrl+Alt+Shift+Up and
+  Down jump to the previous and next failed command; Ctrl+Shift+K copies the last command.
+- **The command stays pinned at the top** while you scroll through its long output.
+- **Clickable file paths.** `path`, `path:line` and `path:line:col` (compiler, grep and test
+  output) underline when the file exists, relative to the pane's folder, and open in
+  `$EDITOR` at that line (vi, vim, nvim, nano, micro, kak, hx, emacs) or the default app.
+- **Command palette** (Ctrl+Shift+P): fuzzy search over every action with its keys, and the
+  last 50 commands run in any pane; picking one types it in the focused pane.
 
 ## [1.2.0] - 2026-11-23
 

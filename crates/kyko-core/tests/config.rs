@@ -165,13 +165,17 @@ fn default_is_the_table_in_the_spec() {
         ("zoom_pane", "Ctrl+Shift+Z"),
         ("broadcast", "Ctrl+Shift+B"),
         ("unicode_input", "Ctrl+Shift+U"),
+        ("prev_failed", "Ctrl+Alt+Shift+Up"),
+        ("next_failed", "Ctrl+Alt+Shift+Down"),
+        ("copy_last_command", "Ctrl+Shift+K"),
+        ("command_palette", "Ctrl+Shift+P"),
     ];
     for (name, s) in want {
         let action = Action::all().find(|a| a.key_name() == name).unwrap();
         assert_eq!(d.keys.get(action), Some(seq(s)), "{name}");
         assert_eq!(action.default_seq(), seq(s), "{name}");
     }
-    assert_eq!(Action::all().count(), 33);
+    assert_eq!(Action::all().count(), 37);
 }
 
 #[test]

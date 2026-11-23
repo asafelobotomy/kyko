@@ -187,7 +187,7 @@ void fillBg(QSGGeometryNode* node, const FfiCell* cells, const uint8_t* gutter, 
 void grid_request_repaint() {
     for (const QPointer<GridView>& p : std::as_const(g_views))
         if (GridView* v = p)
-            QMetaObject::invokeMethod(v, [v] { v->update(); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(v, [v] { v->update(); v->refreshHeader(); }, Qt::QueuedConnection);
 }
 
 void controller_copy(rust::Str text, bool primary) {
@@ -287,6 +287,21 @@ QString Controller::unicodeSearch(const QString& query) const {
 void Controller::unicodeDone(const QString& text, bool typed) const {
     const QByteArray t = text.toUtf8();
     kyko_unicode_done(rust::Str(t.data(), t.size()), typed);
+}
+QString Controller::paletteItems(const QString& query) const {
+    const QByteArray q = query.toUtf8();
+    return str(kyko_palette_items(rust::Str(q.data(), q.size())));
+}
+void Controller::paletteDone(const QString& id) const {
+    const QByteArray t = id.toUtf8();
+    kyko_palette_done(rust::Str(t.data(), t.size()));
+}
+void GridView::refreshHeader() {
+    const QString h = str(kyko_sticky_header(quint32(m_pane)));
+    if (h != m_header) {
+        m_header = h;
+        Q_EMIT stickyHeaderChanged();
+    }
 }
 void Controller::search(int op, const QString& text) const {
     const std::string t = text.toStdString();
@@ -1285,7 +1300,9 @@ void GridView::mouseReleaseEvent(QMouseEvent* e) {
         return;
     }
     m_down &= ~Qt::MouseButtons(e->button());
-    sendMouse(2, buttonCode(e->button()), e->position(), e->modifiers(), 0);
+    // A release reports the click count only for a click that did not drag, so the shell
+    // cursor can follow a plain click.
+    sendMouse(2, buttonCode(e->button()), e->position(), e->modifiers(), quint8(m_dragged ? 0 : m_clicks));
     if (e->button() == Qt::LeftButton && !m_dragged && m_clicks == 1 && m_pane > 0 && m_cols > 0) {
         const int col = std::clamp(int(e->position().x() / m_cellW), 0, m_cols - 1);
         const int row = std::clamp(int(e->position().y() / m_cellH), 0, m_rows - 1);

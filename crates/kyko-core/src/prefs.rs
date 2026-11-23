@@ -313,9 +313,33 @@ pub const PAGES: &[Page] = &[
                 kind: Kind::Key,
             },
             Item {
+                key: "keys.prev_failed",
+                label: "Previous failed command",
+                help: "Scroll back to the last command that failed (red in the gutter).",
+                kind: Kind::Key,
+            },
+            Item {
+                key: "keys.next_failed",
+                label: "Next failed command",
+                help: "",
+                kind: Kind::Key,
+            },
+            Item {
                 key: "keys.copy_last_output",
                 label: "Copy last output",
                 help: "Selects and copies what the last command printed.",
+                kind: Kind::Key,
+            },
+            Item {
+                key: "keys.copy_last_command",
+                label: "Copy last command",
+                help: "Copies the last command line the shell ran.",
+                kind: Kind::Key,
+            },
+            Item {
+                key: "keys.command_palette",
+                label: "Command palette",
+                help: "Find any action, tab or recent command by typing part of its name.",
                 kind: Kind::Key,
             },
             Item {

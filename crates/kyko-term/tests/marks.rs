@@ -259,3 +259,106 @@ fn termcap_and_version_queries_are_answered() {
         "{r:?}"
     );
 }
+
+const B: &str = "\x1b]133;B\x07";
+
+fn cl(cmd: &str) -> String {
+    format!("\x1b]133;C;cmdline_url={}\x07", cmd.replace(' ', "%20"))
+}
+
+#[test]
+fn blocks_know_their_prompt_output_status_and_command() {
+    let mut e = Emulator::new(30, 12, 100);
+    e.feed(
+        format!(
+            "{A}$ {B}ls\r\n{}one\r\ntwo\r\n{}{A}$ {B}false\r\n{}{}{A}$ {B}",
+            cl("ls"),
+            d(0),
+            cl("false"),
+            d(1)
+        )
+        .as_bytes(),
+    );
+    let b = e.block_at(2).unwrap();
+    assert_eq!(b.prompt, 0);
+    assert_eq!(b.output, Some((1, 2)));
+    assert_eq!(b.status, Some(0));
+    assert_eq!(b.command.as_deref(), Some("ls"));
+    let f = e.block_at(3).unwrap();
+    assert_eq!((f.prompt, f.output, f.status), (3, None, Some(1)));
+    assert!(e.select_output_at(1));
+    assert_eq!(e.selection_text().as_deref(), Some("one\ntwo\n"));
+    assert!(!e.select_output_at(3));
+}
+
+#[test]
+fn a_running_commands_output_runs_to_the_cursor() {
+    let mut e = Emulator::new(30, 12, 100);
+    e.feed(format!("{A}$ {B}make\r\n{}a\r\nb\r\nc", cl("make")).as_bytes());
+    assert_eq!(e.block_at(0).unwrap().output, Some((1, 3)));
+    assert_eq!(e.block_at(0).unwrap().status, None);
+}
+
+#[test]
+fn jumping_between_failed_commands_and_the_pinned_header() {
+    let mut e = Emulator::new(30, 5, 200);
+    let mut s = String::new();
+    for (i, code) in [(0, 0), (1, 3), (2, 0), (3, 1)] {
+        s += &format!("{A}$ {B}c{i}\r\n{}", cl(&format!("c{i}")));
+        for k in 0..6 {
+            s += &format!("out{i}.{k}\r\n");
+        }
+        s += &d(code);
+    }
+    s += &format!("{A}$ {B}");
+    e.feed(s.as_bytes());
+    assert!(e.jump_failed(-1));
+    assert_eq!(e.block_at(0).unwrap().command.as_deref(), Some("c3"));
+    assert!(e.jump_failed(-1));
+    assert_eq!(e.block_at(0).unwrap().command.as_deref(), Some("c1"));
+    assert!(!e.jump_failed(-1));
+    // At c1's prompt nothing is pinned; two rows down into its output it is.
+    assert_eq!(e.sticky_header(), None);
+    e.scroll(-2);
+    assert_eq!(e.sticky_header().as_deref(), Some("c1"));
+    assert!(e.jump_failed(1));
+    assert_eq!(e.block_at(0).unwrap().command.as_deref(), Some("c3"));
+}
+
+#[test]
+fn a_click_on_the_command_line_moves_the_cursor_with_arrows() {
+    let mut e = Emulator::new(20, 6, 100);
+    e.feed(format!("{A}$ {B}echo hello").as_bytes());
+    // Cursor after "hello" (column 12). A click on the "h" of hello (column 7): 5 lefts.
+    assert_eq!(e.click_to_cursor(7, 0), Some(b"\x1b[D".repeat(5)));
+    // Past the end of the text: the cursor is already there.
+    assert_eq!(e.click_to_cursor(18, 0), Some(Vec::new()));
+    // On the prompt itself, or below the command line: not a move.
+    assert_eq!(e.click_to_cursor(0, 0), None);
+    assert_eq!(e.click_to_cursor(3, 4), None);
+    // Back to the start, then a click on the end: rights, across a wide character.
+    e.feed(b"\x1b[10D");
+    let r = e.click_to_cursor(12, 0).unwrap();
+    assert_eq!(r, b"\x1b[C".repeat(10));
+    // A running command takes the screen: clicks are left alone.
+    e.feed(format!("\r\n{}", cl("echo hello")).as_bytes());
+    assert_eq!(e.click_to_cursor(1, 1), None);
+}
+
+#[test]
+fn a_prompt_that_asks_for_clicks_gets_a_mouse_click() {
+    let mut e = Emulator::new(20, 6, 100);
+    e.feed(format!("\x1b]133;A;click_events=1\x07> {B}ls -la").as_bytes());
+    assert_eq!(
+        e.click_to_cursor(3, 0),
+        Some(b"\x1b[<0;4;1M\x1b[<0;4;1m".to_vec())
+    );
+}
+
+#[test]
+fn a_wide_character_is_one_arrow() {
+    let mut e = Emulator::new(20, 6, 100);
+    e.feed(format!("{A}$ {B}a界b").as_bytes());
+    // Columns: a=2, 界=3-4, b=5, cursor at 6. Clicking a: three lefts (b, 界, a).
+    assert_eq!(e.click_to_cursor(2, 0), Some(b"\x1b[D".repeat(3)));
+}

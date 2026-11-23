@@ -76,6 +76,11 @@ fn tilde(n: u8, mods: u8) -> Vec<u8> {
     }
 }
 
+/// The Left or Right arrow with no modifier, in the program's DECCKM mode.
+pub fn arrow(right: bool, app_cursor: bool) -> Vec<u8> {
+    csi(if right { 'C' } else { 'D' }, 0, app_cursor)
+}
+
 /// The bytes for one key press; empty when the key sends nothing (a bare modifier).
 /// `app_cursor` is the program's DECCKM mode, which changes the unmodified arrow keys.
 pub fn encode(key: u32, mods: u8, text: &str, app_cursor: bool) -> Vec<u8> {

@@ -210,9 +210,17 @@ pub enum Action {
     Broadcast,
     /// Picks a character to type by its code point or name.
     UnicodeInput,
+    /// Scrolls to the previous command that failed.
+    PrevFailed,
+    /// Scrolls to the next command that failed.
+    NextFailed,
+    /// Copies the last command line the shell ran.
+    CopyLastCommand,
+    /// A list of every action, tab and recent command to pick from by typing.
+    CommandPalette,
 }
 
-const ACTIONS: [Action; 33] = [
+const ACTIONS: [Action; 37] = [
     Action::NewTab,
     Action::ClosePane,
     Action::PrevTab,
@@ -246,6 +254,10 @@ const ACTIONS: [Action; 33] = [
     Action::ZoomPane,
     Action::Broadcast,
     Action::UnicodeInput,
+    Action::PrevFailed,
+    Action::NextFailed,
+    Action::CopyLastCommand,
+    Action::CommandPalette,
 ];
 
 const fn m(ctrl: bool, alt: bool, shift: bool) -> Mods {
@@ -259,6 +271,7 @@ const fn m(ctrl: bool, alt: bool, shift: bool) -> Mods {
 const CTRL: Mods = m(true, false, false);
 const ALT: Mods = m(false, true, false);
 const CTRL_SHIFT: Mods = m(true, false, true);
+const CTRL_ALT_SHIFT: Mods = m(true, true, true);
 
 impl Action {
     /// Every action, in the order of §2.3: the order duplicate sequences are settled in.
@@ -301,6 +314,10 @@ impl Action {
             Action::ZoomPane => "zoom_pane",
             Action::Broadcast => "broadcast",
             Action::UnicodeInput => "unicode_input",
+            Action::PrevFailed => "prev_failed",
+            Action::NextFailed => "next_failed",
+            Action::CopyLastCommand => "copy_last_command",
+            Action::CommandPalette => "command_palette",
         }
     }
 
@@ -331,6 +348,10 @@ impl Action {
             Action::ZoomPane => (CTRL_SHIFT, Key::Char('Z')),
             Action::Broadcast => (CTRL_SHIFT, Key::Char('B')),
             Action::UnicodeInput => (CTRL_SHIFT, Key::Char('U')),
+            Action::PrevFailed => (CTRL_ALT_SHIFT, Key::Up),
+            Action::NextFailed => (CTRL_ALT_SHIFT, Key::Down),
+            Action::CopyLastCommand => (CTRL_SHIFT, Key::Char('K')),
+            Action::CommandPalette => (CTRL_SHIFT, Key::Char('P')),
         };
         KeySeq::new(mods, key)
     }
@@ -338,7 +359,7 @@ impl Action {
 
 /// The sequence bound to each action; `None` is unbound.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Keys([Option<KeySeq>; 33]);
+pub struct Keys([Option<KeySeq>; 37]);
 
 impl Default for Keys {
     fn default() -> Self {
