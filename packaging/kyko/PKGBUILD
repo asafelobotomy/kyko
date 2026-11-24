@@ -25,7 +25,7 @@ options=(!lto)
 source=("$pkgname-$_tag.tar.gz::$url/releases/download/v$_tag/$pkgname-$_tag.tar.gz")
 # The release asset's sha256 for this tag; SKIP until the first release, then update it with
 # pkgver at each release.
-sha256sums=('6dd3926db11505c912305ecc613707a93018274a330852e0f108d7fffd774bb8')
+sha256sums=('3925797d45f9a031b70672e319043c19b9e7ef7940ad259dd6507bec4225e867')
 
 prepare() {
   cd "$srcdir/$pkgname-$_tag"
