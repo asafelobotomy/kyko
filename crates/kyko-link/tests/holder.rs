@@ -59,6 +59,23 @@ impl Holder {
     }
 }
 
+impl Holder {
+    /// A window's link. Retried briefly: the socket file exists from bind(), before kykod
+    /// listens (refused), and kykod refuses a second window while a closed one is still live.
+    fn link(&self) -> Link {
+        let end = Instant::now() + Duration::from_secs(5);
+        loop {
+            match Link::connect(&self.socket, 100) {
+                Ok(l) => return l,
+                Err(e) => {
+                    assert!(Instant::now() < end, "no link to kykod: {e}");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+    }
+}
+
 impl Drop for Holder {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -110,7 +127,7 @@ fn pump_until(link: &mut Link, what: &str, done: impl Fn(&Link) -> bool) {
 #[test]
 fn spawn_type_and_see_the_screen() {
     let h = Holder::start();
-    let mut link = Link::connect(&h.socket, 100).unwrap();
+    let mut link = h.link();
     link.spawn(spec(1, "/bin/sh", &[])).unwrap();
     link.attach(1).unwrap();
     link.input(1, b"echo kyko-link-$((6*7))\n").unwrap();
@@ -122,7 +139,7 @@ fn spawn_type_and_see_the_screen() {
 #[test]
 fn a_paste_longer_than_a_frame_arrives_whole() {
     let h = Holder::start();
-    let mut link = Link::connect(&h.socket, 100).unwrap();
+    let mut link = h.link();
     // Raw mode: no line length limit, no echo of the 3 MB.
     link.spawn(spec(
         1,
@@ -141,7 +158,7 @@ fn a_paste_longer_than_a_frame_arrives_whole() {
 fn a_new_window_finds_the_pane_and_its_screen() {
     let h = Holder::start();
     {
-        let mut first = Link::connect(&h.socket, 100).unwrap();
+        let mut first = h.link();
         first.spawn(spec(7, "/bin/sh", &[])).unwrap();
         first.attach(7).unwrap();
         first.input(7, b"echo before-restart\n").unwrap();
@@ -150,17 +167,8 @@ fn a_new_window_finds_the_pane_and_its_screen() {
         });
         first.save_layout(b"layout".to_vec()).unwrap();
     }
-    // Reconnect: kykod refuses a second window while the first is live, so retry briefly.
-    let end = Instant::now() + Duration::from_secs(5);
-    let mut second = loop {
-        match Link::connect(&h.socket, 100) {
-            Ok(l) => break l,
-            Err(e) => {
-                assert!(Instant::now() < end, "no reconnect: {e}");
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    };
+    // Reconnect: kykod refuses a second window while the first is live; `link` retries.
+    let mut second = h.link();
     assert_eq!(second.pane_ids(), vec![7]);
     assert_eq!(second.layout, b"layout");
     second.attach(7).unwrap();
@@ -172,7 +180,7 @@ fn a_new_window_finds_the_pane_and_its_screen() {
 #[test]
 fn an_exit_is_reported() {
     let h = Holder::start();
-    let mut link = Link::connect(&h.socket, 100).unwrap();
+    let mut link = h.link();
     link.spawn(spec(2, "/bin/sh", &["-c", "exit 3"])).unwrap();
     link.attach(2).unwrap();
     let end = Instant::now() + Duration::from_secs(5);

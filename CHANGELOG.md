@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs in `check()`, so an AUR upgrade run from a kyko terminal (`paru`, `bindleup`) failed all
   four of them. The guard is now a shell variable of its own (bash, zsh and fish), an inherited
   one from an older kyko is dropped, and the tests start bash with only the variables they set.
+- **A flaky holder test.** The kyko-link tests connected as soon as kykod's socket file
+  appeared, which is before kykod listens, so a slow start was refused and failed the release
+  build's `check()`. They now retry for up to five seconds.
 
 ## [1.3.2] - 2026-11-23
 
