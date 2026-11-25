@@ -10,7 +10,7 @@ repository.workspace = true
 # in 5421470), and no release has the fix yet. Move back to a crates.io version once one does.
 alacritty_terminal = { git = "https://github.com/alacritty/alacritty", rev = "791efff6d74c66bee390c259e322626ca93aadb6" }
 # Images in kitty's graphics protocol: PNG, and zlib-compressed raw pixels.
-miniz_oxide = "0.8"
+miniz_oxide = "0.9"
 png = "0.17"
 
 [dev-dependencies]
