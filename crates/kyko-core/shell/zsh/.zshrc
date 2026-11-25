@@ -4,8 +4,10 @@ __kyko_user="${KYKO_USER_ZDOTDIR:-$HOME}"
 ZDOTDIR="$KYKO_USER_ZDOTDIR"
 [ -r "$__kyko_user/.zshrc" ] && . "$__kyko_user/.zshrc"
 [ -n "$KYKO_USER_ZDOTDIR" ] || unset ZDOTDIR
-[ -n "$KYKO_SHELL_INTEGRATION_LOADED" ] && { unset __kyko_user; return 0 }
-export KYKO_SHELL_INTEGRATION_LOADED=1
+# Loaded once per shell, and not exported (see bash.sh).
+unset KYKO_SHELL_INTEGRATION_LOADED
+[ -n "$__kyko_loaded" ] && { unset __kyko_user; return 0 }
+typeset -g __kyko_loaded=1
 
 autoload -Uz add-zsh-hook
 zmodload zsh/datetime 2>/dev/null
