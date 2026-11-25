@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-11-25
+
+### Fixed
+
+- **The package builds from a kyko terminal.** The shell integration exported
+  `KYKO_SHELL_INTEGRATION_LOADED`, so every bash started from a kyko shell inherited "already
+  loaded" and skipped the integration. That included the bash integration tests that `makepkg`
+  runs in `check()`, so an AUR upgrade run from a kyko terminal (`paru`, `bindleup`) failed all
+  four of them. The guard is now a shell variable of its own (bash, zsh and fish), an inherited
+  one from an older kyko is dropped, and the tests start bash with only the variables they set.
+
 ## [1.3.2] - 2026-11-23
 
 ### Fixed

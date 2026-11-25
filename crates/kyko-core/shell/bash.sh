@@ -3,8 +3,11 @@
 [ -r /etc/bash.bashrc ] && . /etc/bash.bashrc
 __kyko_ps1_system="$PS1"
 [ -r "$HOME/.bashrc" ] && . "$HOME/.bashrc"
-[ -n "$KYKO_SHELL_INTEGRATION_LOADED" ] && return 0
-export KYKO_SHELL_INTEGRATION_LOADED=1
+# Loaded once per shell. Not exported: a bash this shell starts (makepkg's check() runs kyko's
+# own tests) must not inherit "already loaded". An older kyko exported it; drop that too.
+unset KYKO_SHELL_INTEGRATION_LOADED
+[ -n "$__kyko_loaded" ] && return 0
+__kyko_loaded=1
 
 # kyko draws the prompt only when nothing set one of the user's own.
 __kyko_draw=

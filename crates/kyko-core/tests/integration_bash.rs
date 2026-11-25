@@ -7,6 +7,11 @@ use std::process::{Command, Stdio};
 use kyko_core::integration::{Host, install, plan};
 
 fn run(input: &str, bashrc: &str) -> String {
+    run_with(input, bashrc, &[])
+}
+
+/// `run`, with `inherited` in bash's environment as if the terminal had it.
+fn run_with(input: &str, bashrc: &str, inherited: &[(&str, &str)]) -> String {
     let dir = tempfile::tempdir().unwrap();
     let scripts = dir.path().join("shell");
     install(&scripts).unwrap();
@@ -36,6 +41,10 @@ fn run(input: &str, bashrc: &str) -> String {
     let mut child = cmd
         .args(&p.args)
         .arg("-i")
+        // Only what the test sets: a variable from the terminal the build runs in (an older
+        // kyko's KYKO_SHELL_INTEGRATION_LOADED, a PROMPT_COMMAND) would change what bash does.
+        .env_clear()
+        .envs(inherited.iter().copied())
         .envs(p.env.iter().map(|(k, v)| (k, v)))
         .env("HOME", &home)
         .env(
@@ -104,4 +113,14 @@ fn bash_does_not_mark_the_users_own_prompt_commands() {
     let out = run("true\nexit\n", "PROMPT_COMMAND+=('printf \"\"' 'true')\n");
     assert_eq!(out.matches("\x1b]133;C").count(), 2, "{out:?}");
     assert_eq!(out.matches("\x1b]133;D").count(), 1, "{out:?}");
+}
+
+#[test]
+fn bash_loads_under_an_older_kykos_exported_guard_and_exports_none() {
+    // Older kyko exported KYKO_SHELL_INTEGRATION_LOADED, so every bash started from its
+    // shells (makepkg's check(), a nested bash) skipped the script.
+    let out = run_with("env\nexit\n", "", &[("KYKO_SHELL_INTEGRATION_LOADED", "1")]);
+    assert!(out.contains("\x1b]133;A\x07"), "marks: {out:?}");
+    assert!(!out.contains("KYKO_SHELL_INTEGRATION_LOADED="), "{out:?}");
+    assert!(!out.contains("__kyko_loaded="), "{out:?}");
 }

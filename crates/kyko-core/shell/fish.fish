@@ -1,6 +1,8 @@
 # kyko shell integration for fish. Sourced with --init-command, after the user's config.
-set -q KYKO_SHELL_INTEGRATION_LOADED; and exit 0
-set -gx KYKO_SHELL_INTEGRATION_LOADED 1
+# Loaded once per shell, and not exported (see bash.sh).
+set -e KYKO_SHELL_INTEGRATION_LOADED
+set -q __kyko_loaded; and exit 0
+set -g __kyko_loaded 1
 
 # fish 4 marks the prompt, command line and output itself (its `mark-prompt` feature), with the
 # command line and click-to-move, and reports the folder: kyko then only adds what fish does not.
