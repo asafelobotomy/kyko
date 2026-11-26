@@ -202,7 +202,10 @@ pub fn decode(c: &Command, data: Vec<u8>) -> Result<(u32, u32, Vec<u8>), String>
             if u64::from(w) * u64::from(h) > MAX_PIXELS {
                 return Err("EINVAL:image too large".into());
             }
-            let mut buf = vec![0; reader.output_buffer_size()];
+            let size = reader
+                .output_buffer_size()
+                .ok_or_else(|| String::from("EINVAL:image too large"))?;
+            let mut buf = vec![0; size];
             let frame = reader
                 .next_frame(&mut buf)
                 .map_err(|e| format!("EINVAL:{e}"))?;
