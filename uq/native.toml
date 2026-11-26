@@ -13,3 +13,7 @@ sources = ["apps", "crates"]
 [uq-consts]
 version = "1.0.0"
 files = ["crates/kyko-core/src/uq_consts.rs"]
+
+[uq-loc]
+version = "1.0.0"
+files = ["scripts/check-loc.sh"]

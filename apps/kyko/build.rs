@@ -22,6 +22,18 @@ fn tool(name: &str, dirs: &[Option<PathBuf>]) -> PathBuf {
         .unwrap_or_else(|| panic!("Qt 6 tool {name} not found (qt6-base, qt6-shadertools)"))
 }
 
+/// The grid item's C++: one header for QML and moc, one shared by its translation units.
+const CPP_HEADERS: &[&str] = &["cpp/gridview.h", "cpp/gridview_p.h"];
+const CPP_SOURCES: &[&str] = &[
+    "cpp/gridview.cpp",
+    "cpp/controller.cpp",
+    "cpp/gridatlas.cpp",
+    "cpp/gridnodes.cpp",
+    "cpp/gridpaint.cpp",
+    "cpp/gridinput.cpp",
+    "cpp/boxdraw.cpp",
+];
+
 fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let libexecs = qmake_query("QT_HOST_LIBEXECS");
@@ -54,7 +66,7 @@ fn main() {
         assert!(ok, "qsb failed for {name}");
         println!("cargo::rerun-if-changed=shaders/{name}");
     }
-    for f in ["cpp/gridview.h", "cpp/gridview.cpp"] {
+    for f in CPP_HEADERS.iter().chain(CPP_SOURCES) {
         println!("cargo::rerun-if-changed={f}");
     }
     // The shaders go into the binary as a Qt resource: a path into the build tree would not
@@ -73,15 +85,20 @@ fn main() {
         QmlFile::from("qml/Main.qml"),
         QmlFile::from("qml/DropDown.qml"),
         QmlFile::from("qml/Workspace.qml"),
+        QmlFile::from("qml/TabStrip.qml"),
+        QmlFile::from("qml/FindBar.qml"),
+        QmlFile::from("qml/UnicodePicker.qml"),
+        QmlFile::from("qml/CommandPalette.qml"),
+        QmlFile::from("qml/ConfirmBox.qml"),
         QmlFile::from("qml/Preferences.qml"),
     ]))
     .qt_module("Gui")
     .qt_module("Quick")
     .files(["src/bridge.rs"])
-    .cpp_file("cpp/gridview.cpp")
     .cpp_file(moc_out)
     .qrc(&qrc);
-    // SAFETY: only adds a warning flag for the C++ file.
+    let builder = CPP_SOURCES.iter().fold(builder, |b, f| b.cpp_file(f));
+    // SAFETY: only adds a warning flag for the C++ files.
     let builder = unsafe {
         builder.cc_builder(|cc| {
             cc.flag_if_supported("-Wno-sfinae-incomplete");

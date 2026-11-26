@@ -36,6 +36,10 @@ jobs:
       # everything but pacman -U runs as this user.
       - name: Create an unprivileged user
         run: useradd -m tester && chown -R tester:tester "$GITHUB_WORKSPACE"
+      - name: Vendored uQ kits match their pinned checksums
+        run: scripts/check-uq-native.sh
+      - name: Every source file is within 400 lines of code (uQ's uq-loc)
+        run: scripts/check-loc.sh
       - name: Format, lint and test
         run: |
           su tester -c "set -e
