@@ -27,6 +27,8 @@ source=("$pkgname-$_tag.tar.gz::$url/releases/download/v$_tag/$pkgname-$_tag.tar
 # pkgver at each release.
 sha256sums=('b78ab7819c93518e8559ff535d563c500257cfdfe3581c9ad2114484eb39358c')
 
+conflicts+=('uq<0.3.41')  # uq-compat: from uQ's compat/family.toml
+
 prepare() {
   cd "$srcdir/$pkgname-$_tag"
   export RUSTUP_TOOLCHAIN=stable
