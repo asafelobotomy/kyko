@@ -69,7 +69,7 @@ Q_SIGNALS:
 };
 
 // One pane's grid, drawn with scene-graph nodes and a glyph atlas (spec 2.4), and the keyboard
-// and input-method input that goes with it. The screen itself lives in Rust (session.rs).
+// and input-method input that goes with it. The screen itself lives in Rust (src/session/).
 class GridView : public QQuickItem {
     Q_OBJECT
     Q_PROPERTY(int cols READ cols NOTIFY gridChanged)
