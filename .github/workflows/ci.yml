@@ -11,9 +11,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 50
     # --init: a job container's PID 1 is otherwise a process that never reaps orphans. kykod's tests
     # end shells whose children are re-parented to PID 1, and every orphan that ends would stay a
     # zombie for the rest of the job.
