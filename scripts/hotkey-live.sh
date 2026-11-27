@@ -8,7 +8,13 @@
 # F12 bind as uQ's generated.lua writes it.
 set -eu
 card=${SMOKE_CARD:?SMOKE_CARD must name the DRM card passed to the container}
-pacman -Syu --noconfirm --needed rust gcc hyprland seatd wtype mesa jq >/dev/null
+pacman -Syu --noconfirm --needed rust gcc git pkgconf wayland libxkbcommon hyprland seatd mesa jq >/dev/null
+# Key presses come from uQ's uqinput, a virtual keyboard with the default US keymap (wtype uploads
+# a keymap of its own, whose keycodes Hyprland's binds don't match). Pinned to a uQ commit.
+uq_rev=90d5e5d69e9e7839afede09cb5be46523655f230
+git init -q /opt/uq && git -C /opt/uq fetch -q --depth 1 https://github.com/asafelobotomy/uq "$uq_rev"
+git -C /opt/uq checkout -q FETCH_HEAD
+/opt/uq/tests/live/tools/build-uqinput.sh /usr/local/bin/uqinput
 id tester >/dev/null 2>&1 || useradd -m -u "${SMOKE_UID:-1000}" tester
 chmod 666 "$card"
 SEATD_VTBOUND=0 seatd -u tester -l error &
@@ -40,9 +46,12 @@ LUA
     hc() { XDG_RUNTIME_DIR="$rt" HYPRLAND_INSTANCE_SIGNATURE="$sig" hyprctl "$@"; }
     hc version | head -n1
     [ -n "$(hc monitors -j | jq -r ".[0].name // empty")" ] || hc output create headless >/dev/null
+    printf "#!/bin/sh\nprintf \"mod ctrl down\\\\nkey F11\\\\nmod ctrl up\\\\nsleep 300\\\\n\" | uqinput 1280 720\n" > "$tmp/press"
+    chmod +x "$tmp/press"
+    cat "$tmp/press"
     rc=0
     XDG_RUNTIME_DIR="$rt" HYPRLAND_INSTANCE_SIGNATURE="$sig" WAYLAND_DISPLAY="$wl" \
-        KYKO_LIVE_HYPRLAND=1 KYKO_LIVE_MARKER="$tmp/fired" \
+        KYKO_LIVE_HYPRLAND=1 KYKO_LIVE_MARKER="$tmp/fired" KYKO_LIVE_PRESS="$tmp/press" \
         cargo test --locked -p kyko-hotkey --test live_hyprland -- --nocapture || rc=$?
     [ $rc = 0 ] || { echo "--- hypr.log"; tail -n 40 "$rt/hypr/$sig/hyprland.log" 2>/dev/null || tail -n 40 "$tmp/hypr.log"; }
     kill $hypr 2>/dev/null || true

@@ -1,5 +1,6 @@
 //! The Hyprland backend against a real Hyprland (scripts/hotkey-live.sh starts one headless with
-//! a Lua config holding uQ's F12 bind, and sets KYKO_LIVE_HYPRLAND). Without it this test passes
+//! a Lua config holding uQ's F12 bind, sets KYKO_LIVE_HYPRLAND, and gives KYKO_LIVE_PRESS, a
+//! program that presses Ctrl+F11). Without it this test passes
 //! without checking anything.
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -77,8 +78,7 @@ fn binds_on_a_real_hyprland() {
     assert_eq!(f12s(&socket), 1, "uQ's F12 is still there");
 
     // Pressing it runs the command.
-    let typed = Command::new("wtype")
-        .args(["-M", "ctrl", "-k", "F11", "-m", "ctrl"])
+    let typed = Command::new(env("KYKO_LIVE_PRESS").expect("KYKO_LIVE_PRESS"))
         .status()
         .unwrap();
     assert!(typed.success());
