@@ -74,3 +74,30 @@ jobs:
           name: kyko-pkg
           path: target/pkg/*.pkg.tar.zst
           if-no-files-found: error
+
+  hyprland:
+    # The hotkey on a real Hyprland (scripts/hotkey-live.sh): Lua binds through `eval`, uQ's F12
+    # left to uQ, a key press that runs the command, and a reload. vkms gives Hyprland the DRM card
+    # it needs even headless.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Load vkms
+        run: |
+          sudo modprobe vkms 2>/dev/null || {
+            sudo apt-get update -q && sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" && sudo modprobe vkms
+          }
+          card=""
+          for c in /sys/class/drm/card*; do
+            case "${c##*/}" in *-*) continue ;; esac
+            [ "$(basename "$(readlink -f "$c/device")")" = vkms ] && card=/dev/dri/${c##*/}
+          done
+          [ -n "$card" ] || { echo "::error::vkms loaded but no vkms card found"; exit 1; }
+          echo "SMOKE_CARD=$card" >> "$GITHUB_ENV"
+      - name: Hotkey on Hyprland
+        run: |
+          docker run --rm --device "$SMOKE_CARD" -e SMOKE_CARD -e SMOKE_UID="$(id -u)" \
+            -v "$GITHUB_WORKSPACE:/src" archlinux:latest bash /src/scripts/hotkey-live.sh
