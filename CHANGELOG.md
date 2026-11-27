@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-11-27
+
 ### Fixed
 
 - **The hotkey registers on Hyprland 0.57.** Hyprland 0.57 reads a Lua config and has no
