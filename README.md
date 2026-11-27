@@ -56,7 +56,7 @@ systemctl --user enable --now kykod.service kyko.service
 ```
 
 The toggle key is `hotkey.toggle` in Preferences (F12 by default). On Hyprland kyko binds it for
-you; on other desktops bind a key to `kyko toggle` in the desktop's own shortcut settings.
+you (and leaves F12 to uQ when uQ's Settings › Shortcuts already binds it); on other desktops bind a key to `kyko toggle` in the desktop's own shortcut settings.
 
 For a normal window, run `kyko` or `kyko -e COMMAND`. Settings live in
 `~/.config/kyko/config.toml`, and Preferences (the gear on the tab bar, or `kyko preferences`)

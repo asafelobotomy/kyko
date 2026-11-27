@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-11-27
+
+### Fixed
+
+- **The hotkey registers on Hyprland 0.57.** Hyprland 0.57 reads a Lua config and has no
+  `keyword` request any more, so kyko's runtime bind was refused at every login
+  (`KYKO-003 … unknown request`) and a key picked in Preferences never worked. kyko now binds
+  through `hyprctl eval` (`hl.bind`, removed again by its own handle so the config's binds on the
+  same key stay), and falls back to `keyword` on a hyprlang config or an older Hyprland.
+- **uQ's F12 is recognised.** A Lua bind shows Hyprland only a function, so kyko never saw that
+  uQ already binds F12 to `kyko toggle`. It now knows uQ's bind by its description, and leaves a
+  key to the config only when the config binds that same key; another key is bound beside it.
+- A CI job runs the hotkey against a real headless Hyprland: the Lua bind, uQ's F12 left alone,
+  a key press that runs the command, and a config reload.
+
 ## [1.3.3] - 2026-11-25
 
 ### Fixed
