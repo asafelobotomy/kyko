@@ -47,6 +47,7 @@ jobs:
     # `decide` skips the whole run.
     if: github.repository == 'asafelobotomy/kyko'
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     # The same image the tests run the scripts in (ci.yml), so the decision is made where it is
     # tested.
     container: archlinux:latest
@@ -112,6 +113,7 @@ jobs:
     needs: [decide, ci]
     if: needs.decide.outputs.action == 'release'
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     # --init, as in ci.yml: the package's check() runs kykod's tests, whose ended orphans PID 1 must
     # reap.
     container:
@@ -240,6 +242,7 @@ jobs:
     needs: [decide, ci, build]
     if: needs.decide.outputs.action == 'release'
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     permissions:
       contents: write
       id-token: write
@@ -331,6 +334,7 @@ jobs:
     needs: [decide, publish]
     if: needs.publish.outputs.has_aur_key == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     permissions: {}
     env:
       VERSION: ${{ needs.decide.outputs.version }}
